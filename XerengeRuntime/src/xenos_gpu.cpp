@@ -56,6 +56,25 @@ void XenosGpu::processSubmittedBuffer(uint8_t* guestBase, uint32_t guestAddress,
         {
             ++type3Count_;
             length = ((packet >> 16) & 0x3FFFu) + 2;
+            const uint32_t opcode = (packet >> 8) & 0xFFu;
+            // Xenos PM4 draw packets.  The low seven bits are used by the
+            // hardware opcode field; accepting both forms keeps this parser
+            // useful for command streams produced by different compilers.
+            if (opcode == 0x22u || opcode == 0x23u || opcode == 0x2Du ||
+                opcode == 0x2Eu || opcode == 0x36u)
+                ++drawPacketCount_;
+            if (opcode == 0x64u)
+            {
+                ++swapPacketCount_;
+                if (length >= 5 && offset + 4 < dwordCount)
+                {
+                    const uint32_t width = loadGuestBE(guestBase, guestAddress + (offset + 3) * 4);
+                    const uint32_t height = loadGuestBE(guestBase, guestAddress + (offset + 4) * 4);
+                    lastFrameWidth_ = width;
+                    lastFrameHeight_ = height;
+                    ++frameCount_;
+                }
+            }
         }
         if (length == 0 || length > dwordCount - offset)
             break;

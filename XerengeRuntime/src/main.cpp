@@ -383,6 +383,17 @@ extern "C" uint32_t PPCGuestClock()
     return guestClock.fetch_add(1000000, std::memory_order_relaxed) + 1000000;
 }
 
+extern "C" void PPCGuestStoreU32(uint8_t* base, uint32_t address, uint32_t value)
+{
+    if (address >= XenosGpu::kMmioBase && address < XenosGpu::kMmioBase + XenosGpu::kMmioSize)
+    {
+        PPCGuestMmioStore(base, address, value, 4);
+        return;
+    }
+    const uint32_t encoded = __builtin_bswap32(value);
+    std::memcpy(base + address, &encoded, sizeof(encoded));
+}
+
 extern "C" void PPCGuestMmioStore(uint8_t* base, uint32_t address, uint64_t value, uint32_t width)
 {
     static std::atomic<uint32_t> storeCount = 0;
@@ -518,7 +529,12 @@ public:
                               << " r8=0x" << ctx.r8.u32
                               << " r9=0x" << ctx.r9.u32
                               << " r10=0x" << ctx.r10.u32
-                              << std::dec << " packets=" << gXenosGpu.packetCount() << '\n';
+                              << std::dec << " packets=" << gXenosGpu.packetCount()
+                              << " draws=" << gXenosGpu.drawPacketCount()
+                              << " swaps=" << gXenosGpu.swapPacketCount()
+                              << " frames=" << gXenosGpu.frameCount()
+                              << " size=" << gXenosGpu.lastFrameWidth() << 'x'
+                              << gXenosGpu.lastFrameHeight() << '\n';
                 }
             }
             ctx.r3.u32 = 0;
