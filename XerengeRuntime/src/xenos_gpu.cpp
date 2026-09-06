@@ -208,9 +208,13 @@ void XenosGpu::rasterizeDraw(uint8_t* guestBase, uint32_t initiator)
             bits[component] = loadGuestBE(guestBase, address + component * 4);
 
         if (primitive == 8u && std::getenv("XERENGE_XENOS_VERTEX_TRACE") != nullptr && i < 3)
+        {
             std::cerr << "Xenos vertex i=" << i << " guest=0x" << std::hex << address
-                      << " words=" << bits[0] << ' ' << bits[1] << ' ' << bits[2]
-                      << std::dec << '\n';
+                      << " words=";
+            for (uint32_t word = 0; word < std::min(strideWords, 7u); ++word)
+                std::cerr << ' ' << loadGuestBE(guestBase, address + word * 4);
+            std::cerr << std::dec << '\n';
+        }
 
         float position[3];
         std::memcpy(&position[0], &bits[0], sizeof(position));
