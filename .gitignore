@@ -7,6 +7,7 @@ work/
 # Local builds and generated shader outputs
 build/
 build-debug/
+build-runtime/
 *_shader_cache*.cpp
 *.hlsl
 *.dxil
