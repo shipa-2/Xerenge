@@ -522,6 +522,32 @@ public:
             ctx.r3.u32 = ctx.r3.u32 == 0 ? 0u : 1u;
             return;
         }
+        if (service == "MmAllocatePhysicalMemoryEx")
+        {
+            ctx.r3.u32 = allocatePhysical(std::max<uint32_t>(ctx.r4.u32, 0x1000u), base);
+            return;
+        }
+        if (service == "MmGetPhysicalAddress")
+        {
+            // The first guest mapping is identity-addressed by the runtime;
+            // preserve the Xenon virtual address as its physical token.
+            ctx.r3.u32 = ctx.r3.u32;
+            return;
+        }
+        if (service == "MmFreePhysicalMemory")
+        {
+            // r4 carries the physical allocation in the Xbox ABI.
+            if (ctx.r4.u32 != 0)
+                allocations_.erase(ctx.r4.u32);
+            ctx.r3.u32 = 0;
+            return;
+        }
+        if (service == "MmQueryAllocationSize")
+        {
+            const auto it = allocations_.find(ctx.r3.u32);
+            ctx.r3.u32 = it == allocations_.end() ? 0 : it->second;
+            return;
+        }
         if (service == "VdGetSystemCommandBuffer")
         {
             // Xenia exposes these as stable guest tokens.  The title passes
@@ -867,6 +893,13 @@ public:
     }
 
 private:
+    uint32_t allocatePhysical(uint32_t size, uint8_t* base)
+    {
+        constexpr uint32_t alignment = 0x1000u;
+        heapCursor_ = (heapCursor_ + alignment - 1) & ~(alignment - 1);
+        return allocate(size, base);
+    }
+
     void launchGuestThread(uint8_t* base, uint32_t startupAddress, uint32_t startAddress,
         uint32_t startContext, uint32_t threadId)
     {
@@ -960,7 +993,9 @@ private:
     }
 
     uint32_t heapCursor_ = 0x60000000u;
-    static constexpr uint32_t heapLimit_ = 0x68000000u;
+    // Early Burnout allocates large physical video heaps (over 200 MiB)
+    // before creating the primary command ring.
+    static constexpr uint32_t heapLimit_ = 0x78000000u;
     static constexpr uint32_t kVtableBase = 0x81000000u;
     std::unordered_map<uint32_t, uint32_t> allocations_;
     std::unordered_map<uint32_t, uint32_t> objects_;
