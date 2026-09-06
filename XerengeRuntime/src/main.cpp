@@ -313,7 +313,7 @@ public:
     {
         const uint32_t slot = ctx.r3.u32;
         if (slot < 0x82000000u || slot >= 0x90000000u)
-            return 0;
+            return createObject(base);
         const uint32_t existing = loadU32(base, slot);
         if (existing != 0)
             return existing;
@@ -351,6 +351,9 @@ private:
         if (object == 0)
             return 0;
         storeU32(base, object, kVtableBase);
+        storeU32(base, kVtableBase + 0, kVtableBase + 0);
+        storeU32(base, kVtableBase + 4, kVtableBase + 4);
+        storeU32(base, kVtableBase + 8, kVtableBase + 8);
         objects_.emplace(object, 1);
         return object;
     }
@@ -404,7 +407,10 @@ extern "C" void PPCUnknownIndirectTrap(uint32_t address, PPCContext& ctx, uint8_
         return;
     if (address == 0)
     {
-        ctx.r3.u32 = gXboxServices.materializeNullObject(ctx, base);
+        const uint32_t object = gXboxServices.materializeNullObject(ctx, base);
+        ctx.r3.u32 = object;
+        if (ctx.r30.u32 < 0x10000000u)
+            ctx.r30.u32 = object;
         return;
     }
     if (address >= PPC_IMAGE_BASE && address < PPC_CODE_BASE)
