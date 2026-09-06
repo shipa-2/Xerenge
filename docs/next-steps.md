@@ -24,6 +24,8 @@ stay local.
   space, including its 17 sections and entry point.
 - The runtime parses the XEX import table and identifies `xam.xex` and
   `xboxkrnl.exe`, including their 449 imported ordinals.
+- A runtime service table now creates 449 explicit diagnostic trap bindings for
+  those import descriptors.
 
 ## Execution order
 

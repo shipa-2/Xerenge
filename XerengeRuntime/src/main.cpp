@@ -18,6 +18,7 @@ struct XexImportLibrary
 {
     std::string name;
     uint16_t importCount = 0;
+    std::vector<uint32_t> firstThunks;
 };
 
 struct XexInfo
@@ -271,7 +272,21 @@ std::optional<XexInfo> inspectXex(const std::string& path)
                     std::cerr << "invalid XEX import library entry: " << path << '\n';
                     return std::nullopt;
                 }
-                info.importLibraries.push_back({stringNames[nameOffset], importCount});
+                if (40ull + static_cast<uint64_t>(importCount) * 4 > librarySize)
+                {
+                    std::cerr << "XEX import descriptors exceed library entry: " << path << '\n';
+                    return std::nullopt;
+                }
+                XexImportLibrary library{stringNames[nameOffset], importCount};
+                library.firstThunks.reserve(importCount);
+                for (uint16_t importIndex = 0; importIndex < importCount; ++importIndex)
+                {
+                    uint32_t firstThunk = 0;
+                    if (!readBE32At(input, libraryOffset + 40 + importIndex * 4, firstThunk))
+                        return std::nullopt;
+                    library.firstThunks.push_back(firstThunk);
+                }
+                info.importLibraries.push_back(std::move(library));
                 libraryOffset += librarySize;
             }
         }
@@ -527,6 +542,51 @@ void printImports(const XexInfo& info)
     std::cout << "total imports: " << total << '\n';
 }
 
+struct ServiceBinding;
+using ServiceTrap = void (*)(const ServiceBinding&);
+
+struct ServiceBinding
+{
+    std::string library;
+    uint32_t importIndex = 0;
+    uint32_t firstThunk = 0;
+    ServiceTrap trap = nullptr;
+};
+
+void unimplementedServiceTrap(const ServiceBinding& binding)
+{
+    std::cerr << "unimplemented Xbox service: " << binding.library
+              << "[" << binding.importIndex << "] thunk=0x"
+              << std::hex << binding.firstThunk << std::dec << '\n';
+}
+
+std::vector<ServiceBinding> buildServiceTable(const XexInfo& info, ServiceTrap trap)
+{
+    std::vector<ServiceBinding> table;
+    for (const auto& library : info.importLibraries)
+    {
+        for (uint32_t i = 0; i < library.firstThunks.size(); ++i)
+        {
+            table.push_back({library.name, i, library.firstThunks[i], trap});
+        }
+    }
+    return table;
+}
+
+void printServices(const XexInfo& info)
+{
+    const auto table = buildServiceTable(info, unimplementedServiceTrap);
+    std::cout << "runtime service table: " << table.size() << " trap bindings\n";
+    for (size_t i = 0; i < std::min<size_t>(table.size(), 8); ++i)
+    {
+        const auto& binding = table[i];
+        std::cout << "  " << binding.library << "[" << binding.importIndex
+                  << "] thunk=0x" << std::hex << binding.firstThunk << std::dec << '\n';
+    }
+    if (table.size() > 8)
+        std::cout << "  ... " << table.size() - 8 << " more bindings\n";
+}
+
 bool initializeVulkan(VkInstance& instance, VkPhysicalDevice& physicalDevice)
 {
     uint32_t glfwExtensionCount = 0;
@@ -628,6 +688,20 @@ int main(int argc, char** argv)
         if (!info)
             return 1;
         printImports(*info);
+        return 0;
+    }
+
+    if (argc > 1 && std::string(argv[1]) == "--services")
+    {
+        if (argc != 3)
+        {
+            std::cerr << "usage: xerenge-runtime --services <file.xex>\n";
+            return 2;
+        }
+        const auto info = inspectXex(argv[2]);
+        if (!info)
+            return 1;
+        printServices(*info);
         return 0;
     }
 

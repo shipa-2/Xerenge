@@ -26,6 +26,7 @@ ctest --test-dir build-runtime --output-on-failure
 ./build-runtime/xerenge-runtime --extract-image path/to/plain.xex image.bin
 ./build-runtime/xerenge-runtime --map-image path/to/game.xex
 ./build-runtime/xerenge-runtime --imports path/to/game.xex
+./build-runtime/xerenge-runtime --services path/to/game.xex
 ```
 
 `--inspect` currently reads the XEX2 header and security metadata. It does not
@@ -41,3 +42,8 @@ table. It does not call guest code yet.
 
 `--imports` parses the XEX import-library metadata and reports the service
 groups that must be bound before guest code can run.
+
+`--services` creates one diagnostic trap binding for every import descriptor.
+These traps are intentionally explicit: unsupported Xbox services stop with
+their library, import index, and guest thunk address instead of silently
+returning an invalid value.
