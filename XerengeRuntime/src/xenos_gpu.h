@@ -36,6 +36,7 @@ public:
     bool ringConfigured() const { return ringBase_ != 0 && ringSizeDwords_ != 0; }
 
 private:
+    void writeGpuRegister(uint32_t index, uint32_t value);
     void processBuffer(uint8_t* guestBase, uint32_t guestAddress,
         uint32_t dwordCount, uint32_t recursionDepth);
     void processRing(uint8_t* guestBase);

@@ -91,6 +91,12 @@ void XenosGpu::enableReadPointerWriteBack(uint32_t guestAddress, uint32_t)
     readPointerWriteback_ = guestAddress;
 }
 
+void XenosGpu::writeGpuRegister(uint32_t index, uint32_t value)
+{
+    if (index < gpuRegisters_.size())
+        gpuRegisters_[index] = value;
+}
+
 void XenosGpu::processSubmittedBuffer(uint8_t* guestBase, uint32_t guestAddress, uint32_t dwordCount)
 {
     std::lock_guard lock(mutex_);
@@ -134,6 +140,42 @@ void XenosGpu::processBuffer(uint8_t* guestBase, uint32_t guestAddress,
             length = ((packet >> 16) & 0x3FFFu) + 2;
             const uint32_t opcode = (packet >> 8) & 0xFFu;
             ++opcodeCounts_[opcode];
+            if (opcode == 0x2Du || opcode == 0x55u || opcode == 0x56u)
+            {
+                const uint32_t payloadCount = length - 1;
+                if (payloadCount != 0 && offset + payloadCount < dwordCount)
+                {
+                    const uint32_t offsetType = loadGuestBE(
+                        guestBase, guestAddress + (offset + 1) * 4);
+                    uint32_t index = offsetType & (opcode == 0x2Du ? 0x7FFu : 0xFFFFu);
+                    if (opcode == 0x2Du)
+                    {
+                        switch ((offsetType >> 16) & 0xFFu)
+                        {
+                        case 0: index += 0x4000; break;
+                        case 1: index += 0x4800; break;
+                        case 2: index += 0x4900; break;
+                        case 3: index += 0x4908; break;
+                        case 4: index += 0x2000; break;
+                        default: index = 0xFFFFFFFFu; break;
+                        }
+                    }
+                    if (index != 0xFFFFFFFFu)
+                        for (uint32_t i = 1; i < payloadCount; ++i)
+                            writeGpuRegister(index + i - 1,
+                                loadGuestBE(guestBase, guestAddress + (offset + 1 + i) * 4));
+                }
+            }
+            if (opcode == 0x2Bu && length >= 3 && offset + 2 < dwordCount &&
+                std::getenv("XERENGE_XENOS_SHADER_TRACE") != nullptr)
+            {
+                const uint32_t shaderType = loadGuestBE(
+                    guestBase, guestAddress + (offset + 1) * 4);
+                const uint32_t startSize = loadGuestBE(
+                    guestBase, guestAddress + (offset + 2) * 4);
+                std::cerr << "Xenos immediate shader type=" << shaderType
+                          << " dwords=" << (startSize & 0xFFFFu) << '\n';
+            }
             if (std::getenv("XERENGE_XENOS_PACKET_TRACE") != nullptr)
             {
                 static std::atomic<uint32_t> traceCount = 0;
@@ -280,6 +322,33 @@ void XenosGpu::processRing(uint8_t* guestBase)
             length = ((packet >> 16) & 0x3FFFu) + 2;
             const uint32_t opcode = (packet >> 8) & 0xFFu;
             ++opcodeCounts_[opcode];
+            if (opcode == 0x2Du || opcode == 0x55u || opcode == 0x56u)
+            {
+                const uint32_t payloadCount = length - 1;
+                if (payloadCount != 0 && readPointer_ + payloadCount < target)
+                {
+                    const uint32_t offsetType = loadGuestBE(guestBase,
+                        ringBase_ + (readPointer_ + 1) * 4);
+                    uint32_t index = offsetType & (opcode == 0x2Du ? 0x7FFu : 0xFFFFu);
+                    if (opcode == 0x2Du)
+                    {
+                        switch ((offsetType >> 16) & 0xFFu)
+                        {
+                        case 0: index += 0x4000; break;
+                        case 1: index += 0x4800; break;
+                        case 2: index += 0x4900; break;
+                        case 3: index += 0x4908; break;
+                        case 4: index += 0x2000; break;
+                        default: index = 0xFFFFFFFFu; break;
+                        }
+                    }
+                    if (index != 0xFFFFFFFFu)
+                        for (uint32_t i = 1; i < payloadCount; ++i)
+                            writeGpuRegister(index + i - 1,
+                                loadGuestBE(guestBase,
+                                    ringBase_ + (readPointer_ + 1 + i) * 4));
+                }
+            }
             if (opcode == 0x3Fu && length >= 3 && readPointer_ + 2 < target)
             {
                 const uint32_t physicalAddress = loadGuestBE(guestBase,
