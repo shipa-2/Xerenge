@@ -7,6 +7,11 @@
 #include <cmath>
 #include <iostream>
 
+#define XXH_INLINE_ALL
+#include <xxhash.h>
+
+#include "shader_cache_runtime.h"
+
 namespace
 {
 constexpr uint32_t kEdramSize = 10u * 1024u * 1024u;
@@ -276,6 +281,27 @@ void XenosGpu::processBuffer(uint8_t* guestBase, uint32_t guestAddress,
                     guestBase, guestAddress + (offset + 2) * 4);
                 std::cerr << "Xenos immediate shader type=" << shaderType
                           << " dwords=" << (startSize & 0xFFFFu) << '\n';
+            }
+            if (opcode == 0x2Bu && length >= 3 && offset + 2 < dwordCount)
+            {
+                const uint32_t shaderType = loadGuestBE(
+                    guestBase, guestAddress + (offset + 1) * 4);
+                const uint32_t codeDwords = loadGuestBE(
+                    guestBase, guestAddress + (offset + 2) * 4) & 0xFFFFu;
+                if (codeDwords != 0 && codeDwords <= length - 3)
+                {
+                    const size_t byteSize = size_t(codeDwords) * sizeof(uint32_t);
+                    const uint64_t hash = XXH3_64bits(
+                        guestBase + guestAddress + (offset + 3) * 4, byteSize);
+                    const auto cache = xerengeShaderCache();
+                    const auto* match = cache.findMicrocode(hash);
+                    if (std::getenv("XERENGE_XENOS_SHADER_TRACE") != nullptr)
+                        std::cerr << "Xenos shader cache "
+                                  << (match != nullptr ? "hit" : "miss")
+                                  << " hash=0x" << std::hex << hash
+                                  << " stage=" << shaderType
+                                  << " bytes=" << std::dec << byteSize << '\n';
+                }
             }
             if (opcode == 0x46u && length >= 2 && offset + 1 < dwordCount)
             {

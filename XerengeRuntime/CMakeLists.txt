@@ -31,7 +31,8 @@ add_executable(xerenge-runtime
 target_link_libraries(xerenge-runtime PRIVATE Vulkan::Vulkan OpenGL::GL Xerenge::Crypto
     PkgConfig::GLFW3 ${CMAKE_DL_LIBS})
 target_compile_definitions(xerenge-runtime PRIVATE GLFW_INCLUDE_NONE)
-target_include_directories(xerenge-runtime PRIVATE "${CMAKE_CURRENT_SOURCE_DIR}/src")
+target_include_directories(xerenge-runtime PRIVATE "${CMAKE_CURRENT_SOURCE_DIR}/src"
+    "${CMAKE_CURRENT_SOURCE_DIR}/../XenosRecomp/thirdparty/xxHash")
 
 # XenonRecomp output is intentionally generated outside the repository.  When
 # supplied, build it as a separate library so the runtime can be linked to the

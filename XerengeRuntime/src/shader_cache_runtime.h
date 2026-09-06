@@ -12,7 +12,7 @@ struct XerengeShaderCacheView
 
     bool available() const { return entries != nullptr && entryCount != 0; }
     const ShaderCacheEntry* find(uint64_t hash) const;
+    const ShaderMicrocodeEntry* findMicrocode(uint64_t hash) const;
 };
 
 XerengeShaderCacheView xerengeShaderCache();
-
