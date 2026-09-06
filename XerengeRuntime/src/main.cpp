@@ -672,6 +672,42 @@ public:
             ctx.r3.u32 = 0;
             return;
         }
+        if (service == "KeWaitForSingleObject")
+        {
+            const auto event = events_.find(ctx.r3.u32);
+            if (event != events_.end() && event->second)
+            {
+                event->second = false;
+                ctx.r3.u32 = 0;
+                return;
+            }
+            // The graphics worker uses a kernel event to drain the command
+            // queue. A bounded timeout keeps the guest cooperative while
+            // allowing it to poll an event that has no host object yet.
+            std::this_thread::sleep_for(std::chrono::milliseconds(1));
+            if (std::getenv("XERENGE_PPC_TRACE") != nullptr)
+            {
+                static std::atomic<uint32_t> waitTraceCount = 0;
+                if (waitTraceCount.fetch_add(1, std::memory_order_relaxed) < 8)
+                    std::cerr << "kernel event wait object=0x" << std::hex << ctx.r3.u32
+                              << std::dec << '\n';
+            }
+            ctx.r3.u32 = 258; // STATUS_TIMEOUT
+            return;
+        }
+        if (service == "KeSetEvent" || service == "KeResetEvent")
+        {
+            events_[ctx.r3.u32] = service == "KeSetEvent";
+            ctx.r3.u32 = 0;
+            return;
+        }
+        if (service == "KeSetBasePriorityThread" ||
+            service == "ExRegisterTitleTerminateNotification" ||
+            service == "KiApcNormalRoutineNop")
+        {
+            ctx.r3.u32 = 0;
+            return;
+        }
         if (service == "NtCreateFile")
         {
             std::string path;
@@ -1291,9 +1327,25 @@ private:
         {
             PPCContext threadContext{};
             threadContext.r1.u32 = 0x70000000u - ((threadId & 0xFFu) * 0x10000u);
-            threadContext.r3.u32 = startAddress;
-            threadContext.r4.u32 = startContext;
-            PPCDispatchIndirect(threadContext, base, startupAddress);
+            if (startupAddress != 0)
+            {
+                // XAPI startup trampoline: r3/r4 carry the requested entry
+                // point and its context.
+                threadContext.r3.u32 = startAddress;
+                threadContext.r4.u32 = startContext;
+                PPCDispatchIndirect(threadContext, base, startupAddress);
+            }
+            else
+            {
+                // The startup callback is optional on Xenon.  Kernel and
+                // graphics worker threads use the entry point directly and
+                // receive their context in r3.
+                threadContext.r3.u32 = startContext;
+                if (std::getenv("XERENGE_PPC_TRACE") != nullptr)
+                    std::cerr << "direct guest thread entry=0x" << std::hex << startAddress
+                              << " context=0x" << startContext << std::dec << '\n';
+                PPCDispatchIndirect(threadContext, base, startAddress);
+            }
         }).detach();
     }
 
@@ -1390,6 +1442,7 @@ private:
     static constexpr uint32_t kVtableBase = 0x81000000u;
     std::unordered_map<uint32_t, uint32_t> allocations_;
     std::unordered_map<uint32_t, uint32_t> objects_;
+    std::unordered_map<uint32_t, bool> events_;
     bool vtableAllocated_ = false;
     std::array<uint32_t, 64> tlsSlots_{};
     std::array<bool, 64> tlsUsed_{};
