@@ -12,6 +12,7 @@
 #include <fstream>
 #include <iomanip>
 #include <iostream>
+#include <mutex>
 #include <optional>
 #include <string_view>
 #include <string>
@@ -207,6 +208,36 @@ extern "C" void PPCTraceStore(uint32_t address, uint32_t value, uint64_t lr)
 extern "C" void PPCTraceFunction(uint32_t address, PPCContext& ctx, uint8_t* base)
 {
     const uint64_t callCount = gPpcFunctionCalls.fetch_add(1, std::memory_order_relaxed) + 1;
+    if (address == 0x82355500u && ctx.r3.u32 != 0)
+    {
+        // CGtResourceManager::Update derives a bucket descriptor from the
+        // manager object and divides by its configured bucket size.  The
+        // title creates this object through an Xbox virtual callback before
+        // the callback table is fully materialized in the current bring-up;
+        // keep the guest on the resource loading path while that table is
+        // being completed instead of executing a native divide-by-zero.
+        const auto loadGuest = [base](uint32_t address) {
+            uint32_t value = 0;
+            std::memcpy(&value, base + address, sizeof(value));
+            return __builtin_bswap32(value);
+        };
+        const uint32_t list = loadGuest(ctx.r3.u32 + 16384);
+        const uint32_t slotCount = loadGuest(ctx.r3.u32 + 16388);
+        if (list != ctx.r3.u32 && slotCount != 0)
+        {
+            const uint32_t descriptor = ctx.r3.u32 + ((slotCount << 5) & 0xFFFFFFE0u) +
+                (__builtin_rotateleft32(list - ctx.r3.u32, 1) - 1u);
+            const uint32_t bucketSize = loadGuest(descriptor + 16476);
+            if (bucketSize == 0)
+            {
+                const uint32_t encoded = __builtin_bswap32(1u);
+                std::memcpy(base + descriptor + 16476, &encoded, sizeof(encoded));
+                if (std::getenv("XERENGE_PPC_TRACE") != nullptr)
+                    std::cerr << "resource manager repaired zero bucket size at 0x"
+                              << std::hex << descriptor + 16476 << std::dec << '\n';
+            }
+        }
+    }
     if (gPpcTraceEnabled.load(std::memory_order_relaxed) && (callCount % 10000) == 0)
     {
         std::cerr << "guest function calls=" << callCount << " current=0x"
@@ -509,6 +540,7 @@ class XboxServiceLayer
 public:
     void invoke(std::string_view service, PPCContext& ctx, uint8_t* base)
     {
+        std::lock_guard lock(stateMutex_);
         ++gPpcServiceCalls;
         if (service.compare(0, 7, "__imp__") == 0)
             service.remove_prefix(7);
@@ -1143,6 +1175,7 @@ public:
 
     bool invokeCallback(uint32_t address, PPCContext& ctx)
     {
+        std::lock_guard lock(stateMutex_);
         if (address < kVtableBase || address >= kVtableBase + 0x220)
             return false;
 
@@ -1176,6 +1209,7 @@ public:
 
     uint32_t materializeNullObject(PPCContext& ctx, uint8_t* base)
     {
+        std::lock_guard lock(stateMutex_);
         const uint32_t slot = ctx.r3.u32;
         if (slot < 0x82000000u || slot >= 0x90000000u)
             return createObject(base);
@@ -1190,6 +1224,7 @@ public:
 
     uint32_t materializeGlobalObject(uint32_t slot, uint8_t* base)
     {
+        std::lock_guard lock(stateMutex_);
         const uint32_t existing = loadU32(base, slot);
         if (existing != 0)
             return existing;
@@ -1203,6 +1238,7 @@ public:
 
     uint32_t allocateGuest(uint32_t size, uint8_t* base)
     {
+        std::lock_guard lock(stateMutex_);
         return allocate(std::max<uint32_t>(size, 0x1000u), base);
     }
 
@@ -1334,6 +1370,7 @@ private:
     std::array<uint32_t, 64> tlsSlots_{};
     std::array<bool, 64> tlsUsed_{};
     std::atomic<uint32_t> nextThreadId_{1};
+    std::recursive_mutex stateMutex_;
 };
 
 XboxServiceLayer gXboxServices;
