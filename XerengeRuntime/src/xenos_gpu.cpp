@@ -412,6 +412,12 @@ void XenosGpu::rasterizeDraw(uint8_t* guestBase, uint32_t initiator)
         }
         const uint32_t textureWidth = (texture2 & 0x1FFFu) + 1u;
         const uint32_t textureHeight = ((texture2 >> 13) & 0x1FFFu) + 1u;
+        // The fetch constant stores pitch in 32-pixel units.  It is the
+        // storage pitch, not the visible width; using width here reads the
+        // wrong macro tile for small textures and becomes especially visible
+        // with 1x1 UI resources.
+        const uint32_t texturePitchPixels = std::max(32u,
+            ((texture0 >> 22) & 0x1FFu) << 5);
         if ((hasDxt3Texture || hasRgba8Texture) &&
             std::getenv("XERENGE_XENOS_TEXTURE_TRACE") != nullptr)
             std::cerr << "Xenos texture tf0 base=0x" << std::hex
@@ -438,8 +444,8 @@ void XenosGpu::rasterizeDraw(uint8_t* guestBase, uint32_t initiator)
                 std::cerr << "Xenos alpha-test threshold=" << alphaThreshold
                           << " shared=0x" << std::hex << sharedBase << std::dec << '\n';
         }
-        const uint32_t texturePitchBlocks = std::max(32u,
-            ((textureWidth + 3u) / 4u + 31u) & ~31u);
+        const uint32_t texturePitchBlocks = std::max(8u,
+            ((texturePitchPixels + 3u) / 4u + 7u) & ~7u);
         const uint32_t textureBase = gpuPhysicalToGuest(
             ((texture1 >> 12) & 0xFFFFFu) << 12);
         auto textureAddress = [&](uint32_t x, uint32_t y,
@@ -471,7 +477,7 @@ void XenosGpu::rasterizeDraw(uint8_t* guestBase, uint32_t initiator)
             const uint32_t blockX = hasDxt3Texture ? x / 4u : x;
             const uint32_t blockY = hasDxt3Texture ? y / 4u : y;
             const uint32_t address = textureAddress(blockX, blockY,
-                hasDxt3Texture ? texturePitchBlocks : textureWidth,
+                hasDxt3Texture ? texturePitchBlocks : texturePitchPixels,
                 hasDxt3Texture ? 4u : 2u);
             if (hasRgba8Texture)
             {
