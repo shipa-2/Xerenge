@@ -64,6 +64,16 @@ bool XenosGpu::presentFromGuest(uint8_t* guestBase, uint32_t guestAddress,
     // a title-provided frontbuffer observable without fabricating pixels.
     framebuffer_.resize(byteCount);
     std::memcpy(framebuffer_.data(), guestBase + guestAddress, byteCount);
+    if (std::getenv("XERENGE_FRAMEBUFFER_TRACE") != nullptr)
+    {
+        size_t nonzeroRgbPixels = 0;
+        for (size_t i = 0; i + 3 < framebuffer_.size(); i += 4)
+            nonzeroRgbPixels += (framebuffer_[i] | framebuffer_[i + 1] |
+                framebuffer_[i + 2]) != 0;
+        std::cerr << "Xenos frontbuffer guest=0x" << std::hex << guestAddress
+                  << " bytes=" << std::dec << byteCount
+                  << " nonzeroRgbPixels=" << nonzeroRgbPixels << '\n';
+    }
     for (size_t i = 0; i < framebuffer_.size(); i += 4)
         framebuffer_[i + 3] = 255;
     lastFrameWidth_ = width;
