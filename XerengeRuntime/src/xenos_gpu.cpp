@@ -462,6 +462,8 @@ void XenosGpu::processBuffer(uint8_t* guestBase, uint32_t guestAddress,
                               << gpuRegisters_[0x2000]
                               << " color=0x" << gpuRegisters_[0x2001]
                               << " mask=0x" << gpuRegisters_[0x2104]
+                              << " mode=0x" << gpuRegisters_[0x2208]
+                              << " depth=0x" << gpuRegisters_[0x2200]
                               << " initiator=0x" << initiator
                               << " prim=" << (initiator & 0x3Fu)
                               << " source=" << ((initiator >> 6) & 0x3u)
@@ -697,6 +699,8 @@ void XenosGpu::processRing(uint8_t* guestBase)
                               << gpuRegisters_[0x2000]
                               << " color=0x" << gpuRegisters_[0x2001]
                               << " mask=0x" << gpuRegisters_[0x2104]
+                              << " mode=0x" << gpuRegisters_[0x2208]
+                              << " depth=0x" << gpuRegisters_[0x2200]
                               << " initiator=0x" << initiator
                               << " prim=" << (initiator & 0x3Fu)
                               << " source=" << ((initiator >> 6) & 0x3u)
