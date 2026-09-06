@@ -313,7 +313,10 @@ void XenosGpu::processBuffer(uint8_t* guestBase, uint32_t guestAddress,
                                   << (match != nullptr ? "hit" : "miss")
                                   << " hash=0x" << std::hex << hash
                                   << " stage=" << shaderType
-                                  << " bytes=" << std::dec << byteSize << '\n';
+                                  << " bytes=" << std::dec << byteSize;
+                        if (match != nullptr)
+                            std::cerr << " compiled=0x" << std::hex << match->shaderHash;
+                        std::cerr << std::dec << '\n';
                 }
             }
             if (opcode == 0x46u && length >= 2 && offset + 1 < dwordCount)
