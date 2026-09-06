@@ -285,6 +285,32 @@ void XenosGpu::processBuffer(uint8_t* guestBase, uint32_t guestAddress,
                                 loadGuestBE(guestBase, guestAddress + (offset + 1 + i) * 4));
                 }
             }
+            if (opcode == 0x2Fu && length >= 4 && offset + 3 < dwordCount)
+            {
+                // PM4_LOAD_ALU_CONSTANT: physical source address, typed
+                // destination register, and dword count.
+                const uint32_t physicalAddress = loadGuestBE(
+                    guestBase, guestAddress + (offset + 1) * 4) & 0x3FFFFFFFu;
+                const uint32_t offsetType = loadGuestBE(
+                    guestBase, guestAddress + (offset + 2) * 4);
+                const uint32_t sizeDwords = loadGuestBE(
+                    guestBase, guestAddress + (offset + 3) * 4) & 0xFFFu;
+                uint32_t index = offsetType & 0x7FFu;
+                switch ((offsetType >> 16) & 0xFFu)
+                {
+                case 0: index += 0x4000; break;
+                case 1: index += 0x4800; break;
+                case 2: index += 0x4900; break;
+                case 3: index += 0x4908; break;
+                case 4: index += 0x2000; break;
+                default: index = 0xFFFFFFFFu; break;
+                }
+                const uint32_t source = gpuPhysicalToGuest(physicalAddress);
+                if (index != 0xFFFFFFFFu && sizeDwords <= 0x8000u - index)
+                    for (uint32_t i = 0; i < sizeDwords; ++i)
+                        writeGpuRegister(index + i,
+                            loadGuestBE(guestBase, source + i * 4));
+            }
             if (opcode == 0x2Bu && length >= 3 && offset + 2 < dwordCount &&
                 std::getenv("XERENGE_XENOS_SHADER_TRACE") != nullptr)
             {
@@ -399,6 +425,13 @@ void XenosGpu::processBuffer(uint8_t* guestBase, uint32_t guestAddress,
                         for (uint32_t i = 0; i < 6; ++i)
                             std::cerr << " " << gpuRegisters_[0x4806 + i];
                         std::cerr << std::dec << '\n';
+                        if (std::getenv("XERENGE_XENOS_CONSTANT_TRACE") != nullptr)
+                        {
+                            std::cerr << "Xenos vs constants:" << std::hex;
+                            for (uint32_t i = 0; i < 24; ++i)
+                                std::cerr << " " << gpuRegisters_[0x4000 + i];
+                            std::cerr << std::dec << '\n';
+                        }
                         const uint32_t fetch0 = gpuRegisters_[0x4800];
                         const uint32_t fetch1 = gpuRegisters_[0x4801];
                         if ((fetch0 & 0x3u) == 3u)
@@ -547,6 +580,30 @@ void XenosGpu::processRing(uint8_t* guestBase)
                                     ringBase_ + (readPointer_ + 1 + i) * 4));
                 }
             }
+            if (opcode == 0x2Fu && length >= 4 && readPointer_ + 3 < target)
+            {
+                const uint32_t physicalAddress = loadGuestBE(guestBase,
+                    ringBase_ + (readPointer_ + 1) * 4) & 0x3FFFFFFFu;
+                const uint32_t offsetType = loadGuestBE(guestBase,
+                    ringBase_ + (readPointer_ + 2) * 4);
+                const uint32_t sizeDwords = loadGuestBE(guestBase,
+                    ringBase_ + (readPointer_ + 3) * 4) & 0xFFFu;
+                uint32_t index = offsetType & 0x7FFu;
+                switch ((offsetType >> 16) & 0xFFu)
+                {
+                case 0: index += 0x4000; break;
+                case 1: index += 0x4800; break;
+                case 2: index += 0x4900; break;
+                case 3: index += 0x4908; break;
+                case 4: index += 0x2000; break;
+                default: index = 0xFFFFFFFFu; break;
+                }
+                const uint32_t source = gpuPhysicalToGuest(physicalAddress);
+                if (index != 0xFFFFFFFFu && sizeDwords <= 0x8000u - index)
+                    for (uint32_t i = 0; i < sizeDwords; ++i)
+                        writeGpuRegister(index + i,
+                            loadGuestBE(guestBase, source + i * 4));
+            }
             if (opcode == 0x46u && length >= 2 && readPointer_ + 1 < target)
             {
                 const uint32_t event = loadGuestBE(guestBase,
@@ -603,6 +660,13 @@ void XenosGpu::processRing(uint8_t* guestBase)
                         for (uint32_t i = 0; i < 6; ++i)
                             std::cerr << " " << gpuRegisters_[0x4806 + i];
                         std::cerr << std::dec << '\n';
+                        if (std::getenv("XERENGE_XENOS_CONSTANT_TRACE") != nullptr)
+                        {
+                            std::cerr << "Xenos vs constants:" << std::hex;
+                            for (uint32_t i = 0; i < 24; ++i)
+                                std::cerr << " " << gpuRegisters_[0x4000 + i];
+                            std::cerr << std::dec << '\n';
+                        }
                         const uint32_t fetch0 = gpuRegisters_[0x4800];
                         const uint32_t fetch1 = gpuRegisters_[0x4801];
                         if ((fetch0 & 0x3u) == 3u)
