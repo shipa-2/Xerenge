@@ -348,7 +348,7 @@ void XenosGpu::rasterizeDraw(uint8_t* guestBase, uint32_t initiator)
         std::memcpy(edram_.data() + pixel, color, sizeof(color));
     }
 
-    if (primitive == 8u && drawVertices == 3u)
+        if (primitive == 8u && drawVertices == 3u)
     {
         const float minX = std::min({triangle[0].position[0], triangle[1].position[0], triangle[2].position[0]});
         const float maxX = std::max({triangle[0].position[0], triangle[1].position[0], triangle[2].position[0]});
@@ -365,6 +365,12 @@ void XenosGpu::rasterizeDraw(uint8_t* guestBase, uint32_t initiator)
         const uint32_t texture2 = gpuRegisters_[0x4802u];
         const bool hasDxt3Texture = (texture0 & 0x3u) == 2u &&
             (texture1 & 0x3Fu) == 19u;
+        if (!hasDxt3Texture && !havePixelConstant)
+        {
+            if (std::getenv("XERENGE_XENOS_DRAW_TRACE") != nullptr)
+                std::cerr << "Xenos rectangle skipped: unsupported pixel resource\n";
+            return;
+        }
         const uint32_t textureWidth = (texture2 & 0x1FFFu) + 1u;
         const uint32_t textureHeight = ((texture2 >> 13) & 0x1FFFu) + 1u;
         if (hasDxt3Texture && std::getenv("XERENGE_XENOS_TEXTURE_TRACE") != nullptr)
