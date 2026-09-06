@@ -4,6 +4,7 @@
 #include <array>
 #include <cstdint>
 #include <fstream>
+#include <iomanip>
 #include <iostream>
 #include <optional>
 #include <string>
@@ -14,9 +15,35 @@ namespace
 struct XexInfo
 {
     uint64_t size = 0;
+    uint32_t moduleFlags = 0;
+    uint32_t headerSize = 0;
+    uint32_t securityOffset = 0;
+    uint32_t headerCount = 0;
+    uint32_t securityHeaderSize = 0;
+    uint32_t imageSize = 0;
+    uint32_t imageFlags = 0;
+    uint32_t loadAddress = 0;
 };
 
-std::optional<XexInfo> validateXex(const std::string& path)
+uint32_t readBE32(const std::array<char, 4>& bytes)
+{
+    return (static_cast<uint32_t>(static_cast<unsigned char>(bytes[0])) << 24) |
+        (static_cast<uint32_t>(static_cast<unsigned char>(bytes[1])) << 16) |
+        (static_cast<uint32_t>(static_cast<unsigned char>(bytes[2])) << 8) |
+        static_cast<uint32_t>(static_cast<unsigned char>(bytes[3]));
+}
+
+bool readBE32(std::ifstream& input, uint32_t& value)
+{
+    std::array<char, 4> bytes{};
+    input.read(bytes.data(), bytes.size());
+    if (input.gcount() != static_cast<std::streamsize>(bytes.size()))
+        return false;
+    value = readBE32(bytes);
+    return true;
+}
+
+std::optional<XexInfo> inspectXex(const std::string& path)
 {
     std::ifstream input(path, std::ios::binary | std::ios::ate);
     if (!input)
@@ -32,6 +59,7 @@ std::optional<XexInfo> validateXex(const std::string& path)
         return std::nullopt;
     }
 
+    const uint64_t fileSize = static_cast<uint64_t>(end);
     input.seekg(0);
     std::array<char, 4> magic{};
     input.read(magic.data(), magic.size());
@@ -41,7 +69,50 @@ std::optional<XexInfo> validateXex(const std::string& path)
         return std::nullopt;
     }
 
-    return XexInfo{static_cast<uint64_t>(end)};
+    XexInfo info{};
+    uint32_t reserved = 0;
+    info.size = fileSize;
+    if (!readBE32(input, info.moduleFlags) || !readBE32(input, info.headerSize) ||
+        !readBE32(input, reserved) ||
+        !readBE32(input, info.securityOffset) || !readBE32(input, info.headerCount))
+    {
+        std::cerr << "truncated XEX2 header: " << path << '\n';
+        return std::nullopt;
+    }
+
+    if (info.headerSize < 0x18 || info.headerSize > fileSize ||
+        info.securityOffset > fileSize - 4 || info.securityOffset + 0x114 > fileSize)
+    {
+        std::cerr << "invalid XEX2 header bounds: " << path << '\n';
+        return std::nullopt;
+    }
+
+    input.seekg(info.securityOffset);
+    if (!readBE32(input, info.securityHeaderSize) || !readBE32(input, info.imageSize))
+    {
+        std::cerr << "truncated XEX2 security header: " << path << '\n';
+        return std::nullopt;
+    }
+    input.seekg(info.securityOffset + 0x10c);
+    if (!readBE32(input, info.imageFlags) || !readBE32(input, info.loadAddress))
+    {
+        std::cerr << "truncated XEX2 security flags: " << path << '\n';
+        return std::nullopt;
+    }
+
+    return info;
+}
+
+void printXexInfo(const XexInfo& info)
+{
+    std::cout << "XEX2 image: " << info.size << " bytes\n"
+              << "  module flags: 0x" << std::hex << info.moduleFlags << '\n'
+              << "  header size: 0x" << info.headerSize << '\n'
+              << "  security offset: 0x" << info.securityOffset << '\n'
+              << "  optional headers: " << std::dec << info.headerCount << '\n'
+              << "  image size: 0x" << std::hex << info.imageSize << '\n'
+              << "  image flags: 0x" << info.imageFlags << '\n'
+              << "  load address: 0x" << info.loadAddress << std::dec << '\n';
 }
 
 bool initializeVulkan(VkInstance& instance, VkPhysicalDevice& physicalDevice)
@@ -93,7 +164,7 @@ bool initializeVulkan(VkInstance& instance, VkPhysicalDevice& physicalDevice)
 
 int main(int argc, char** argv)
 {
-    if (argc > 1 && std::string(argv[1]) == "--validate")
+    if (argc > 1 && (std::string(argv[1]) == "--validate" || std::string(argv[1]) == "--inspect"))
     {
         if (argc != 3)
         {
@@ -101,11 +172,14 @@ int main(int argc, char** argv)
             return 2;
         }
 
-        const auto info = validateXex(argv[2]);
+        const auto info = inspectXex(argv[2]);
         if (!info)
             return 1;
 
-        std::cout << "valid XEX2 image: " << info->size << " bytes\n";
+        if (std::string(argv[1]) == "--inspect")
+            printXexInfo(*info);
+        else
+            std::cout << "valid XEX2 image: " << info->size << " bytes\n";
         return 0;
     }
 
@@ -119,7 +193,7 @@ int main(int argc, char** argv)
     if (argc == 2)
     {
         xexPath = argv[1];
-        if (!validateXex(xexPath))
+        if (!inspectXex(xexPath))
             return 1;
     }
 

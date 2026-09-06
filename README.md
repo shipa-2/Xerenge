@@ -22,4 +22,8 @@ cmake -S XerengeRuntime -B build-runtime
 cmake --build build-runtime
 ctest --test-dir build-runtime --output-on-failure
 ./build-runtime/xerenge-runtime path/to/game.xex
+./build-runtime/xerenge-runtime --inspect path/to/game.xex
 ```
+
+`--inspect` currently reads the XEX2 header and security metadata. It does not
+decrypt or execute the image yet; those are the next loader stages.
