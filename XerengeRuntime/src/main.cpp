@@ -130,27 +130,63 @@ public:
                       << image.entryPoint << std::dec << '\n';
             return false;
         }
+        initializeLoaderState();
         return true;
     }
 
     size_t functionCount() const { return functionCount_; }
     bool hasEntryPoint() const { return entryPoint_ != nullptr; }
 
+    void invokeEntryPoint()
+    {
+        context_ = PPCContext{};
+        context_.r1.u64 = 0x70000000u;
+        entryPoint_(context_, base_);
+    }
+
 private:
+    void storeGuestU32(uint32_t address, uint32_t value)
+    {
+        const uint32_t bigEndianValue = __builtin_bswap32(value);
+        std::memcpy(base_ + address, &bigEndianValue, sizeof(bigEndianValue));
+    }
+
+    void initializeLoaderState()
+    {
+        // The XEX loader normally creates this callback-list sentinel before
+        // transferring control to _xstart.  It belongs to BSS, so it is absent
+        // from the PE image and must be initialized by the host runtime.
+        constexpr uint32_t kLoaderCallbackList = 0x826AFCD4u;
+        storeGuestU32(kLoaderCallbackList, kLoaderCallbackList);
+    }
+
     static constexpr size_t kGuestAddressSpaceSize = size_t{1} << 32;
     uint8_t* base_ = nullptr;
     PPCFunc* entryPoint_ = nullptr;
+    PPCContext context_{};
     size_t functionCount_ = 0;
 };
 #endif
 
 #ifdef XERENGE_HAS_PPC
+uint64_t gPpcServiceCalls = 0;
+
 extern "C" void PPCImportedServiceTrap(const char* service, PPCContext& ctx, uint8_t*)
 {
     // The generated import wrappers arrive here until a service is implemented.
     // Returning STATUS_NOT_IMPLEMENTED keeps the ABI explicit and gives the
     // launcher a deterministic failure instead of an unresolved host symbol.
-    std::cerr << "unimplemented Xbox service invoked: " << service << '\n';
+    ++gPpcServiceCalls;
+    if (gPpcServiceCalls <= 20)
+        std::cerr << "unimplemented Xbox service invoked: " << service << '\n';
+    ctx.r3.u64 = 0xC0000001u;
+}
+
+extern "C" void PPCUnknownIndirectTrap(uint32_t address, PPCContext& ctx, uint8_t*)
+{
+    ++gPpcServiceCalls;
+    if (gPpcServiceCalls <= 20)
+        std::cerr << "unresolved PPC indirect target: 0x" << std::hex << address << std::dec << '\n';
     ctx.r3.u64 = 0xC0000001u;
 }
 #endif
@@ -548,6 +584,7 @@ std::optional<MappedImage> mapPeImage(const std::vector<uint8_t>& image, const X
     const uint32_t entryRva = readLE32(optionalHeader + 16);
     const uint32_t imageBase = readLE32(optionalHeader + 28);
     const uint32_t imageSize = readLE32(optionalHeader + 56);
+    const uint32_t headersSize = readLE32(optionalHeader + 60);
     if (imageSize == 0 || entryRva >= imageSize)
     {
         std::cerr << "invalid PE image size or entry point\n";
@@ -567,7 +604,12 @@ std::optional<MappedImage> mapPeImage(const std::vector<uint8_t>& image, const X
     mapped.entryPoint = mapped.base + entryRva;
     mapped.size = imageSize;
     mapped.memory.assign(imageSize, 0);
-    std::copy(image.begin(), image.begin() + std::min<size_t>(image.size(), imageSize), mapped.memory.begin());
+    if (headersSize > image.size() || headersSize > mapped.memory.size())
+    {
+        std::cerr << "PE headers exceed decoded or mapped image\n";
+        return std::nullopt;
+    }
+    std::copy_n(image.begin(), headersSize, mapped.memory.begin());
 
     for (uint16_t i = 0; i < sectionCount; ++i)
     {
@@ -575,6 +617,7 @@ std::optional<MappedImage> mapPeImage(const std::vector<uint8_t>& image, const X
         const uint32_t virtualSize = readLE32(section + 8);
         const uint32_t virtualAddress = readLE32(section + 12);
         const uint32_t rawSize = readLE32(section + 16);
+        const uint32_t rawOffset = readLE32(section + 20);
         const uint32_t characteristics = readLE32(section + 36);
         const uint32_t mappedSize = std::max(virtualSize, rawSize);
         if (virtualAddress > imageSize || mappedSize > imageSize - virtualAddress)
@@ -582,6 +625,12 @@ std::optional<MappedImage> mapPeImage(const std::vector<uint8_t>& image, const X
             std::cerr << "PE section exceeds guest image: " << i << '\n';
             return std::nullopt;
         }
+        if (rawOffset > image.size() || rawSize > image.size() - rawOffset)
+        {
+            std::cerr << "PE section raw data exceeds decoded image: " << i << '\n';
+            return std::nullopt;
+        }
+        std::copy_n(image.begin() + rawOffset, rawSize, mapped.memory.begin() + virtualAddress);
         size_t nameLength = 0;
         while (nameLength < 8 && section[nameLength] != '\0')
             ++nameLength;
@@ -761,11 +810,11 @@ int main(int argc, char** argv)
         return info && mapAndPrintImage(argv[2], *info) ? 0 : 1;
     }
 
-    if (argc > 1 && std::string(argv[1]) == "--ppc-prepare")
+    if (argc > 1 && (std::string(argv[1]) == "--ppc-prepare" || std::string(argv[1]) == "--ppc-entry"))
     {
         if (argc != 3)
         {
-            std::cerr << "usage: xerenge-runtime --ppc-prepare <file.xex>\n";
+            std::cerr << "usage: xerenge-runtime --ppc-prepare|--ppc-entry <file.xex>\n";
             return 2;
         }
 #ifdef XERENGE_HAS_PPC
@@ -781,6 +830,13 @@ int main(int argc, char** argv)
             return 1;
         std::cout << "prepared PPC guest memory: 4 GiB reservation, "
                   << guest.functionCount() << " function mappings, entry point resolved\n";
+        if (std::string(argv[1]) == "--ppc-entry")
+        {
+            gPpcServiceCalls = 0;
+            guest.invokeEntryPoint();
+            std::cout << "PPC entry point returned after " << gPpcServiceCalls
+                      << " service calls\n";
+        }
         return 0;
 #else
         std::cerr << "PPC module was not enabled; configure with -DXERENGE_PPC_DIRECTORY=<generated PPC directory>\n";
