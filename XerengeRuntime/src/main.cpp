@@ -862,7 +862,7 @@ public:
             // and graphics workers otherwise starve the title's main thread
             // at the host lock even though the guest wait is only a timeout.
             lock.unlock();
-            std::this_thread::sleep_for(std::chrono::microseconds(100));
+            std::this_thread::sleep_for(std::chrono::milliseconds(1));
             if (std::getenv("XERENGE_PPC_TRACE") != nullptr)
             {
                 static std::atomic<uint32_t> waitTraceCount = 0;
@@ -1001,7 +1001,7 @@ public:
             // immediately makes the worker consume the entire host core and
             // starves the guest thread that advances the game state.
             lock.unlock();
-            std::this_thread::sleep_for(std::chrono::microseconds(100));
+            std::this_thread::sleep_for(std::chrono::milliseconds(1));
             ctx.r3.u32 = 0;
             return;
         }
@@ -1786,6 +1786,24 @@ extern "C" void PPCUnknownIndirectTrap(uint32_t address, PPCContext& ctx, uint8_
         ctx.r31.u32 = ctx.r30.u32;
         ctx.r3.u32 = 0;
         return;
+    }
+    if (ctx.lr == 0x82095B04u && ctx.r3.u32 == 0)
+    {
+        // sub_82095AEC invokes the title's resource object through the slot
+        // at r24+3852.  On the retail path that slot is populated by an
+        // earlier platform constructor; the first worker can reach the call
+        // before the constructor has supplied its vtable.  The resulting
+        // null vtable read turns bytes at guest address zero into targets
+        // such as 0x2d0. Materialize the object in the actual slot so later
+        // calls use the normal synthetic vtable dispatch.
+        const uint32_t slot = ctx.r24.u32 + 3852u;
+        if (ctx.r24.u32 >= 0x60000000u && slot >= ctx.r24.u32)
+        {
+            PPCContext objectContext = ctx;
+            objectContext.r3.u32 = slot;
+            ctx.r3.u32 = gXboxServices.materializeNullObject(objectContext, base);
+            return;
+        }
     }
     if (address != 0 && ctx.r3.u32 >= 0x82000000u && ctx.r3.u32 < 0x90000000u)
     {

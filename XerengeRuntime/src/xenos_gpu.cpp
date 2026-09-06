@@ -146,13 +146,13 @@ void XenosGpu::rememberVertexFetchStrides(const uint32_t* code, uint32_t dwordCo
 
 void XenosGpu::rasterizeDraw(uint8_t* guestBase, uint32_t initiator)
 {
-    // The first Burnout command stream uses auto-indexed point draws for its
-    // bootstrap/UI geometry. Resolve draws use primitive 8 and RB_COPY_CONTROL
-    // is nonzero, so they must not enter this path.
+    // Burnout uses auto-indexed point draws during bootstrap and three-vertex
+    // primitive-8 draws for the first render-target geometry. Copy packets
+    // remain separate from this raster path.
     const uint32_t primitive = initiator & 0x3Fu;
     const uint32_t source = (initiator >> 6) & 0x3u;
     const uint32_t count = initiator >> 16;
-    if (primitive != 1u || source != 2u || count == 0 ||
+    if ((primitive != 1u && primitive != 8u) || source != 2u || count == 0 ||
         gpuRegisters_[0x2318] != 0 || gpuRegisters_[0x2104] == 0)
         return;
 
@@ -171,7 +171,8 @@ void XenosGpu::rasterizeDraw(uint8_t* guestBase, uint32_t initiator)
     uint32_t strideWords = vertexFetchStrideWords_[0];
     if (strideWords == 0u)
         strideWords = (fetch1 >> 2) & 0xFFFFFFu;
-    if (strideWords < 3 || strideWords > 0x1000)
+    const uint32_t minimumStride = primitive == 8u ? 2u : 3u;
+    if (strideWords < minimumStride || strideWords > 0x1000)
         return;
 
     constexpr uint32_t width = 1280;
@@ -180,6 +181,21 @@ void XenosGpu::rasterizeDraw(uint8_t* guestBase, uint32_t initiator)
         edram_.assign(size_t(width) * height * 4, 0);
 
     const uint32_t firstIndex = gpuRegisters_[0x2102] & 0x00FFFFFFu;
+    const uint32_t drawVertices = primitive == 8u ? std::min(count, 3u) : count;
+    std::array<std::array<float, 3>, 3> triangle{};
+    std::array<uint8_t, 4> drawColor{255, 255, 255, 255};
+    bool havePixelConstant = false;
+    for (uint32_t component = 0; component < 4; ++component)
+    {
+        const uint32_t raw = gpuRegisters_[0x4940u + component];
+        float value = 0.0f;
+        std::memcpy(&value, &raw, sizeof(value));
+        if (std::isfinite(value) && std::abs(value) > 0.0001f)
+            havePixelConstant = true;
+        if (std::isfinite(value))
+            drawColor[component] = static_cast<uint8_t>(
+                std::clamp(value, 0.0f, 1.0f) * 255.0f);
+    }
     for (uint32_t i = 0; i < count; ++i)
     {
         const uint32_t address = vertexAddress +
@@ -197,6 +213,11 @@ void XenosGpu::rasterizeDraw(uint8_t* guestBase, uint32_t initiator)
         const float xNdc = position[0];
         const float yNdc = position[1];
         if (xNdc < -1.0f || xNdc > 1.0f || yNdc < -1.0f || yNdc > 1.0f)
+            continue;
+
+        if (primitive == 8u && i < triangle.size())
+            triangle[i] = {xNdc, yNdc, position[2]};
+        if (primitive == 8u)
             continue;
 
         const uint32_t x = std::min(width - 1,
@@ -218,6 +239,45 @@ void XenosGpu::rasterizeDraw(uint8_t* guestBase, uint32_t initiator)
                 color[component] = static_cast<uint8_t>(std::clamp(value, 0.0f, 1.0f) * 255.0f);
         }
         std::memcpy(edram_.data() + pixel, color, sizeof(color));
+    }
+
+    if (primitive == 8u && drawVertices == 3u)
+    {
+        const float minX = std::min({triangle[0][0], triangle[1][0], triangle[2][0]});
+        const float maxX = std::max({triangle[0][0], triangle[1][0], triangle[2][0]});
+        const float minY = std::min({triangle[0][1], triangle[1][1], triangle[2][1]});
+        const float maxY = std::max({triangle[0][1], triangle[1][1], triangle[2][1]});
+        const int left = std::max(0, static_cast<int>((minX * 0.5f + 0.5f) * width));
+        const int right = std::min(static_cast<int>(width) - 1,
+            static_cast<int>((maxX * 0.5f + 0.5f) * width));
+        const int top = std::max(0, static_cast<int>((1.0f - (maxY * 0.5f + 0.5f)) * height));
+        const int bottom = std::min(static_cast<int>(height) - 1,
+            static_cast<int>((1.0f - (minY * 0.5f + 0.5f)) * height));
+        const float ax = triangle[0][0], ay = triangle[0][1];
+        const float bx = triangle[1][0], by = triangle[1][1];
+        const float cx = triangle[2][0], cy = triangle[2][1];
+        const float area = (bx - ax) * (cy - ay) - (by - ay) * (cx - ax);
+        if (area != 0.0f)
+        {
+            for (int y = top; y <= bottom; ++y)
+                for (int x = left; x <= right; ++x)
+                {
+                    const float px = (static_cast<float>(x) + 0.5f) / width * 2.0f - 1.0f;
+                    const float py = 1.0f - (static_cast<float>(y) + 0.5f) / height * 2.0f;
+                    const float w0 = ((bx - px) * (cy - py) - (by - py) * (cx - px)) / area;
+                    const float w1 = ((cx - px) * (ay - py) - (cy - py) * (ax - px)) / area;
+                    const float w2 = 1.0f - w0 - w1;
+                    if (w0 >= 0.0f && w1 >= 0.0f && w2 >= 0.0f)
+                        std::memcpy(edram_.data() + (size_t(y) * width + x) * 4,
+                            drawColor.data(), drawColor.size());
+                }
+        }
+        if (std::getenv("XERENGE_XENOS_DRAW_TRACE") != nullptr)
+            std::cerr << "Xenos triangle rasterized v0=" << triangle[0][0] << ','
+                      << triangle[0][1] << " v1=" << triangle[1][0] << ','
+                      << triangle[1][1] << " v2=" << triangle[2][0] << ','
+                      << triangle[2][1] << " pixelConstant="
+                      << (havePixelConstant ? "yes" : "fallback") << '\n';
     }
 }
 
