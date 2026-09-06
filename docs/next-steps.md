@@ -26,27 +26,34 @@ stay local.
   `xboxkrnl.exe`, including their 449 imported ordinals.
 - A runtime service table now creates 449 explicit diagnostic trap bindings for
   those import descriptors.
+- `XenonRecomp-xerenge` now builds with GCC, and the Burnout configuration has
+  generated 67 PPC C++ translation units locally. Generated translation units
+  remain excluded from publication.
 
 ## Execution order
 
 1. Parse the PE import table and XEX import libraries, then bind kernel/XAM
    stubs into a runtime service table.
-2. Keep the two tool forks buildable from clean clones and record the exact
+2. Implement the missing PPC/VMX instruction families reported by the generated
+   Burnout translation: `vnor`, `frsqrte`, `bso/bns`, and the listed VMX pack and
+   shift operations. Add focused instruction tests before attempting entry-point
+   execution.
+3. Keep the two tool forks buildable from clean clones and record the exact
    upstream commit they are based on.
-3. Add a small fixture format or synthetic container generator that contains no
+4. Add a small fixture format or synthetic container generator that contains no
    game data. Use it to test container bounds checks, stage detection, metadata
    normalization, and duplicate shader handling in CI.
-4. Add differential checks for vertex declarations, interpolator mappings,
+5. Add differential checks for vertex declarations, interpolator mappings,
    sampler registers, constant registers, and export registers. The current
    fallback mappings make compilation robust; these checks will identify cases
    that still need exact metadata interpretation.
-5. Validate generated DXIL and SPIR-V against a native rendering harness using
+6. Validate generated DXIL and SPIR-V against a native rendering harness using
    captured constant, texture, vertex, and framebuffer inputs. Compilation
    success alone does not establish visual correctness.
-6. Replace compatibility fallbacks with exact legacy metadata decoding as the
+7. Replace compatibility fallbacks with exact legacy metadata decoding as the
    harness exposes mismatches. Keep each change isolated and attach a small
    source-only regression fixture.
-7. Add CI for clean CMake builds, the source-only fixtures, and a repository
+8. Add CI for clean CMake builds, the source-only fixtures, and a repository
    audit that rejects game data and generated shader caches.
 
 ## Publication boundary
