@@ -222,6 +222,10 @@ void XenosGpu::processBuffer(uint8_t* guestBase, uint32_t guestAddress,
                               << " vsConst=0x" << gpuRegisters_[0x2307]
                               << " psConst=0x" << gpuRegisters_[0x2308]
                               << " copyBase=0x" << gpuRegisters_[0x2319]
+                              << " copyCtl=0x" << gpuRegisters_[0x2318]
+                              << " copyPitch=0x" << gpuRegisters_[0x231A]
+                              << " copyInfo=0x" << gpuRegisters_[0x231B]
+                              << " clear=0x" << gpuRegisters_[0x231E]
                               << std::dec << '\n';
                 }
             }
@@ -374,6 +378,10 @@ void XenosGpu::processRing(uint8_t* guestBase)
                               << " vsConst=0x" << gpuRegisters_[0x2307]
                               << " psConst=0x" << gpuRegisters_[0x2308]
                               << " copyBase=0x" << gpuRegisters_[0x2319]
+                              << " copyCtl=0x" << gpuRegisters_[0x2318]
+                              << " copyPitch=0x" << gpuRegisters_[0x231A]
+                              << " copyInfo=0x" << gpuRegisters_[0x231B]
+                              << " clear=0x" << gpuRegisters_[0x231E]
                               << std::dec << '\n';
                 }
             }
