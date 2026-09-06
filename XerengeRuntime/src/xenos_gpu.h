@@ -56,6 +56,7 @@ private:
     uint64_t activePixelShaderHash_ = 0;
     uint32_t activeVertexShaderDwords_ = 0;
     uint32_t activePixelShaderDwords_ = 0;
+    uint32_t activeVertexFetchConstantIndex_ = 0;
     mutable std::recursive_mutex mutex_;
     std::vector<uint8_t> framebuffer_;
     std::vector<uint8_t> edram_;

@@ -139,8 +139,13 @@ void XenosGpu::rememberVertexFetchStrides(const uint32_t* code, uint32_t dwordCo
         const uint32_t constantIndex =
             (((word0 >> 20) & 0x1Fu) * 3u) + ((word0 >> 25) & 0x3u);
         const uint32_t stride = code[offset + 2] & 0xFFu;
+        const bool isMiniFetch = ((code[offset + 1] >> 30) & 1u) != 0u;
         if (constantIndex < vertexFetchStrideWords_.size() && stride != 0u)
+        {
             vertexFetchStrideWords_[constantIndex] = stride;
+            if (!isMiniFetch)
+                activeVertexFetchConstantIndex_ = constantIndex;
+        }
     }
 }
 
@@ -208,8 +213,13 @@ void XenosGpu::rasterizeDraw(uint8_t* guestBase, uint32_t initiator)
         gpuRegisters_[0x2318] != 0 || gpuRegisters_[0x2104] == 0)
         return;
 
-    const uint32_t fetch0 = gpuRegisters_[0x4800];
-    const uint32_t fetch1 = gpuRegisters_[0x4801];
+    const uint32_t fetchRegister = 0x4800u + activeVertexFetchConstantIndex_ * 2u;
+    const uint32_t fetch0 = gpuRegisters_[fetchRegister];
+    const uint32_t fetch1 = gpuRegisters_[fetchRegister + 1u];
+    if (std::getenv("XERENGE_XENOS_VERTEX_TRACE") != nullptr)
+        std::cerr << "Xenos vertex-fetch slot=" << activeVertexFetchConstantIndex_
+                  << " reg=0x" << std::hex << fetchRegister
+                  << " words=" << fetch0 << ' ' << fetch1 << std::dec << '\n';
     if ((fetch0 & 0x3u) != 3u)
         return;
 
@@ -220,7 +230,7 @@ void XenosGpu::rasterizeDraw(uint8_t* guestBase, uint32_t initiator)
     // bootstrap VS loaded by Burnout uses a seven-dword vertex and its
     // constant therefore remains zero in the register file.  The metadata is
     // populated when an immediate vertex shader is received below.
-    uint32_t strideWords = vertexFetchStrideWords_[0];
+    uint32_t strideWords = vertexFetchStrideWords_[activeVertexFetchConstantIndex_];
     if (strideWords == 0u)
         strideWords = (fetch1 >> 2) & 0xFFFFFFu;
     const uint32_t minimumStride = primitive == 8u ? 2u : 3u;
@@ -605,6 +615,8 @@ void XenosGpu::processBuffer(uint8_t* guestBase, uint32_t guestAddress,
                 opcode == 0x2Eu || opcode == 0x36u)
             {
                 ++drawPacketCount_;
+                if (opcode != 0x36u)
+                    rasterizeDraw(guestBase, gpuRegisters_[0x21FC]);
                 if (std::getenv("XERENGE_XENOS_DRAW_TRACE") != nullptr)
                 {
                     const uint32_t initiator = gpuRegisters_[0x21FC];
@@ -633,12 +645,11 @@ void XenosGpu::processBuffer(uint8_t* guestBase, uint32_t guestAddress,
                               << std::dec << '\n';
                     if (std::getenv("XERENGE_XENOS_FETCH_TRACE") != nullptr)
                     {
+                        const uint32_t fetchDwords =
+                            std::getenv("XERENGE_XENOS_FETCH_FULL") != nullptr ? 96u : 6u;
                         std::cerr << "Xenos fetch0=" << std::hex;
-                        for (uint32_t i = 0; i < 6; ++i)
+                        for (uint32_t i = 0; i < fetchDwords; ++i)
                             std::cerr << " " << gpuRegisters_[0x4800 + i];
-                        std::cerr << " fetch1=";
-                        for (uint32_t i = 0; i < 6; ++i)
-                            std::cerr << " " << gpuRegisters_[0x4806 + i];
                         std::cerr << std::dec << '\n';
                         if (std::getenv("XERENGE_XENOS_CONSTANT_TRACE") != nullptr)
                         {
