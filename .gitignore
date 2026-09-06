@@ -11,3 +11,9 @@ build-debug/
 *.hlsl
 *.dxil
 *.spv
+
+# Nested working clones used for local development
+XenosRecomp/
+XenonRecomp/
+XenonRecomp-next/
+XenonRecompUnlimited/
