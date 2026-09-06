@@ -244,7 +244,12 @@ void XenosGpu::rasterizeDraw(uint8_t* guestBase, uint32_t initiator)
 
     const uint32_t firstIndex = gpuRegisters_[0x2102] & 0x00FFFFFFu;
     const uint32_t drawVertices = primitive == 8u ? std::min(count, 3u) : count;
-    std::array<std::array<float, 3>, 3> triangle{};
+    struct RasterVertex
+    {
+        std::array<float, 3> position{};
+        std::array<float, 2> uv{};
+    };
+    std::array<RasterVertex, 3> triangle{};
     std::array<uint8_t, 4> drawColor{255, 255, 255, 255};
     std::array<uint8_t, 4> constantColor{};
     bool havePixelConstant = false;
@@ -298,8 +303,16 @@ void XenosGpu::rasterizeDraw(uint8_t* guestBase, uint32_t initiator)
         if (xNdc < -1.0f || xNdc > 1.0f || yNdc < -1.0f || yNdc > 1.0f)
             continue;
 
+        std::array<float, 2> uv{};
+        for (uint32_t component = 0; component < 2; ++component)
+        {
+            const uint32_t raw = loadGuestBE(guestBase, address + (4 + component) * 4);
+            std::memcpy(&uv[component], &raw, sizeof(float));
+            if (!std::isfinite(uv[component]))
+                uv[component] = 0.0f;
+        }
         if (primitive == 8u && i < triangle.size())
-            triangle[i] = {xNdc, yNdc, position[2]};
+            triangle[i] = {{xNdc, yNdc, position[2]}, uv};
         if (primitive == 8u)
             continue;
 
@@ -326,19 +339,95 @@ void XenosGpu::rasterizeDraw(uint8_t* guestBase, uint32_t initiator)
 
     if (primitive == 8u && drawVertices == 3u)
     {
-        const float minX = std::min({triangle[0][0], triangle[1][0], triangle[2][0]});
-        const float maxX = std::max({triangle[0][0], triangle[1][0], triangle[2][0]});
-        const float minY = std::min({triangle[0][1], triangle[1][1], triangle[2][1]});
-        const float maxY = std::max({triangle[0][1], triangle[1][1], triangle[2][1]});
+        const float minX = std::min({triangle[0].position[0], triangle[1].position[0], triangle[2].position[0]});
+        const float maxX = std::max({triangle[0].position[0], triangle[1].position[0], triangle[2].position[0]});
+        const float minY = std::min({triangle[0].position[1], triangle[1].position[1], triangle[2].position[1]});
+        const float maxY = std::max({triangle[0].position[1], triangle[1].position[1], triangle[2].position[1]});
         const int left = std::max(0, static_cast<int>((minX * 0.5f + 0.5f) * width));
         const int right = std::min(static_cast<int>(width) - 1,
             static_cast<int>((maxX * 0.5f + 0.5f) * width));
         const int top = std::max(0, static_cast<int>((1.0f - (maxY * 0.5f + 0.5f)) * height));
         const int bottom = std::min(static_cast<int>(height) - 1,
             static_cast<int>((1.0f - (minY * 0.5f + 0.5f)) * height));
-        auto fillTriangle = [&](float ax, float ay, float bx, float by,
-            float cx, float cy)
+        const uint32_t texture0 = gpuRegisters_[0x4800u];
+        const uint32_t texture1 = gpuRegisters_[0x4801u];
+        const uint32_t texture2 = gpuRegisters_[0x4802u];
+        const bool hasDxt3Texture = (texture0 & 0x3u) == 2u &&
+            (texture1 & 0x3Fu) == 19u;
+        const uint32_t textureWidth = (texture2 & 0x1FFFu) + 1u;
+        const uint32_t textureHeight = ((texture2 >> 13) & 0x1FFFu) + 1u;
+        if (hasDxt3Texture && std::getenv("XERENGE_XENOS_TEXTURE_TRACE") != nullptr)
+            std::cerr << "Xenos texture tf0 base=0x" << std::hex
+                      << ((texture1 >> 12) & 0xFFFFFu)
+                      << " format=" << (texture1 & 0x3Fu)
+                      << " size=" << std::dec << textureWidth << 'x' << textureHeight
+                      << " pitch=" << ((texture0 >> 22) & 0x1FFu) << '\n';
+        const uint32_t texturePitchBlocks = std::max(32u,
+            ((textureWidth + 3u) / 4u + 31u) & ~31u);
+        const uint32_t textureBase = gpuPhysicalToGuest(
+            ((texture1 >> 12) & 0xFFFFFu) << 12);
+        auto textureAddress = [&](uint32_t blockX, uint32_t blockY)
         {
+            const uint32_t outerBlocks =
+                ((blockY >> 5) * (texturePitchBlocks >> 5) + (blockX >> 5)) << 6;
+            const uint32_t innerBlocks = (((blockY >> 1) & 7u) << 3) | (blockX & 7u);
+            const uint32_t outerInnerBytes = (outerBlocks | innerBlocks) << 4;
+            const uint32_t bank = (blockY >> 4) & 1u;
+            const uint32_t pipe = ((blockX >> 3) & 3u) ^ (((blockY >> 3) & 1u) << 1);
+            return (textureBase + ((blockY & 1u) << 4) + (pipe << 6) +
+                (bank << 11) + (outerInnerBytes & 0xFu) +
+                (((outerInnerBytes >> 4) & 1u) << 5) +
+                (((outerInnerBytes >> 5) & 7u) << 8) +
+                ((outerInnerBytes >> 8) << 12));
+        };
+        auto sampleTexture = [&](float u, float v)
+        {
+            std::array<uint8_t, 4> result{255, 255, 255, 255};
+            if (!hasDxt3Texture || textureWidth == 0 || textureHeight == 0)
+                return result;
+            u = std::clamp(u, 0.0f, 1.0f);
+            v = std::clamp(v, 0.0f, 1.0f);
+            const uint32_t x = std::min(textureWidth - 1,
+                static_cast<uint32_t>(u * textureWidth));
+            const uint32_t y = std::min(textureHeight - 1,
+                static_cast<uint32_t>(v * textureHeight));
+            const uint32_t blockX = x / 4u;
+            const uint32_t blockY = y / 4u;
+            const uint32_t address = textureAddress(blockX, blockY);
+            uint8_t block[16]{};
+            for (uint32_t i = 0; i < 16; ++i)
+                block[i] = guestBase[address + i];
+            const uint32_t local = (y & 3u) * 4u + (x & 3u);
+            const uint8_t alphaByte = block[local >> 1];
+            result[3] = static_cast<uint8_t>(((local & 1u) ? alphaByte >> 4 : alphaByte & 0xFu) * 17u);
+            const uint16_t c0 = uint16_t(block[8]) | (uint16_t(block[9]) << 8);
+            const uint16_t c1 = uint16_t(block[10]) | (uint16_t(block[11]) << 8);
+            auto expand = [](uint16_t c, uint32_t shift, uint32_t bits)
+            { return (c >> shift) & ((1u << bits) - 1u); };
+            uint8_t colors[4][3]{};
+            for (uint32_t c = 0; c < 2; ++c)
+            {
+                const uint16_t value = c ? c1 : c0;
+                colors[c][0] = static_cast<uint8_t>(expand(value, 11, 5) * 255 / 31);
+                colors[c][1] = static_cast<uint8_t>(expand(value, 5, 6) * 255 / 63);
+                colors[c][2] = static_cast<uint8_t>(expand(value, 0, 5) * 255 / 31);
+            }
+            for (uint32_t c = 0; c < 3; ++c)
+                colors[2][c] = static_cast<uint8_t>((2u * colors[0][c] + colors[1][c]) / 3u);
+            for (uint32_t c = 0; c < 3; ++c)
+                colors[3][c] = static_cast<uint8_t>((colors[0][c] + 2u * colors[1][c]) / 3u);
+            const uint32_t colorIndex = (uint32_t(block[12 + ((local >> 2) * 2)]) >>
+                ((local & 3u) * 2u)) & 3u;
+            for (uint32_t c = 0; c < 3; ++c)
+                result[c] = colors[colorIndex][c];
+            return result;
+        };
+        auto fillTriangle = [&](const RasterVertex& va, const RasterVertex& vb,
+            const RasterVertex& vc)
+        {
+            const float ax = va.position[0], ay = va.position[1];
+            const float bx = vb.position[0], by = vb.position[1];
+            const float cx = vc.position[0], cy = vc.position[1];
             const float area = (bx - ax) * (cy - ay) - (by - ay) * (cx - ax);
             if (area == 0.0f)
                 return;
@@ -351,24 +440,32 @@ void XenosGpu::rasterizeDraw(uint8_t* guestBase, uint32_t initiator)
                     const float w1 = ((cx - px) * (ay - py) - (cy - py) * (ax - px)) / area;
                     const float w2 = 1.0f - w0 - w1;
                     if (w0 >= 0.0f && w1 >= 0.0f && w2 >= 0.0f)
+                    {
+                        const float u = w0 * va.uv[0] + w1 * vb.uv[0] + w2 * vc.uv[0];
+                        const float v = w0 * va.uv[1] + w1 * vb.uv[1] + w2 * vc.uv[1];
+                        const auto color = sampleTexture(u, v);
                         std::memcpy(edram_.data() + (size_t(y) * width + x) * 4,
-                            drawColor.data(), drawColor.size());
+                            hasDxt3Texture ? color.data() : drawColor.data(), 4);
+                    }
                 }
         };
         const auto& v0 = triangle[0];
         const auto& v1 = triangle[1];
         const auto& v2 = triangle[2];
-        fillTriangle(v0[0], v0[1], v1[0], v1[1], v2[0], v2[1]);
+        fillTriangle(v0, v1, v2);
         // Xenos RectangleList supplies three corners; infer the fourth corner
         // from the parallelogram relation before filling the second triangle.
-        const float v3x = v0[0] + v2[0] - v1[0];
-        const float v3y = v0[1] + v2[1] - v1[1];
-        fillTriangle(v0[0], v0[1], v2[0], v2[1], v3x, v3y);
+        RasterVertex v3 = v0;
+        v3.position[0] = v0.position[0] + v2.position[0] - v1.position[0];
+        v3.position[1] = v0.position[1] + v2.position[1] - v1.position[1];
+        v3.uv[0] = v0.uv[0] + v2.uv[0] - v1.uv[0];
+        v3.uv[1] = v0.uv[1] + v2.uv[1] - v1.uv[1];
+        fillTriangle(v0, v2, v3);
         if (std::getenv("XERENGE_XENOS_DRAW_TRACE") != nullptr)
-            std::cerr << "Xenos triangle rasterized v0=" << triangle[0][0] << ','
-                      << triangle[0][1] << " v1=" << triangle[1][0] << ','
-                      << triangle[1][1] << " v2=" << triangle[2][0] << ','
-                      << triangle[2][1] << " pixelConstant="
+            std::cerr << "Xenos triangle rasterized v0=" << triangle[0].position[0] << ','
+                      << triangle[0].position[1] << " v1=" << triangle[1].position[0] << ','
+                      << triangle[1].position[1] << " v2=" << triangle[2].position[0] << ','
+                      << triangle[2].position[1] << " pixelConstant="
                       << (havePixelConstant ? "yes" : "fallback") << '\n';
     }
 }
@@ -401,11 +498,22 @@ void XenosGpu::resolveToGuest(uint8_t* guestBase)
     if (std::getenv("XERENGE_XENOS_RESOLVE_TRACE") != nullptr)
     {
         size_t nonzeroPixels = 0;
+        uint32_t firstPixel = 0;
+        uint32_t differentPixels = 0;
         for (size_t i = 0; i + 3 < copyCount; i += 4)
+        {
             nonzeroPixels += (edram_[i] | edram_[i + 1] | edram_[i + 2]) != 0;
+            const uint32_t pixel = uint32_t(edram_[i]) | (uint32_t(edram_[i + 1]) << 8) |
+                (uint32_t(edram_[i + 2]) << 16) | (uint32_t(edram_[i + 3]) << 24);
+            if (i == 0)
+                firstPixel = pixel;
+            differentPixels += pixel != firstPixel;
+        }
         std::cerr << "Xenos resolve destination=0x" << std::hex << destination
                   << " bytes=" << std::dec << copyCount
-                  << " nonzeroRgbPixels=" << nonzeroPixels << '\n';
+                  << " nonzeroRgbPixels=" << nonzeroPixels
+                  << " differentFromFirst=" << differentPixels
+                  << " firstPixel=0x" << std::hex << firstPixel << std::dec << '\n';
     }
 }
 
