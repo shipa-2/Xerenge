@@ -7,6 +7,7 @@ set(CMAKE_CXX_STANDARD_REQUIRED ON)
 set(CMAKE_CXX_EXTENSIONS OFF)
 
 find_package(Vulkan REQUIRED)
+find_package(OpenGL REQUIRED)
 find_path(XERENGE_OPENSSL_INCLUDE_DIR openssl/evp.h REQUIRED
     PATHS /usr/include /usr/local/include
     NO_DEFAULT_PATH)
@@ -24,7 +25,7 @@ add_executable(xerenge-runtime
     src/main.cpp
 )
 
-target_link_libraries(xerenge-runtime PRIVATE Vulkan::Vulkan Xerenge::Crypto PkgConfig::GLFW3)
+target_link_libraries(xerenge-runtime PRIVATE Vulkan::Vulkan OpenGL::GL Xerenge::Crypto PkgConfig::GLFW3)
 target_compile_definitions(xerenge-runtime PRIVATE GLFW_INCLUDE_NONE)
 
 include(CTest)

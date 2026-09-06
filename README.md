@@ -14,8 +14,9 @@ outputs are deliberately excluded from this repository and from the two forks.
 
 The first runnable milestone is in [`XerengeRuntime`](XerengeRuntime/). It
 validates an XEX2 image, initializes GLFW and Vulkan, opens a diagnostic window,
-and provides the base into which the CPU and Xbox 360 graphics services will be
-connected.
+initializes an OpenGL diagnostic framebuffer, and reads one pixel back from the
+GPU. This is only the bootstrap for the game renderer; it is not Burnout
+rendering yet.
 
 ```sh
 cmake -S . -B build-runtime
@@ -47,3 +48,6 @@ groups that must be bound before guest code can run.
 These traps are intentionally explicit: unsupported Xbox services stop with
 their library, import index, and guest thunk address instead of silently
 returning an invalid value.
+
+The interactive runtime reports a framebuffer readback after its first
+diagnostic frame. No screenshot is required for this check.

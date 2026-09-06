@@ -1,9 +1,11 @@
 #include <GLFW/glfw3.h>
+#include <GL/gl.h>
 #include <openssl/evp.h>
 #include <vulkan/vulkan.h>
 
 #include <algorithm>
 #include <array>
+#include <chrono>
 #include <cstdint>
 #include <fstream>
 #include <iomanip>
@@ -589,14 +591,6 @@ void printServices(const XexInfo& info)
 
 bool initializeVulkan(VkInstance& instance, VkPhysicalDevice& physicalDevice)
 {
-    uint32_t glfwExtensionCount = 0;
-    const char** glfwExtensions = glfwGetRequiredInstanceExtensions(&glfwExtensionCount);
-    if (glfwExtensions == nullptr)
-    {
-        std::cerr << "GLFW did not provide Vulkan instance extensions\n";
-        return false;
-    }
-
     VkApplicationInfo applicationInfo{};
     applicationInfo.sType = VK_STRUCTURE_TYPE_APPLICATION_INFO;
     applicationInfo.pApplicationName = "Xerenge Runtime";
@@ -608,9 +602,6 @@ bool initializeVulkan(VkInstance& instance, VkPhysicalDevice& physicalDevice)
     VkInstanceCreateInfo createInfo{};
     createInfo.sType = VK_STRUCTURE_TYPE_INSTANCE_CREATE_INFO;
     createInfo.pApplicationInfo = &applicationInfo;
-    createInfo.enabledExtensionCount = glfwExtensionCount;
-    createInfo.ppEnabledExtensionNames = glfwExtensions;
-
     if (vkCreateInstance(&createInfo, nullptr, &instance) != VK_SUCCESS)
     {
         std::cerr << "could not create Vulkan instance\n";
@@ -724,7 +715,10 @@ int main(int argc, char** argv)
         std::cerr << "could not initialize GLFW\n";
         return 1;
     }
-    glfwWindowHint(GLFW_CLIENT_API, GLFW_NO_API);
+    glfwWindowHint(GLFW_CLIENT_API, GLFW_OPENGL_API);
+    glfwWindowHint(GLFW_CONTEXT_VERSION_MAJOR, 3);
+    glfwWindowHint(GLFW_CONTEXT_VERSION_MINOR, 3);
+    glfwWindowHint(GLFW_OPENGL_PROFILE, GLFW_OPENGL_CORE_PROFILE);
     GLFWwindow* window = glfwCreateWindow(1280, 720, "Xerenge Runtime", nullptr, nullptr);
     if (window == nullptr)
     {
@@ -732,6 +726,8 @@ int main(int argc, char** argv)
         glfwTerminate();
         return 1;
     }
+    glfwMakeContextCurrent(window);
+    glfwSwapInterval(1);
 
     VkInstance instance = VK_NULL_HANDLE;
     VkPhysicalDevice physicalDevice = VK_NULL_HANDLE;
@@ -746,10 +742,39 @@ int main(int argc, char** argv)
     std::cout << "Xerenge runtime started";
     if (!xexPath.empty())
         std::cout << " with " << xexPath;
-    std::cout << '\n';
+    std::cout << '\n' << std::flush;
 
+    const auto start = std::chrono::steady_clock::now();
+    uint32_t frames = 0;
+    bool readbackReported = false;
     while (!glfwWindowShouldClose(window))
+    {
+        const float phase = static_cast<float>(frames % 360) / 360.0f;
+        glViewport(0, 0, 1280, 720);
+        glClearColor(0.04f + phase * 0.08f, 0.12f, 0.24f + phase * 0.12f, 1.0f);
+        glClear(GL_COLOR_BUFFER_BIT);
+        glfwSwapBuffers(window);
         glfwPollEvents();
+        ++frames;
+        if (!readbackReported)
+        {
+            glFinish();
+            std::array<uint8_t, 4> pixel{};
+            glReadPixels(640, 360, 1, 1, GL_RGBA, GL_UNSIGNED_BYTE, pixel.data());
+            std::cout << "diagnostic framebuffer readback: rgba="
+                      << static_cast<uint32_t>(pixel[0]) << ','
+                      << static_cast<uint32_t>(pixel[1]) << ','
+                      << static_cast<uint32_t>(pixel[2]) << ','
+                      << static_cast<uint32_t>(pixel[3]) << '\n' << std::flush;
+            readbackReported = true;
+        }
+        if ((frames % 60) == 0)
+        {
+            const auto elapsed = std::chrono::duration<float>(std::chrono::steady_clock::now() - start).count();
+            const float fps = elapsed > 0.0f ? frames / elapsed : 0.0f;
+            glfwSetWindowTitle(window, ("Xerenge Runtime - diagnostic frame " + std::to_string(static_cast<int>(fps)) + " FPS").c_str());
+        }
+    }
 
     if (instance != VK_NULL_HANDLE)
         vkDestroyInstance(instance, nullptr);
