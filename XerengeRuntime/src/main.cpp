@@ -1048,7 +1048,8 @@ bool initializeVulkan(VkInstance& instance, VkPhysicalDevice& physicalDevice)
 #ifdef XERENGE_HAS_PPC
 void sub_8259D4B0(PPCContext& ctx, uint8_t*)
 {
-    ctx.r3.u64 = ctx.r3.u64;
+    // The host owns cleanup records; the guest helper reports success.
+    ctx.r3.u32 = 0;
 }
 
 // The title's early loader pass walks an Xbox-owned import descriptor. The
