@@ -1394,6 +1394,18 @@ public:
         return true;
     }
 
+    bool materializeGuestObject(uint32_t object, uint8_t* base)
+    {
+        std::lock_guard lock(stateMutex_);
+        if (object < 0x82000000u || object >= 0x90000000u)
+            return false;
+        if (objects_.find(object) == objects_.end())
+            objects_.emplace(object, 1);
+        allocateVtable(base, 0x220);
+        storeU32(base, object, kVtableBase);
+        return true;
+    }
+
     uint32_t materializeNullObject(PPCContext& ctx, uint8_t* base)
     {
         std::lock_guard lock(stateMutex_);
@@ -1593,6 +1605,39 @@ extern "C" void PPCUnknownIndirectTrap(uint32_t address, PPCContext& ctx, uint8_
 {
     if (gXboxServices.invokeCallback(address, ctx))
         return;
+    if (ctx.lr == 0x8256424Cu && ctx.r3.u32 == 0x49242492u)
+    {
+        // The early resource manager contains an uninitialized platform
+        // object marker in this slot. Supply a real synthetic Xbox object so
+        // the method call returns through the normal vtable service path.
+        PPCContext objectContext = ctx;
+        objectContext.r3.u32 = 0;
+        ctx.r3.u32 = gXboxServices.materializeNullObject(objectContext, base);
+        return;
+    }
+    if (ctx.lr == 0x825B3AA0u && ctx.r30.u32 == 0x826AFCD4u)
+    {
+        // Stop a malformed notification-list walk at its sentinel. The
+        // callback slot can contain stale BSS/image data even when the list
+        // next pointer is already null; treating this as an empty list keeps
+        // the worker progressing without invoking arbitrary guest data.
+        ctx.r31.u32 = ctx.r30.u32;
+        ctx.r3.u32 = 0;
+        return;
+    }
+    if (address != 0 && ctx.r3.u32 >= 0x82000000u && ctx.r3.u32 < 0x90000000u)
+    {
+        // Some title-owned objects are constructed before their platform
+        // vtable is supplied. Their first word then contains a heap/data
+        // address, which would otherwise be called as PPC code. Materialize
+        // the object in the same callback window used by Xbox service objects
+        // and let the next virtual call resolve through invokeCallback.
+        if (gXboxServices.materializeGuestObject(ctx.r3.u32, base))
+        {
+            ctx.r3.u32 = 0;
+            return;
+        }
+    }
     if (address == 0x630u && ctx.r30.u32 == 0x826AFCD4u)
     {
         // The loader clears this callback-list head while zeroing BSS after
