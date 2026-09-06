@@ -18,7 +18,7 @@ and provides the base into which the CPU and Xbox 360 graphics services will be
 connected.
 
 ```sh
-cmake -S XerengeRuntime -B build-runtime
+cmake -S . -B build-runtime
 cmake --build build-runtime
 ctest --test-dir build-runtime --output-on-failure
 ./build-runtime/xerenge-runtime path/to/game.xex
