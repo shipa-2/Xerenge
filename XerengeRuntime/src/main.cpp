@@ -765,17 +765,17 @@ public:
                 storeU32(base, threadIdAddress, threadId);
             if (handle != 0 && startAddress != 0)
             {
-                if (startAddress == 0x821109F8u &&
-                    std::getenv("XERENGE_BOOTSTRAP_RESOURCE_STATE") != nullptr &&
-                    loadU32(base, startContext + 48) == 0)
+                // The title's resource-worker context is allocated from the
+                // zeroed guest heap, while the PPC constructor leaves its
+                // state field implicit. State 2 is the worker's documented
+                // initialization entry; without it 821109F8 repeatedly
+                // dispatches the invalid state 0 branch and never reaches
+                // the resource queue.
+                if (startAddress == 0x821109F8u && loadU32(base, startContext + 48) == 0)
                 {
-                    const char* stateText = std::getenv("XERENGE_BOOTSTRAP_RESOURCE_STATE_VALUE");
-                    const uint32_t initialState = stateText != nullptr
-                        ? static_cast<uint32_t>(std::strtoul(stateText, nullptr, 0)) : 2u;
-                    storeU32(base, startContext + 48, initialState);
+                    storeU32(base, startContext + 48, 2);
                     std::cerr << "bootstrapped resource thread state object=0x"
-                              << std::hex << startContext << " state=" << initialState
-                              << std::dec << '\n';
+                              << std::hex << startContext << " state=2" << std::dec << '\n';
                 }
                 launchGuestThread(base, ctx.r6.u32, startAddress, startContext, threadId);
             }
