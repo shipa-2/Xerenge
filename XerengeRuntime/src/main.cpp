@@ -28,6 +28,9 @@
 #include "ppc_recomp_shared.h"
 #include "xenos_gpu.h"
 #endif
+#include "xbox_media.h"
+
+XboxMedia gXboxMedia;
 
 namespace
 {
@@ -368,7 +371,11 @@ extern "C" void PPCTraceFunction(uint32_t address, PPCContext& ctx, uint8_t* bas
                   << std::dec << '\n';
     }
     static std::atomic<uint32_t> renderTraceCount = 0;
-    if ((address == 0x8237FCD0 || address == 0x8237FD58 ||
+    if ((address == 0x82150418 || address == 0x8234CBE0 ||
+         address == 0x8238C960 || address == 0x82387D00 ||
+         address == 0x82346708 || address == 0x82349C80 ||
+         address == 0x82349B38 || address == 0x8237FCD0 ||
+         address == 0x8237FD58 ||
          address == 0x8237FF98 || address == 0x82380FE8 ||
          address == 0x82381688 || address == 0x82382578 ||
          address == 0x82388688) &&
@@ -381,6 +388,48 @@ extern "C" void PPCTraceFunction(uint32_t address, PPCContext& ctx, uint8_t* bas
                   << " r6=0x" << ctx.r6.u32
                   << " r7=0x" << ctx.r7.u32
                   << " r8=0x" << ctx.r8.u32 << std::dec << '\n';
+    }
+    static std::atomic<uint32_t> timerTraceCount = 0;
+    if ((address == 0x82423640 || address == 0x824236F8 ||
+         address == 0x824237D8 || address == 0x824238F0 ||
+         address == 0x8235F998 || address == 0x8235F828 ||
+         address == 0x8235F658 || address == 0x8235F6F0 ||
+         address == 0x8235F798 || address == 0x8235F1D0) &&
+        timerTraceCount.fetch_add(1, std::memory_order_relaxed) < 32)
+    {
+        std::cerr << "timer path entry 0x" << std::hex << address
+                  << " r3=0x" << ctx.r3.u32
+                  << " r4=0x" << ctx.r4.u32
+                  << " r5=0x" << ctx.r5.u32
+                  << " r6=0x" << ctx.r6.u32
+                  << " r7=0x" << ctx.r7.u32
+                  << " r8=0x" << ctx.r8.u32 << std::dec << '\n';
+    }
+    if (address == 0x82380FE8 && ctx.r4.u32 != 0 && ctx.r5.u32 != 0 &&
+        ctx.r5.u32 < 0x10000u)
+    {
+        // AddCommandsToPrimaryBuffer copies r5 guest dwords from r4 into the
+        // primary ring. Inspect the source at the call boundary as well, so
+        // PM4 draw packets are visible before the generated copy advances the
+        // guest ring cursor.
+        gXenosGpu.processSubmittedBuffer(base, ctx.r4.u32, ctx.r5.u32);
+        if (std::getenv("XERENGE_PPC_TRACE") != nullptr)
+        {
+            static std::atomic<uint32_t> commandTraceCount = 0;
+            if (commandTraceCount.fetch_add(1, std::memory_order_relaxed) < 8)
+            {
+                std::cerr << "primary commands count=" << std::dec << ctx.r5.u32
+                          << " at=0x" << std::hex << ctx.r4.u32 << ":";
+                auto guestWord = [base](uint32_t address) {
+                    uint32_t value = 0;
+                    std::memcpy(&value, base + address, sizeof(value));
+                    return __builtin_bswap32(value);
+                };
+                for (uint32_t i = 0; i < std::min<uint32_t>(ctx.r5.u32, 24); ++i)
+                    std::cerr << " " << guestWord(ctx.r4.u32 + i * 4);
+                std::cerr << std::dec << '\n';
+            }
+        }
     }
     const uint32_t previous = gPpcLastFunction.exchange(address, std::memory_order_relaxed);
     if (previous != address && gPpcFunctionTransitions.fetch_add(1, std::memory_order_relaxed) < 5000)
@@ -477,7 +526,8 @@ public:
                           << " r5=0x" << ctx.r5.u32
                           << " r6=0x" << ctx.r6.u32
                           << " r7=0x" << ctx.r7.u32
-                          << " r8=0x" << ctx.r8.u32 << std::dec << '\n';
+                          << " r8=0x" << ctx.r8.u32
+                          << " r9=0x" << ctx.r9.u32 << std::dec << '\n';
         }
 
         if (service.size() >= 2 && service[0] == 'V' && service[1] == 'd')
@@ -488,6 +538,49 @@ public:
                 std::cerr << "Xbox video service " << service
                           << " r3=0x" << std::hex << ctx.r3.u32
                           << " r4=0x" << ctx.r4.u32 << std::dec << '\n';
+        }
+        if ((service == "NtSetTimerEx" || service == "NtWaitForSingleObjectEx" ||
+             service == "KeDelayExecutionThread") &&
+            std::getenv("XERENGE_PPC_TRACE") != nullptr)
+        {
+            static std::atomic<uint32_t> timerServiceTraceCount = 0;
+            if (timerServiceTraceCount.fetch_add(1, std::memory_order_relaxed) < 48)
+                std::cerr << "timer service " << service
+                          << " r3=0x" << std::hex << ctx.r3.u32
+                          << " r4=0x" << ctx.r4.u32
+                          << " r5=0x" << ctx.r5.u32
+                          << " r6=0x" << ctx.r6.u32
+                          << " r7=0x" << ctx.r7.u32
+                          << " r8=0x" << ctx.r8.u32
+                          << " r9=0x" << ctx.r9.u32 << std::dec << '\n';
+        }
+        if ((service == "NtCreateFile" || service == "NtReadFile" ||
+             service == "NtWriteFile" || service == "NtQueryInformationFile") &&
+            std::getenv("XERENGE_PPC_TRACE") != nullptr)
+        {
+            static std::atomic<uint32_t> fileServiceTraceCount = 0;
+            if (fileServiceTraceCount.fetch_add(1, std::memory_order_relaxed) < 64)
+            {
+                std::cerr << "file service " << service
+                          << " r3=0x" << std::hex << ctx.r3.u32
+                          << " r4=0x" << ctx.r4.u32
+                          << " r5=0x" << ctx.r5.u32
+                          << " r6=0x" << ctx.r6.u32
+                          << " r7=0x" << ctx.r7.u32
+                          << " r8=0x" << ctx.r8.u32
+                          << " r9=0x" << ctx.r9.u32 << std::dec << '\n';
+                if (service == "NtCreateFile" && ctx.r5.u32 != 0)
+                {
+                    const uint32_t ansi = loadU32(base, ctx.r5.u32 + 4);
+                    const uint32_t chars = ansi != 0
+                        ? std::min<uint32_t>(loadU16(base, ansi), 0x200u) : 0;
+                    const uint32_t text = ansi != 0 ? loadU32(base, ansi + 4) : 0;
+                    std::string path;
+                    for (uint32_t i = 0; i < chars && text != 0; ++i)
+                        path.push_back(static_cast<char>(base[text + i]));
+                    std::cerr << "file path '" << path << "'\n";
+                }
+            }
         }
 
         if (service == "VdInitializeRingBuffer")
@@ -542,9 +635,101 @@ public:
             ctx.r3.u32 = 0;
             return;
         }
-        if (service == "NtResumeThread" || service == "NtSetTimerEx" ||
-            service == "NtWaitForSingleObjectEx" || service == "KeDelayExecutionThread")
+        if (service == "NtResumeThread")
         {
+            ctx.r3.u32 = 0;
+            return;
+        }
+        if (service == "NtCreateFile")
+        {
+            std::string path;
+            if (ctx.r5.u32 != 0)
+            {
+                const uint32_t ansi = loadU32(base, ctx.r5.u32 + 4);
+                const uint32_t chars = ansi != 0
+                    ? std::min<uint32_t>(loadU16(base, ansi), 0x400u) : 0;
+                const uint32_t text = ansi != 0 ? loadU32(base, ansi + 4) : 0;
+                for (uint32_t i = 0; i < chars && text != 0; ++i)
+                    path.push_back(static_cast<char>(base[text + i]));
+            }
+            uint32_t handle = 0;
+            uint64_t size = 0;
+            if (!path.empty() && gXboxMedia.openFile(path, handle, size))
+            {
+                if (ctx.r3.u32 != 0)
+                    storeU32(base, ctx.r3.u32, handle);
+                if (ctx.r6.u32 != 0)
+                {
+                    storeU32(base, ctx.r6.u32 + 0, 0);
+                    storeU32(base, ctx.r6.u32 + 4, 1);
+                }
+                if (std::getenv("XERENGE_PPC_TRACE") != nullptr)
+                    std::cerr << "opened media file '" << path << "' handle=0x"
+                              << std::hex << handle << " size=0x" << size << std::dec << '\n';
+                ctx.r3.u32 = 0;
+            }
+            else
+            {
+                if (std::getenv("XERENGE_PPC_TRACE") != nullptr)
+                    std::cerr << "media file not found: '" << path << "'\n";
+                ctx.r3.u32 = 0xC0000034u;
+            }
+            return;
+        }
+        if (service == "NtReadFile")
+        {
+            uint32_t bytesRead = 0;
+            // The title's wrapper passes the destination and byte count in
+            // the preserved r8/r9 pair; r7 is its IO request structure.
+            const bool ok = gXboxMedia.readFile(ctx.r3.u32, base + ctx.r8.u32,
+                ctx.r9.u32, bytesRead);
+            if (ctx.r6.u32 != 0)
+            {
+                storeU32(base, ctx.r6.u32 + 0, ok ? 0u : 0xC0000008u);
+                storeU32(base, ctx.r6.u32 + 4, bytesRead);
+            }
+            if (ctx.r7.u32 != 0)
+            {
+                storeU32(base, ctx.r7.u32 + 0, ok ? 0u : 0xC0000008u);
+                storeU32(base, ctx.r7.u32 + 4, bytesRead);
+            }
+            ctx.r3.u32 = ok ? 0u : 0xC0000008u;
+            return;
+        }
+        if (service == "NtQueryInformationFile")
+        {
+            uint64_t size = 0;
+            const bool ok = gXboxMedia.fileSize(ctx.r3.u32, size);
+            if (ok && ctx.r5.u32 != 0 && ctx.r6.u32 >= 24)
+            {
+                storeU32(base, ctx.r5.u32 + 0, static_cast<uint32_t>(size >> 32));
+                storeU32(base, ctx.r5.u32 + 4, static_cast<uint32_t>(size));
+                storeU32(base, ctx.r5.u32 + 8, static_cast<uint32_t>(size >> 32));
+                storeU32(base, ctx.r5.u32 + 12, static_cast<uint32_t>(size));
+                storeU32(base, ctx.r5.u32 + 16, 1);
+                storeU32(base, ctx.r5.u32 + 20, 0);
+            }
+            if (ctx.r4.u32 != 0)
+            {
+                storeU32(base, ctx.r4.u32 + 0, ok ? 0u : 0xC0000008u);
+                storeU32(base, ctx.r4.u32 + 4, ok ? 24u : 0u);
+            }
+            ctx.r3.u32 = ok ? 0u : 0xC0000008u;
+            return;
+        }
+        if (service == "NtClose")
+        {
+            gXboxMedia.closeFile(ctx.r3.u32);
+            ctx.r3.u32 = 0;
+            return;
+        }
+        if (service == "NtSetTimerEx" || service == "NtWaitForSingleObjectEx" ||
+            service == "KeDelayExecutionThread")
+        {
+            // These calls are used by the title's timer worker. Returning
+            // immediately makes the worker consume the entire host core and
+            // starves the guest thread that advances the game state.
+            std::this_thread::sleep_for(std::chrono::milliseconds(1));
             ctx.r3.u32 = 0;
             return;
         }
@@ -631,7 +816,8 @@ public:
                 static std::atomic<uint32_t> swapTraceCount = 0;
                 if (swapTraceCount.fetch_add(1, std::memory_order_relaxed) < 8)
                 {
-                    std::cerr << "VdSwap command buffer 0x" << std::hex << ctx.r3.u32 << ":";
+                    std::cerr << "VdSwap caller=0x" << std::hex << ctx.lr
+                              << " command buffer 0x" << ctx.r3.u32 << ":";
                     for (uint32_t i = 0; i < 8; ++i)
                         std::cerr << " " << loadU32(base, ctx.r3.u32 + i * 4);
                     std::cerr << " fetch=0x" << ctx.r4.u32 << ":";
@@ -813,9 +999,117 @@ public:
             ctx.r3.u32 = 1; // English, the neutral title default.
             return;
         }
-        if (service == "XGetGameRegion" || service == "XGetVideoMode")
+        if (service == "ExGetXConfigSetting")
+        {
+            // The graphics bootstrap only needs a successful read of the
+            // small console configuration record.  Returning the generic
+            // failure status makes InitializeHardwareDevice abort before it
+            // can submit any title draw commands.
+            if (ctx.r5.u32 != 0 && ctx.r6.u32 != 0)
+            {
+                const uint32_t bytes = std::min<uint32_t>(ctx.r6.u32, 0x100u);
+                std::memset(base + ctx.r5.u32, 0, bytes);
+            }
+            ctx.r3.u32 = 0;
+            return;
+        }
+        if (service == "XGetGameRegion")
         {
             ctx.r3.u32 = 0;
+            return;
+        }
+        if (service == "XGetVideoMode")
+        {
+            // XVIDEO_MODE is returned through r3.  The refresh rate is a BE
+            // float at offset 0x14; treating it as an integer corrupts the
+            // display bootstrap's aspect and scaler calculations.
+            if (ctx.r3.u32 != 0)
+            {
+                storeU32(base, ctx.r3.u32 + 0, 1280);
+                storeU32(base, ctx.r3.u32 + 4, 720);
+                storeU32(base, ctx.r3.u32 + 8, 0); // progressive
+                storeU32(base, ctx.r3.u32 + 12, 1); // widescreen
+                storeU32(base, ctx.r3.u32 + 16, 1); // high definition
+                storeU32(base, ctx.r3.u32 + 20, 0x42700000u); // 60.0f
+                storeU32(base, ctx.r3.u32 + 24, 1); // NTSC
+                storeU32(base, ctx.r3.u32 + 28, 0x4A);
+                storeU32(base, ctx.r3.u32 + 32, 1);
+            }
+            ctx.r3.u32 = 0;
+            return;
+        }
+        if (service == "VdQueryVideoMode")
+        {
+            if (ctx.r3.u32 != 0)
+            {
+                storeU32(base, ctx.r3.u32 + 0, 1280);
+                storeU32(base, ctx.r3.u32 + 4, 720);
+                storeU32(base, ctx.r3.u32 + 8, 0);
+                storeU32(base, ctx.r3.u32 + 12, 1);
+                storeU32(base, ctx.r3.u32 + 16, 1);
+                storeU32(base, ctx.r3.u32 + 20, 0x42700000u);
+                storeU32(base, ctx.r3.u32 + 24, 1);
+                storeU32(base, ctx.r3.u32 + 28, 0x4A);
+                storeU32(base, ctx.r3.u32 + 32, 1);
+                for (uint32_t offset = 36; offset < 48; offset += 4)
+                    storeU32(base, ctx.r3.u32 + offset, 0);
+            }
+            ctx.r3.u32 = 0;
+            return;
+        }
+        if (service == "VdGetCurrentDisplayInformation")
+        {
+            if (ctx.r3.u32 != 0)
+            {
+                std::memset(base + ctx.r3.u32, 0, 0x58);
+                storeU16(base, ctx.r3.u32 + 0x00, 1280);
+                storeU16(base, ctx.r3.u32 + 0x02, 720);
+                storeU32(base, ctx.r3.u32 + 0x18, 1);
+                storeU32(base, ctx.r3.u32 + 0x14, 720);
+                storeU32(base, ctx.r3.u32 + 0x10, 1280);
+                storeU16(base, ctx.r3.u32 + 0x48, 1280);
+                storeU16(base, ctx.r3.u32 + 0x4A, 720);
+                storeU32(base, ctx.r3.u32 + 0x4C, 0x42700000u);
+                storeU32(base, ctx.r3.u32 + 0x50, 0);
+                storeU16(base, ctx.r3.u32 + 0x56, 1280);
+            }
+            ctx.r3.u32 = 0;
+            return;
+        }
+        if (service == "VdInitializeScalerCommandBuffer")
+        {
+            // The destination pointer and dword count are trailing ABI
+            // arguments. The title only requires a valid NOP-filled command
+            // buffer before it starts submitting frames.
+            const uint32_t destination = ctx.r11.u32;
+            // The last scalar argument is in the caller's outgoing stack
+            // area. r12 is a scratch register here, not an ABI argument.
+            const uint32_t count = readGuestU32(base, ctx.r1.u32 + 0x6Cu);
+            if (std::getenv("XERENGE_PPC_TRACE") != nullptr)
+            {
+                std::cerr << "scaler args r1=0x" << std::hex << ctx.r1.u32
+                          << " r3=0x" << ctx.r3.u32 << " r4=0x" << ctx.r4.u32
+                          << " r5=0x" << ctx.r5.u32 << " r6=0x" << ctx.r6.u32
+                          << " r7=0x" << ctx.r7.u32 << " r8=0x" << ctx.r8.u32
+                          << " r9=0x" << ctx.r9.u32 << " r10=0x" << ctx.r10.u32
+                          << " r11=0x" << ctx.r11.u32 << " r12=0x" << ctx.r12.u32
+                          << std::dec << '\n';
+                static std::atomic<uint32_t> scalerStackTraceCount = 0;
+                if (scalerStackTraceCount.fetch_add(1, std::memory_order_relaxed) == 0)
+                {
+                    std::cerr << "scaler stack:";
+                    for (uint32_t offset = 0; offset <= 0xE0; offset += 4)
+                        std::cerr << " +0x" << std::hex << offset << "=0x"
+                                  << readGuestU32(base, ctx.r1.u32 + offset);
+                    std::cerr << std::dec << '\n';
+                }
+            }
+            if (destination != 0 && count != 0 && count < 0x10000u)
+            {
+                for (uint32_t i = 0; i < count; ++i)
+                    storeU32(base, destination + i * 4, 0x80000000u);
+            }
+            ctx.r3.u32 = count;
             return;
         }
         if (service == "RtlInitAnsiString")
@@ -1020,6 +1314,13 @@ private:
         uint32_t value = 0;
         std::memcpy(&value, base + address, sizeof(value));
         return __builtin_bswap32(value);
+    }
+
+    static uint16_t loadU16(const uint8_t* base, uint32_t address)
+    {
+        uint16_t value = 0;
+        std::memcpy(&value, base + address, sizeof(value));
+        return __builtin_bswap16(value);
     }
 
     uint32_t heapCursor_ = 0x60000000u;
@@ -1767,9 +2068,9 @@ int main(int argc, char** argv)
 
     if (argc > 1 && (std::string(argv[1]) == "--ppc-prepare" || std::string(argv[1]) == "--ppc-entry"))
     {
-        if (argc != 3)
+        if (argc < 3 || argc > 4)
         {
-            std::cerr << "usage: xerenge-runtime --ppc-prepare|--ppc-entry <file.xex>\n";
+            std::cerr << "usage: xerenge-runtime --ppc-prepare|--ppc-entry <file.xex> [media.iso]\n";
             return 2;
         }
 #ifdef XERENGE_HAS_PPC
@@ -1793,6 +2094,14 @@ int main(int argc, char** argv)
                   << guest.functionCount() << " function mappings, entry point resolved\n";
         if (std::string(argv[1]) == "--ppc-entry")
         {
+            const char* mediaPath = argc == 4 ? argv[3] : std::getenv("XERENGE_MEDIA");
+            if (mediaPath != nullptr)
+            {
+                if (!gXboxMedia.open(mediaPath))
+                    std::cerr << "warning: could not open XDVDFS media: " << mediaPath << '\n';
+                else
+                    std::cout << "XDVDFS media mounted: " << mediaPath << '\n';
+            }
             gPpcServiceCalls = 0;
             guest.invokeEntryPoint();
             std::cout << "PPC entry point returned after " << gPpcServiceCalls

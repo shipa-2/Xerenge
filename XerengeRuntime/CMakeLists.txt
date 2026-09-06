@@ -24,6 +24,7 @@ pkg_check_modules(GLFW3 REQUIRED IMPORTED_TARGET glfw3)
 add_executable(xerenge-runtime
     src/main.cpp
     src/xenos_gpu.cpp
+    src/xbox_media.cpp
 )
 
 target_link_libraries(xerenge-runtime PRIVATE Vulkan::Vulkan OpenGL::GL Xerenge::Crypto PkgConfig::GLFW3)
@@ -50,6 +51,12 @@ if(XERENGE_PPC_DIRECTORY)
     target_include_directories(xerenge-ppc PRIVATE
         "${XERENGE_PPC_DIRECTORY}"
         "${CMAKE_CURRENT_SOURCE_DIR}/../XenonRecomp/thirdparty/simde")
+    # XenonRecomp's generated translation units only include ppc_recomp_shared.h
+    # (ppc_config.h + the generic tool's ppc_context.h), so the Burnout-specific
+    # mid-asm hook prototypes they call into (see work/B4_pdb.toml) are force-
+    # included here instead of living in the generic tool's own headers.
+    target_compile_options(xerenge-ppc PRIVATE
+        -include "${CMAKE_CURRENT_SOURCE_DIR}/src/ppc_hooks.h")
     add_library(Xerenge::Ppc ALIAS xerenge-ppc)
     target_link_libraries(xerenge-runtime PRIVATE Xerenge::Ppc)
     target_include_directories(xerenge-runtime PRIVATE
