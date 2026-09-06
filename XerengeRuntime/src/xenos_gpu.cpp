@@ -136,6 +136,34 @@ void XenosGpu::writeGpuRegister(uint32_t index, uint32_t value)
     if (index >= 0x4800u && index < 0x4800u + vertexFetchRegisters_.size())
     {
         const uint32_t fetchIndex = index - 0x4800u;
+
+        // A texture fetch constant occupies six consecutive registers.  Words
+        // after the descriptor can end in 3 as ordinary data (the width field
+        // commonly does), so only classify a vertex fetch outside an active
+        // texture group.
+        if (pendingTextureFetchWords_ != 0u)
+        {
+            if (index == pendingTextureFetchRegister_)
+            {
+                gpuRegisters_[index] = value;
+                ++pendingTextureFetchRegister_;
+                if (--pendingTextureFetchWords_ == 0u)
+                    pendingTextureFetchRegister_ = 0xFFFFFFFFu;
+                return;
+            }
+            pendingTextureFetchRegister_ = 0xFFFFFFFFu;
+            pendingTextureFetchWords_ = 0u;
+        }
+
+        if ((fetchIndex % 6u) == 0u && (value & 0x3u) == 2u)
+        {
+            gpuRegisters_[index] = value;
+            pendingTextureFetchRegister_ = index + 1u;
+            pendingTextureFetchWords_ = 5u;
+            pendingVertexFetchRegister_ = 0xFFFFFFFFu;
+            return;
+        }
+
         if ((value & 0x3u) == 3u)
         {
             vertexFetchRegisters_[fetchIndex] = value;
@@ -359,7 +387,13 @@ void XenosGpu::rasterizeDraw(uint8_t* guestBase, uint32_t initiator)
         std::array<float, 4> vertexColor{1.0f, 1.0f, 1.0f, 1.0f};
         for (uint32_t component = 0; component < 4; ++component)
         {
-            const uint32_t raw = loadGuestBE(guestBase, address + (4 + component) * 4);
+            // The 8-dword pointer VS fetches a per-vertex float4 at words
+            // 4..7.  The 4-dword bootstrap VS exports c2 as interpolator 1,
+            // so reading past the vertex here mixed the following vertex into
+            // the pixel color and produced the visible geometry artifacts.
+            const uint32_t raw = strideWords >= 8u
+                ? loadGuestBE(guestBase, address + (4 + component) * 4)
+                : gpuRegisters_[0x4008u + component];
             std::memcpy(&vertexColor[component], &raw, sizeof(float));
             if (!std::isfinite(vertexColor[component]))
                 vertexColor[component] = 1.0f;

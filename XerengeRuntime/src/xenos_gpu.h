@@ -56,6 +56,8 @@ private:
     // separately so a vf0 upload cannot destroy tf0 for the pixel shader.
     std::array<uint32_t, 192> vertexFetchRegisters_{};
     uint32_t pendingVertexFetchRegister_ = 0xFFFFFFFFu;
+    uint32_t pendingTextureFetchRegister_ = 0xFFFFFFFFu;
+    uint32_t pendingTextureFetchWords_ = 0;
     std::array<uint32_t, 96> vertexFetchStrideWords_{};
     uint64_t activeVertexShaderHash_ = 0;
     uint64_t activePixelShaderHash_ = 0;

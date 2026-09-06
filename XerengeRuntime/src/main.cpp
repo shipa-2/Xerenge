@@ -1119,7 +1119,7 @@ public:
             // VdSwap reserves 64 dwords in the primary ring and fills it with
             // a fetch update followed by Xenia's observable XE_SWAP packet.
             // The same PM4 layout is understood by the Xenos command parser.
-            storeU32(base, buffer + 0, (5u << 16) | 0x4000u);
+            storeU32(base, buffer + 0, (5u << 16) | 0x4800u);
             storeU32(base, buffer + 4, fetch0);
             storeU32(base, buffer + 8, fetch1);
             storeU32(base, buffer + 12, fetch2);
