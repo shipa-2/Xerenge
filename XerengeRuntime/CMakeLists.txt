@@ -18,6 +18,11 @@ add_library(Xerenge::Crypto UNKNOWN IMPORTED)
 set_target_properties(Xerenge::Crypto PROPERTIES
     IMPORTED_LOCATION "${XERENGE_CRYPTO_LIBRARY}"
     INTERFACE_INCLUDE_DIRECTORIES "${XERENGE_OPENSSL_INCLUDE_DIR}")
+find_library(XERENGE_ZSTD_LIBRARY NAMES zstd REQUIRED
+    PATHS /usr/lib /usr/lib64 /lib /lib64
+    NO_DEFAULT_PATH)
+add_library(Xerenge::Zstd UNKNOWN IMPORTED)
+set_target_properties(Xerenge::Zstd PROPERTIES IMPORTED_LOCATION "${XERENGE_ZSTD_LIBRARY}")
 find_package(PkgConfig REQUIRED)
 pkg_check_modules(GLFW3 REQUIRED IMPORTED_TARGET glfw3)
 
@@ -26,13 +31,15 @@ add_executable(xerenge-runtime
     src/xenos_gpu.cpp
     src/xbox_media.cpp
     src/shader_cache_runtime.cpp
+    ../XenosRecomp/thirdparty/smol-v/source/smolv.cpp
 )
 
-target_link_libraries(xerenge-runtime PRIVATE Vulkan::Vulkan OpenGL::GL Xerenge::Crypto
+target_link_libraries(xerenge-runtime PRIVATE Vulkan::Vulkan OpenGL::GL Xerenge::Crypto Xerenge::Zstd
     PkgConfig::GLFW3 ${CMAKE_DL_LIBS})
 target_compile_definitions(xerenge-runtime PRIVATE GLFW_INCLUDE_NONE)
 target_include_directories(xerenge-runtime PRIVATE "${CMAKE_CURRENT_SOURCE_DIR}/src"
-    "${CMAKE_CURRENT_SOURCE_DIR}/../XenosRecomp/thirdparty/xxHash")
+    "${CMAKE_CURRENT_SOURCE_DIR}/../XenosRecomp/thirdparty/xxHash"
+    "${CMAKE_CURRENT_SOURCE_DIR}/../XenosRecomp/thirdparty/smol-v/source")
 
 # XenonRecomp output is intentionally generated outside the repository.  When
 # supplied, build it as a separate library so the runtime can be linked to the

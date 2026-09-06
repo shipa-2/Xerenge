@@ -259,7 +259,17 @@ void XenosGpu::loadPointerShader(uint8_t* guestBase, uint32_t address,
                   << " cache=" << (match != nullptr ? "hit" : "miss")
                   << " hash=0x" << std::hex << hash;
         if (match != nullptr)
+        {
             std::cerr << " compiled=0x" << match->shaderHash;
+            if (const auto* compiled = xerengeShaderCache().find(match->shaderHash))
+            {
+                size_t spirvWords = 0;
+                const bool spirvValid =
+                    xerengeShaderCache().spirv(*compiled, spirvWords) != nullptr;
+                std::cerr << " spirv=" << (spirvValid ? "valid" : "invalid")
+                          << '/' << spirvWords;
+            }
+        }
         std::cerr << std::dec << '\n';
     }
 }
@@ -892,7 +902,16 @@ void XenosGpu::processBuffer(uint8_t* guestBase, uint32_t guestAddress,
                                   << " stage=" << shaderType
                                   << " bytes=" << std::dec << byteSize;
                         if (match != nullptr)
+                        {
                             std::cerr << " compiled=0x" << std::hex << match->shaderHash;
+                            if (const auto* compiled = cache.find(match->shaderHash))
+                            {
+                                size_t spirvWords = 0;
+                                const bool spirvValid = cache.spirv(*compiled, spirvWords) != nullptr;
+                                std::cerr << " spirv=" << (spirvValid ? "valid" : "invalid")
+                                          << '/' << std::dec << spirvWords;
+                            }
+                        }
                         std::cerr << std::dec << '\n';
                     }
                 }

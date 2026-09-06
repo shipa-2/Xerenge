@@ -2,6 +2,8 @@
 
 #include "shader_cache.h"
 
+#include <cstdint>
+
 struct XerengeShaderCacheView
 {
     const ShaderCacheEntry* entries = nullptr;
@@ -13,6 +15,7 @@ struct XerengeShaderCacheView
     bool available() const { return entries != nullptr && entryCount != 0; }
     const ShaderCacheEntry* find(uint64_t hash) const;
     const ShaderMicrocodeEntry* findMicrocode(uint64_t hash) const;
+    const uint32_t* spirv(const ShaderCacheEntry& entry, size_t& wordCount) const;
 };
 
 XerengeShaderCacheView xerengeShaderCache();
