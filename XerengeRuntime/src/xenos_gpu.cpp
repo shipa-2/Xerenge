@@ -184,6 +184,7 @@ void XenosGpu::rasterizeDraw(uint8_t* guestBase, uint32_t initiator)
     const uint32_t drawVertices = primitive == 8u ? std::min(count, 3u) : count;
     std::array<std::array<float, 3>, 3> triangle{};
     std::array<uint8_t, 4> drawColor{255, 255, 255, 255};
+    std::array<uint8_t, 4> constantColor{};
     bool havePixelConstant = false;
     for (uint32_t component = 0; component < 4; ++component)
     {
@@ -193,9 +194,11 @@ void XenosGpu::rasterizeDraw(uint8_t* guestBase, uint32_t initiator)
         if (std::isfinite(value) && std::abs(value) > 0.0001f)
             havePixelConstant = true;
         if (std::isfinite(value))
-            drawColor[component] = static_cast<uint8_t>(
+            constantColor[component] = static_cast<uint8_t>(
                 std::clamp(value, 0.0f, 1.0f) * 255.0f);
     }
+    if (havePixelConstant)
+        drawColor = constantColor;
     for (uint32_t i = 0; i < count; ++i)
     {
         const uint32_t address = vertexAddress +
@@ -204,14 +207,28 @@ void XenosGpu::rasterizeDraw(uint8_t* guestBase, uint32_t initiator)
         for (uint32_t component = 0; component < 3; ++component)
             bits[component] = loadGuestBE(guestBase, address + component * 4);
 
+        if (primitive == 8u && std::getenv("XERENGE_XENOS_VERTEX_TRACE") != nullptr && i < 3)
+            std::cerr << "Xenos vertex i=" << i << " guest=0x" << std::hex << address
+                      << " words=" << bits[0] << ' ' << bits[1] << ' ' << bits[2]
+                      << std::dec << '\n';
+
         float position[3];
         std::memcpy(&position[0], &bits[0], sizeof(position));
         if (!std::isfinite(position[0]) || !std::isfinite(position[1]) ||
             !std::isfinite(position[2]) || position[2] < -1.0f || position[2] > 1.0f)
             continue;
 
-        const float xNdc = position[0];
-        const float yNdc = position[1];
+        // The first primitive-8 program writes viewport-space coordinates
+        // directly: (-0.5,-0.5) .. (1279.5,719.5). Convert those samples to
+        // NDC before applying the software viewport.
+        const bool screenSpace = primitive == 8u || std::abs(position[0]) > 2.0f ||
+            std::abs(position[1]) > 2.0f;
+        const float xNdc = screenSpace
+            ? ((position[0] + 0.5f) / width) * 2.0f - 1.0f
+            : position[0];
+        const float yNdc = screenSpace
+            ? 1.0f - ((position[1] + 0.5f) / height) * 2.0f
+            : position[1];
         if (xNdc < -1.0f || xNdc > 1.0f || yNdc < -1.0f || yNdc > 1.0f)
             continue;
 
