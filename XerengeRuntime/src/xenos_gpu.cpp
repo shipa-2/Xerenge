@@ -370,6 +370,15 @@ void XenosGpu::processBuffer(uint8_t* guestBase, uint32_t guestAddress,
                     guestBase, guestAddress + (offset + 2) * 4) & 0xFFFFu;
                 if (codeDwords != 0 && codeDwords <= length - 3)
                 {
+                    if (std::getenv("XERENGE_XENOS_SHADER_DUMP") != nullptr)
+                    {
+                        std::cerr << "Xenos shader code stage=" << shaderType
+                                  << " dwords=" << codeDwords << ':';
+                        for (uint32_t i = 0; i < codeDwords; ++i)
+                            std::cerr << " " << std::hex << loadGuestBE(
+                                guestBase, guestAddress + (offset + 3 + i) * 4);
+                        std::cerr << std::dec << '\n';
+                    }
                     if (shaderType == 0u)
                     {
                         std::array<uint32_t, 1024> code{};
