@@ -176,16 +176,29 @@ uint64_t gPpcServiceCalls = 0;
 uint64_t gPpcUnknownIndirectCalls = 0;
 std::atomic<uint32_t> gPpcLastFunction = 0;
 std::atomic<uint64_t> gPpcFunctionTransitions = 0;
+std::atomic<uint64_t> gPpcFunctionCalls = 0;
+std::atomic<bool> gPpcTraceEnabled = false;
 
 extern "C" void PPCTraceFunction(uint32_t address, PPCContext& ctx, uint8_t*)
 {
+    const uint64_t callCount = gPpcFunctionCalls.fetch_add(1, std::memory_order_relaxed) + 1;
+    if (gPpcTraceEnabled.load(std::memory_order_relaxed) && (callCount % 100000) == 0)
+        std::cerr << "guest function calls=" << callCount << " current=0x"
+                  << std::hex << address << std::dec << '\n';
+    if (!gPpcTraceEnabled.load(std::memory_order_relaxed))
+        return;
     static std::atomic<uint32_t> waitTraceCount = 0;
     if (address == 0x825AC688 && waitTraceCount.fetch_add(1, std::memory_order_relaxed) < 8)
         std::cerr << "wait wrapper entry r3=0x" << std::hex << ctx.r3.u32
                   << " r7=0x" << ctx.r7.u32 << " r8=0x" << ctx.r8.u32
                   << " r28=0x" << ctx.r28.u32 << std::dec << '\n';
+    static std::atomic<uint32_t> initTraceCount = 0;
+    if ((address == 0x820A3AF0 || address == 0x8211A958 || address == 0x8211B0D0) &&
+        initTraceCount.fetch_add(1, std::memory_order_relaxed) < 12)
+        std::cerr << "init function entry 0x" << std::hex << address
+                  << " r3=0x" << ctx.r3.u32 << std::dec << '\n';
     const uint32_t previous = gPpcLastFunction.exchange(address, std::memory_order_relaxed);
-    if (previous != address && gPpcFunctionTransitions.fetch_add(1, std::memory_order_relaxed) < 500)
+    if (previous != address && gPpcFunctionTransitions.fetch_add(1, std::memory_order_relaxed) < 5000)
     {
         std::cerr << "guest function: 0x" << std::hex << address;
         if (address == 0x825AC688)
@@ -1112,6 +1125,7 @@ int main(int argc, char** argv)
             return 2;
         }
 #ifdef XERENGE_HAS_PPC
+        gPpcTraceEnabled.store(std::getenv("XERENGE_PPC_TRACE") != nullptr, std::memory_order_relaxed);
         const auto info = inspectXex(argv[2]);
         std::vector<uint8_t> image;
         if (!info || !decodeImage(argv[2], *info, image))
