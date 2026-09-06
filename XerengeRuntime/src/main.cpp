@@ -494,6 +494,34 @@ public:
             ctx.r3.u32 = handle != 0 ? 0 : 0xC0000017u;
             return;
         }
+        if (service == "NtCreateTimer")
+        {
+            const uint32_t outputHandle = ctx.r3.u32;
+            const uint32_t handle = createObject(base);
+            if (outputHandle != 0)
+                storeU32(base, outputHandle, handle);
+            ctx.r3.u32 = handle != 0 ? 0u : 0xC0000017u;
+            return;
+        }
+        if (service == "ObReferenceObjectByHandle")
+        {
+            const uint32_t outputObject = ctx.r6.u32;
+            if (outputObject != 0)
+                storeU32(base, outputObject, ctx.r3.u32);
+            ctx.r3.u32 = 0;
+            return;
+        }
+        if (service == "NtResumeThread" || service == "NtSetTimerEx" ||
+            service == "NtWaitForSingleObjectEx" || service == "KeDelayExecutionThread")
+        {
+            ctx.r3.u32 = 0;
+            return;
+        }
+        if (service == "RtlNtStatusToDosError")
+        {
+            ctx.r3.u32 = ctx.r3.u32 == 0 ? 0u : 1u;
+            return;
+        }
         if (service == "VdGetSystemCommandBuffer")
         {
             // Xenia exposes these as stable guest tokens.  The title passes
