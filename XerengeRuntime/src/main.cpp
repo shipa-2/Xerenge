@@ -1,4 +1,5 @@
 #include <GLFW/glfw3.h>
+#include <openssl/evp.h>
 #include <vulkan/vulkan.h>
 
 #include <array>
@@ -27,7 +28,15 @@ struct XexInfo
     uint32_t imageBase = 0;
     uint16_t encryptionType = 0xffff;
     uint16_t compressionType = 0xffff;
+    uint32_t fileFormatInfoOffset = 0;
+    uint32_t fileFormatInfoSize = 0;
+    std::array<uint8_t, 16> encryptedImageKey{};
 };
+
+constexpr std::array<uint8_t, 16> kRetailKey{
+    0x20, 0xB1, 0x85, 0xA5, 0x9D, 0x28, 0xFD, 0xC3,
+    0x40, 0x58, 0x3F, 0xBB, 0x08, 0x96, 0xBF, 0x91};
+constexpr std::array<uint8_t, 16> kDevkitKey{};
 
 uint32_t readBE32(const std::array<char, 4>& bytes)
 {
@@ -62,6 +71,13 @@ bool readBE32At(std::ifstream& input, uint64_t offset, uint32_t& value)
 {
     input.seekg(static_cast<std::streamoff>(offset));
     return readBE32(input, value);
+}
+
+bool readBytesAt(std::ifstream& input, uint64_t offset, void* data, size_t size)
+{
+    input.seekg(static_cast<std::streamoff>(offset));
+    input.read(static_cast<char*>(data), static_cast<std::streamsize>(size));
+    return input.gcount() == static_cast<std::streamsize>(size);
 }
 
 std::optional<XexInfo> inspectXex(const std::string& path)
@@ -120,6 +136,12 @@ std::optional<XexInfo> inspectXex(const std::string& path)
         std::cerr << "truncated XEX2 security flags: " << path << '\n';
         return std::nullopt;
     }
+    if (!readBytesAt(input, info.securityOffset + 0x150, info.encryptedImageKey.data(),
+        info.encryptedImageKey.size()))
+    {
+        std::cerr << "truncated XEX AES key: " << path << '\n';
+        return std::nullopt;
+    }
 
     const uint64_t optionalHeadersEnd = 0x18ull + static_cast<uint64_t>(info.headerCount) * 8;
     if (optionalHeadersEnd > info.headerSize)
@@ -142,6 +164,7 @@ std::optional<XexInfo> inspectXex(const std::string& path)
             info.imageBase = value;
         else if (key == 0x000003ff)
         {
+            info.fileFormatInfoOffset = value;
             if (value > fileSize - 8)
             {
                 std::cerr << "file format info is outside XEX: " << path << '\n';
@@ -156,19 +179,39 @@ std::optional<XexInfo> inspectXex(const std::string& path)
             input.seekg(static_cast<std::streamoff>(value + 4));
             if (!readBE16(input, info.encryptionType) || !readBE16(input, info.compressionType))
                 return std::nullopt;
+            info.fileFormatInfoSize = infoSize;
         }
     }
 
     return info;
 }
 
-bool extractUncompressedImage(const std::string& path, const XexInfo& info, const std::string& output)
+bool aesCbcDecrypt(const uint8_t* key, const uint8_t* encrypted, size_t size, std::vector<uint8_t>& output)
 {
-    if (info.encryptionType != 0 || info.compressionType != 0)
+    if (size == 0 || size % 16 != 0)
+        return false;
+    output.resize(size);
+    EVP_CIPHER_CTX* context = EVP_CIPHER_CTX_new();
+    if (context == nullptr)
+        return false;
+    const bool initialized = EVP_DecryptInit_ex(context, EVP_aes_128_cbc(), nullptr, key, nullptr) == 1 &&
+        EVP_CIPHER_CTX_set_padding(context, 0) == 1;
+    int written = 0;
+    int finalWritten = 0;
+    const bool decrypted = initialized &&
+        EVP_DecryptUpdate(context, output.data(), &written, encrypted, static_cast<int>(size)) == 1 &&
+        EVP_DecryptFinal_ex(context, output.data() + written, &finalWritten) == 1;
+    EVP_CIPHER_CTX_free(context);
+    if (!decrypted || static_cast<size_t>(written + finalWritten) != size)
+        return false;
+    return true;
+}
+
+bool decodeImage(const std::string& path, const XexInfo& info, std::vector<uint8_t>& image)
+{
+    if (info.fileFormatInfoOffset == 0 || info.fileFormatInfoSize < 8)
     {
-        std::cerr << "XEX image requires decryption/decompression before extraction "
-                  << "(encryption=" << info.encryptionType
-                  << ", compression=" << info.compressionType << ")\n";
+        std::cerr << "XEX has no supported file format metadata\n";
         return false;
     }
 
@@ -176,28 +219,100 @@ bool extractUncompressedImage(const std::string& path, const XexInfo& info, cons
     if (!input)
         return false;
     const uint64_t fileSize = static_cast<uint64_t>(input.tellg());
-    if (info.headerSize > fileSize || info.imageSize > fileSize - info.headerSize)
+    if (info.headerSize > fileSize || fileSize - info.headerSize == 0)
     {
-        std::cerr << "uncompressed XEX image exceeds file bounds\n";
+        std::cerr << "XEX image data exceeds file bounds\n";
         return false;
     }
 
-    std::vector<char> image(info.imageSize);
+    std::vector<uint8_t> source(fileSize - info.headerSize);
     input.seekg(info.headerSize);
-    input.read(image.data(), static_cast<std::streamsize>(image.size()));
-    if (input.gcount() != static_cast<std::streamsize>(image.size()))
+    input.read(reinterpret_cast<char*>(source.data()), static_cast<std::streamsize>(source.size()));
+    if (input.gcount() != static_cast<std::streamsize>(source.size()))
     {
-        std::cerr << "could not read complete XEX image\n";
+        std::cerr << "could not read XEX image data\n";
         return false;
     }
 
+    if (info.encryptionType == 1)
+    {
+        const std::array<const std::array<uint8_t, 16>*, 2> candidateKeys{
+            &kRetailKey, &kDevkitKey};
+        bool selected = false;
+        for (const auto* wrappingKey : candidateKeys)
+        {
+            std::vector<uint8_t> imageKey;
+            std::vector<uint8_t> decrypted;
+            if (!aesCbcDecrypt(wrappingKey->data(), info.encryptedImageKey.data(), 16, imageKey) ||
+                !aesCbcDecrypt(imageKey.data(), source.data(), source.size(), decrypted))
+                continue;
+
+            const bool looksLikeImage = decrypted.size() >= 2 && decrypted[0] == 'M' && decrypted[1] == 'Z';
+            if (info.compressionType == 2 || looksLikeImage)
+            {
+                source = std::move(decrypted);
+                selected = true;
+                break;
+            }
+        }
+        if (!selected)
+        {
+            std::cerr << "could not select a valid XEX image key\n";
+            return false;
+        }
+    }
+
+    if (info.compressionType == 0)
+    {
+        if (source.size() < info.imageSize)
+            return false;
+        image.assign(source.begin(), source.begin() + info.imageSize);
+        return true;
+    }
+    if (info.compressionType != 1)
+    {
+        std::cerr << "unsupported XEX compression type: " << info.compressionType << '\n';
+        return false;
+    }
+
+    const uint64_t blockBytes = info.fileFormatInfoSize - 8;
+    if (blockBytes % 8 != 0)
+        return false;
+    image.clear();
+    image.reserve(info.imageSize);
+    size_t sourceOffset = 0;
+    for (uint64_t offset = 0; offset < blockBytes; offset += 8)
+    {
+        uint32_t dataSize = 0;
+        uint32_t zeroSize = 0;
+        if (!readBE32At(input, info.fileFormatInfoOffset + 8 + offset, dataSize) ||
+            !readBE32(input, zeroSize) || dataSize > source.size() - sourceOffset)
+            return false;
+        image.insert(image.end(), source.begin() + sourceOffset, source.begin() + sourceOffset + dataSize);
+        image.insert(image.end(), zeroSize, 0);
+        sourceOffset += dataSize;
+    }
+    if (image.size() != info.imageSize)
+    {
+        std::cerr << "XEX decompressed size mismatch: got " << image.size()
+                  << ", expected " << info.imageSize << '\n';
+        return false;
+    }
+    return true;
+}
+
+bool extractImage(const std::string& path, const XexInfo& info, const std::string& output)
+{
+    std::vector<uint8_t> image;
+    if (!decodeImage(path, info, image))
+        return false;
     std::ofstream destination(output, std::ios::binary);
     if (!destination)
     {
         std::cerr << "cannot create image output: " << output << '\n';
         return false;
     }
-    destination.write(image.data(), static_cast<std::streamsize>(image.size()));
+    destination.write(reinterpret_cast<const char*>(image.data()), static_cast<std::streamsize>(image.size()));
     return destination.good();
 }
 
@@ -293,7 +408,7 @@ int main(int argc, char** argv)
             return 2;
         }
         const auto info = inspectXex(argv[2]);
-        return info && extractUncompressedImage(argv[2], *info, argv[3]) ? 0 : 1;
+        return info && extractImage(argv[2], *info, argv[3]) ? 0 : 1;
     }
 
     if (argc > 2)

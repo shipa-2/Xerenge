@@ -17,25 +17,30 @@ stay local.
   the generated cache itself is intentionally excluded from Git.
 - `XenonRecomp-xerenge` can try both retail and devkit AES keys for the
   uncompressed XEX path used by the beta image.
+- `XerengeRuntime` now unwraps AES keys, decodes XEX basic compression, and
+  recovers the beta image as a valid PE image. The decrypted result was checked
+  against an independent local image byte-for-byte.
 
 ## Execution order
 
-1. Keep the two tool forks buildable from clean clones and record the exact
+1. Map the recovered PE sections into guest memory and validate the entry point,
+   imports, and section permissions before executing any PPC code.
+2. Keep the two tool forks buildable from clean clones and record the exact
    upstream commit they are based on.
-2. Add a small fixture format or synthetic container generator that contains no
+3. Add a small fixture format or synthetic container generator that contains no
    game data. Use it to test container bounds checks, stage detection, metadata
    normalization, and duplicate shader handling in CI.
-3. Add differential checks for vertex declarations, interpolator mappings,
+4. Add differential checks for vertex declarations, interpolator mappings,
    sampler registers, constant registers, and export registers. The current
    fallback mappings make compilation robust; these checks will identify cases
    that still need exact metadata interpretation.
-4. Validate generated DXIL and SPIR-V against a native rendering harness using
+5. Validate generated DXIL and SPIR-V against a native rendering harness using
    captured constant, texture, vertex, and framebuffer inputs. Compilation
    success alone does not establish visual correctness.
-5. Replace compatibility fallbacks with exact legacy metadata decoding as the
+6. Replace compatibility fallbacks with exact legacy metadata decoding as the
    harness exposes mismatches. Keep each change isolated and attach a small
    source-only regression fixture.
-6. Add CI for clean CMake builds, the source-only fixtures, and a repository
+7. Add CI for clean CMake builds, the source-only fixtures, and a repository
    audit that rejects game data and generated shader caches.
 
 ## Publication boundary

@@ -27,6 +27,8 @@ ctest --test-dir build-runtime --output-on-failure
 ```
 
 `--inspect` currently reads the XEX2 header and security metadata. It does not
-decrypt or execute the image yet. `--extract-image` handles only images whose
-XEX metadata reports no encryption and no compression; retail images still need
-the decrypt/decompression backend.
+execute the image yet. `--extract-image` now unwraps AES image keys using the
+retail/devkit candidates and expands the XEX basic compression format. The
+Burnout beta image is recovered as a valid PE image; its local output matches
+the independently produced decrypted image byte-for-byte. Normal LZX
+compression and PPC execution remain separate stages.
