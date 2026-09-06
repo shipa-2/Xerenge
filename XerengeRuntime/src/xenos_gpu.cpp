@@ -274,12 +274,12 @@ void XenosGpu::rasterizeDraw(uint8_t* guestBase, uint32_t initiator)
         const int top = std::max(0, static_cast<int>((1.0f - (maxY * 0.5f + 0.5f)) * height));
         const int bottom = std::min(static_cast<int>(height) - 1,
             static_cast<int>((1.0f - (minY * 0.5f + 0.5f)) * height));
-        const float ax = triangle[0][0], ay = triangle[0][1];
-        const float bx = triangle[1][0], by = triangle[1][1];
-        const float cx = triangle[2][0], cy = triangle[2][1];
-        const float area = (bx - ax) * (cy - ay) - (by - ay) * (cx - ax);
-        if (area != 0.0f)
+        auto fillTriangle = [&](float ax, float ay, float bx, float by,
+            float cx, float cy)
         {
+            const float area = (bx - ax) * (cy - ay) - (by - ay) * (cx - ax);
+            if (area == 0.0f)
+                return;
             for (int y = top; y <= bottom; ++y)
                 for (int x = left; x <= right; ++x)
                 {
@@ -292,7 +292,16 @@ void XenosGpu::rasterizeDraw(uint8_t* guestBase, uint32_t initiator)
                         std::memcpy(edram_.data() + (size_t(y) * width + x) * 4,
                             drawColor.data(), drawColor.size());
                 }
-        }
+        };
+        const auto& v0 = triangle[0];
+        const auto& v1 = triangle[1];
+        const auto& v2 = triangle[2];
+        fillTriangle(v0[0], v0[1], v1[0], v1[1], v2[0], v2[1]);
+        // Xenos RectangleList supplies three corners; infer the fourth corner
+        // from the parallelogram relation before filling the second triangle.
+        const float v3x = v0[0] + v2[0] - v1[0];
+        const float v3y = v0[1] + v2[1] - v1[1];
+        fillTriangle(v0[0], v0[1], v2[0], v2[1], v3x, v3y);
         if (std::getenv("XERENGE_XENOS_DRAW_TRACE") != nullptr)
             std::cerr << "Xenos triangle rasterized v0=" << triangle[0][0] << ','
                       << triangle[0][1] << " v1=" << triangle[1][0] << ','
