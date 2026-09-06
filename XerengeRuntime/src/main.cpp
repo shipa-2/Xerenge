@@ -531,7 +531,6 @@ public:
         {
             // The first guest mapping is identity-addressed by the runtime;
             // preserve the Xenon virtual address as its physical token.
-            ctx.r3.u32 = ctx.r3.u32;
             return;
         }
         if (service == "MmFreePhysicalMemory")
