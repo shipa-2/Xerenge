@@ -220,6 +220,44 @@ public:
             ctx.r3.u32 = 0;
             return;
         }
+        if (service == "KeTlsAlloc")
+        {
+            for (uint32_t index = 0; index < tlsSlots_.size(); ++index)
+            {
+                if (!tlsUsed_[index])
+                {
+                    tlsUsed_[index] = true;
+                    tlsSlots_[index] = 0;
+                    ctx.r3.u32 = index;
+                    return;
+                }
+            }
+            ctx.r3.u32 = 0xffffffffu;
+            return;
+        }
+        if (service == "KeTlsFree")
+        {
+            if (ctx.r3.u32 < tlsSlots_.size())
+            {
+                tlsUsed_[ctx.r3.u32] = false;
+                tlsSlots_[ctx.r3.u32] = 0;
+            }
+            ctx.r3.u32 = 1;
+            return;
+        }
+        if (service == "KeTlsSetValue")
+        {
+            if (ctx.r3.u32 < tlsSlots_.size() && tlsUsed_[ctx.r3.u32])
+                tlsSlots_[ctx.r3.u32] = ctx.r4.u32;
+            ctx.r3.u32 = 1;
+            return;
+        }
+        if (service == "KeTlsGetValue")
+        {
+            ctx.r3.u32 = ctx.r3.u32 < tlsSlots_.size() && tlsUsed_[ctx.r3.u32]
+                ? tlsSlots_[ctx.r3.u32] : 0;
+            return;
+        }
         if (service == "KeGetCurrentProcessType")
         {
             ctx.r3.u32 = 1;
@@ -271,14 +309,18 @@ public:
         return true;
     }
 
-    void materializeNullObject(PPCContext& ctx, uint8_t* base)
+    uint32_t materializeNullObject(PPCContext& ctx, uint8_t* base)
     {
         const uint32_t slot = ctx.r3.u32;
         if (slot < 0x82000000u || slot >= 0x90000000u)
-            return;
+            return 0;
+        const uint32_t existing = loadU32(base, slot);
+        if (existing != 0)
+            return existing;
         const uint32_t object = createObject(base);
         if (object != 0)
             storeU32(base, slot, object);
+        return object;
     }
 
     static constexpr uint32_t vtableBase() { return kVtableBase; }
@@ -333,11 +375,20 @@ private:
         std::memcpy(base + address, &bigEndianValue, sizeof(bigEndianValue));
     }
 
+    static uint32_t loadU32(const uint8_t* base, uint32_t address)
+    {
+        uint32_t value = 0;
+        std::memcpy(&value, base + address, sizeof(value));
+        return __builtin_bswap32(value);
+    }
+
     uint32_t heapCursor_ = 0x60000000u;
     static constexpr uint32_t heapLimit_ = 0x68000000u;
     static constexpr uint32_t kVtableBase = 0x81000000u;
     std::unordered_map<uint32_t, uint32_t> allocations_;
     std::unordered_map<uint32_t, uint32_t> objects_;
+    std::array<uint32_t, 64> tlsSlots_{};
+    std::array<bool, 64> tlsUsed_{};
 };
 
 XboxServiceLayer gXboxServices;
@@ -353,8 +404,7 @@ extern "C" void PPCUnknownIndirectTrap(uint32_t address, PPCContext& ctx, uint8_
         return;
     if (address == 0)
     {
-        gXboxServices.materializeNullObject(ctx, base);
-        ctx.r3.u32 = 0;
+        ctx.r3.u32 = gXboxServices.materializeNullObject(ctx, base);
         return;
     }
     if (address >= PPC_IMAGE_BASE && address < PPC_CODE_BASE)
