@@ -51,6 +51,7 @@ private:
     void loadPointerShader(uint8_t* guestBase, uint32_t address,
         uint32_t shaderType, uint32_t startSize);
     bool ensureShaderModule(uint64_t shaderHash);
+    bool ensureGraphicsPipeline();
 
     std::array<uint32_t, 0x2000> registers_{};
     // Xenos Type-0 packets address the 3D register file by dword index.
@@ -95,4 +96,8 @@ private:
     VkQueue vulkanQueue_ = VK_NULL_HANDLE;
     uint32_t vulkanQueueFamily_ = 0;
     std::unordered_map<uint64_t, VkShaderModule> vulkanShaderModules_;
+    std::array<VkDescriptorSetLayout, 4> vulkanDescriptorSetLayouts_{};
+    VkPipelineLayout vulkanPipelineLayout_ = VK_NULL_HANDLE;
+    VkRenderPass vulkanRenderPass_ = VK_NULL_HANDLE;
+    std::unordered_map<uint64_t, VkPipeline> vulkanPipelines_;
 };

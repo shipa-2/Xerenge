@@ -18,6 +18,15 @@ XenosGpu::~XenosGpu()
     if (vulkanDevice_ != VK_NULL_HANDLE)
     {
         vkDeviceWaitIdle(vulkanDevice_);
+        for (const auto& [_, pipeline] : vulkanPipelines_)
+            vkDestroyPipeline(vulkanDevice_, pipeline, nullptr);
+        if (vulkanRenderPass_ != VK_NULL_HANDLE)
+            vkDestroyRenderPass(vulkanDevice_, vulkanRenderPass_, nullptr);
+        if (vulkanPipelineLayout_ != VK_NULL_HANDLE)
+            vkDestroyPipelineLayout(vulkanDevice_, vulkanPipelineLayout_, nullptr);
+        for (VkDescriptorSetLayout layout : vulkanDescriptorSetLayouts_)
+            if (layout != VK_NULL_HANDLE)
+                vkDestroyDescriptorSetLayout(vulkanDevice_, layout, nullptr);
         for (const auto& [_, module] : vulkanShaderModules_)
             vkDestroyShaderModule(vulkanDevice_, module, nullptr);
         vkDestroyDevice(vulkanDevice_, nullptr);
@@ -34,7 +43,7 @@ bool XenosGpu::initializeVulkan()
 
     VkApplicationInfo application{VK_STRUCTURE_TYPE_APPLICATION_INFO};
     application.pApplicationName = "Xerenge Xenos backend";
-    application.apiVersion = VK_API_VERSION_1_1;
+    application.apiVersion = VK_API_VERSION_1_2;
     VkInstanceCreateInfo instanceInfo{VK_STRUCTURE_TYPE_INSTANCE_CREATE_INFO};
     instanceInfo.pApplicationInfo = &application;
     if (vkCreateInstance(&instanceInfo, nullptr, &vulkanInstance_) != VK_SUCCESS)
@@ -68,7 +77,26 @@ bool XenosGpu::initializeVulkan()
     queueInfo.queueFamilyIndex = vulkanQueueFamily_;
     queueInfo.queueCount = 1;
     queueInfo.pQueuePriorities = &priority;
+    VkPhysicalDeviceVulkan12Features available12{VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_VULKAN_1_2_FEATURES};
+    VkPhysicalDeviceFeatures2 available{VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_FEATURES_2};
+    available.pNext = &available12;
+    vkGetPhysicalDeviceFeatures2(vulkanPhysicalDevice_, &available);
+    if (!available.features.shaderClipDistance || !available.features.shaderInt64 ||
+        !available12.bufferDeviceAddress ||
+        !available12.runtimeDescriptorArray || !available12.descriptorBindingPartiallyBound ||
+        !available12.descriptorBindingVariableDescriptorCount)
+        return false;
+    VkPhysicalDeviceVulkan12Features requested12{VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_VULKAN_1_2_FEATURES};
+    requested12.bufferDeviceAddress = VK_TRUE;
+    requested12.runtimeDescriptorArray = VK_TRUE;
+    requested12.descriptorBindingPartiallyBound = VK_TRUE;
+    requested12.descriptorBindingVariableDescriptorCount = VK_TRUE;
+    VkPhysicalDeviceFeatures requested{};
+    requested.shaderClipDistance = VK_TRUE;
+    requested.shaderInt64 = VK_TRUE;
     VkDeviceCreateInfo deviceInfo{VK_STRUCTURE_TYPE_DEVICE_CREATE_INFO};
+    deviceInfo.pNext = &requested12;
+    deviceInfo.pEnabledFeatures = &requested;
     deviceInfo.queueCreateInfoCount = 1;
     deviceInfo.pQueueCreateInfos = &queueInfo;
     if (vkCreateDevice(vulkanPhysicalDevice_, &deviceInfo, nullptr, &vulkanDevice_) != VK_SUCCESS)
@@ -102,6 +130,168 @@ bool XenosGpu::ensureShaderModule(uint64_t shaderHash)
     if (vkCreateShaderModule(vulkanDevice_, &info, nullptr, &module) != VK_SUCCESS)
         return false;
     vulkanShaderModules_.emplace(shaderHash, module);
+    return true;
+}
+
+bool XenosGpu::ensureGraphicsPipeline()
+{
+    const auto cache = xerengeShaderCache();
+    const auto* vertexMicrocode = cache.findMicrocode(activeVertexShaderHash_);
+    const auto* pixelMicrocode = cache.findMicrocode(activePixelShaderHash_);
+    if (vulkanDevice_ == VK_NULL_HANDLE || vertexMicrocode == nullptr ||
+        pixelMicrocode == nullptr || !ensureShaderModule(vertexMicrocode->shaderHash) ||
+        !ensureShaderModule(pixelMicrocode->shaderHash))
+        return false;
+
+    const uint64_t key = activeVertexShaderHash_ ^
+        (activePixelShaderHash_ + 0x9E3779B97F4A7C15ull +
+            (activeVertexShaderHash_ << 6) + (activeVertexShaderHash_ >> 2));
+    if (vulkanPipelines_.find(key) != vulkanPipelines_.end())
+        return true;
+
+    if (vulkanPipelineLayout_ == VK_NULL_HANDLE)
+    {
+        for (uint32_t set = 0; set < vulkanDescriptorSetLayouts_.size(); ++set)
+        {
+            VkDescriptorSetLayoutCreateInfo layoutInfo{
+                VK_STRUCTURE_TYPE_DESCRIPTOR_SET_LAYOUT_CREATE_INFO};
+            VkDescriptorSetLayoutBinding binding{};
+            VkDescriptorBindingFlags flags = VK_DESCRIPTOR_BINDING_PARTIALLY_BOUND_BIT |
+                VK_DESCRIPTOR_BINDING_VARIABLE_DESCRIPTOR_COUNT_BIT;
+            VkDescriptorSetLayoutBindingFlagsCreateInfo flagsInfo{
+                VK_STRUCTURE_TYPE_DESCRIPTOR_SET_LAYOUT_BINDING_FLAGS_CREATE_INFO};
+            if (set == 0 || set == 3)
+            {
+                binding.binding = 0;
+                binding.descriptorType = set == 0 ? VK_DESCRIPTOR_TYPE_SAMPLED_IMAGE
+                                                  : VK_DESCRIPTOR_TYPE_SAMPLER;
+                binding.descriptorCount = 96;
+                binding.stageFlags = VK_SHADER_STAGE_FRAGMENT_BIT;
+                flagsInfo.bindingCount = 1;
+                flagsInfo.pBindingFlags = &flags;
+                layoutInfo.pNext = &flagsInfo;
+                layoutInfo.bindingCount = 1;
+                layoutInfo.pBindings = &binding;
+            }
+            if (vkCreateDescriptorSetLayout(vulkanDevice_, &layoutInfo, nullptr,
+                    &vulkanDescriptorSetLayouts_[set]) != VK_SUCCESS)
+                return false;
+        }
+        VkPushConstantRange pushConstants{};
+        pushConstants.stageFlags = VK_SHADER_STAGE_VERTEX_BIT | VK_SHADER_STAGE_FRAGMENT_BIT;
+        pushConstants.size = 3 * sizeof(uint64_t);
+        VkPipelineLayoutCreateInfo pipelineLayoutInfo{
+            VK_STRUCTURE_TYPE_PIPELINE_LAYOUT_CREATE_INFO};
+        pipelineLayoutInfo.setLayoutCount = vulkanDescriptorSetLayouts_.size();
+        pipelineLayoutInfo.pSetLayouts = vulkanDescriptorSetLayouts_.data();
+        pipelineLayoutInfo.pushConstantRangeCount = 1;
+        pipelineLayoutInfo.pPushConstantRanges = &pushConstants;
+        if (vkCreatePipelineLayout(vulkanDevice_, &pipelineLayoutInfo, nullptr,
+                &vulkanPipelineLayout_) != VK_SUCCESS)
+            return false;
+
+        VkAttachmentDescription attachment{};
+        attachment.format = VK_FORMAT_R8G8B8A8_UNORM;
+        attachment.samples = VK_SAMPLE_COUNT_1_BIT;
+        attachment.loadOp = VK_ATTACHMENT_LOAD_OP_LOAD;
+        attachment.storeOp = VK_ATTACHMENT_STORE_OP_STORE;
+        attachment.initialLayout = VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL;
+        attachment.finalLayout = VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL;
+        VkAttachmentReference colorReference{0, VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL};
+        VkSubpassDescription subpass{};
+        subpass.pipelineBindPoint = VK_PIPELINE_BIND_POINT_GRAPHICS;
+        subpass.colorAttachmentCount = 1;
+        subpass.pColorAttachments = &colorReference;
+        VkRenderPassCreateInfo renderPassInfo{VK_STRUCTURE_TYPE_RENDER_PASS_CREATE_INFO};
+        renderPassInfo.attachmentCount = 1;
+        renderPassInfo.pAttachments = &attachment;
+        renderPassInfo.subpassCount = 1;
+        renderPassInfo.pSubpasses = &subpass;
+        if (vkCreateRenderPass(vulkanDevice_, &renderPassInfo, nullptr,
+                &vulkanRenderPass_) != VK_SUCCESS)
+            return false;
+    }
+
+    VkPipelineShaderStageCreateInfo stages[2]{};
+    stages[0].sType = VK_STRUCTURE_TYPE_PIPELINE_SHADER_STAGE_CREATE_INFO;
+    stages[0].stage = VK_SHADER_STAGE_VERTEX_BIT;
+    stages[0].module = vulkanShaderModules_[vertexMicrocode->shaderHash];
+    stages[0].pName = "shaderMain";
+    stages[1].sType = VK_STRUCTURE_TYPE_PIPELINE_SHADER_STAGE_CREATE_INFO;
+    stages[1].stage = VK_SHADER_STAGE_FRAGMENT_BIT;
+    stages[1].module = vulkanShaderModules_[pixelMicrocode->shaderHash];
+    stages[1].pName = "shaderMain";
+    const uint32_t specializationValue = 0;
+    VkSpecializationMapEntry specializationEntry{0, 0, sizeof(uint32_t)};
+    VkSpecializationInfo specialization{1, &specializationEntry,
+        sizeof(specializationValue), &specializationValue};
+    stages[1].pSpecializationInfo = &specialization;
+
+    VkVertexInputBindingDescription vertexBinding{0, 32, VK_VERTEX_INPUT_RATE_VERTEX};
+    const VkVertexInputAttributeDescription attributes[] = {
+        {0, 0, VK_FORMAT_R32G32B32A32_SFLOAT, 0},
+        {13, 0, VK_FORMAT_R32G32B32A32_SFLOAT, 8},
+        {17, 0, VK_FORMAT_R32G32B32A32_SFLOAT, 16},
+    };
+    VkPipelineVertexInputStateCreateInfo vertexInput{
+        VK_STRUCTURE_TYPE_PIPELINE_VERTEX_INPUT_STATE_CREATE_INFO};
+    vertexInput.vertexBindingDescriptionCount = 1;
+    vertexInput.pVertexBindingDescriptions = &vertexBinding;
+    vertexInput.vertexAttributeDescriptionCount = std::size(attributes);
+    vertexInput.pVertexAttributeDescriptions = attributes;
+    VkPipelineInputAssemblyStateCreateInfo assembly{
+        VK_STRUCTURE_TYPE_PIPELINE_INPUT_ASSEMBLY_STATE_CREATE_INFO};
+    assembly.topology = VK_PRIMITIVE_TOPOLOGY_TRIANGLE_LIST;
+    VkViewport viewport{0, 0, 1280, 720, 0, 1};
+    VkRect2D scissor{{0, 0}, {1280, 720}};
+    VkPipelineViewportStateCreateInfo viewportState{
+        VK_STRUCTURE_TYPE_PIPELINE_VIEWPORT_STATE_CREATE_INFO};
+    viewportState.viewportCount = 1;
+    viewportState.pViewports = &viewport;
+    viewportState.scissorCount = 1;
+    viewportState.pScissors = &scissor;
+    VkPipelineRasterizationStateCreateInfo rasterization{
+        VK_STRUCTURE_TYPE_PIPELINE_RASTERIZATION_STATE_CREATE_INFO};
+    rasterization.polygonMode = VK_POLYGON_MODE_FILL;
+    rasterization.cullMode = VK_CULL_MODE_NONE;
+    rasterization.frontFace = VK_FRONT_FACE_COUNTER_CLOCKWISE;
+    rasterization.lineWidth = 1.0f;
+    VkPipelineMultisampleStateCreateInfo multisample{
+        VK_STRUCTURE_TYPE_PIPELINE_MULTISAMPLE_STATE_CREATE_INFO};
+    multisample.rasterizationSamples = VK_SAMPLE_COUNT_1_BIT;
+    VkPipelineColorBlendAttachmentState blendAttachment{};
+    blendAttachment.colorWriteMask = VK_COLOR_COMPONENT_R_BIT | VK_COLOR_COMPONENT_G_BIT |
+        VK_COLOR_COMPONENT_B_BIT | VK_COLOR_COMPONENT_A_BIT;
+    VkPipelineColorBlendStateCreateInfo blend{
+        VK_STRUCTURE_TYPE_PIPELINE_COLOR_BLEND_STATE_CREATE_INFO};
+    blend.attachmentCount = 1;
+    blend.pAttachments = &blendAttachment;
+    VkGraphicsPipelineCreateInfo pipelineInfo{
+        VK_STRUCTURE_TYPE_GRAPHICS_PIPELINE_CREATE_INFO};
+    pipelineInfo.stageCount = 2;
+    pipelineInfo.pStages = stages;
+    pipelineInfo.pVertexInputState = &vertexInput;
+    pipelineInfo.pInputAssemblyState = &assembly;
+    pipelineInfo.pViewportState = &viewportState;
+    pipelineInfo.pRasterizationState = &rasterization;
+    pipelineInfo.pMultisampleState = &multisample;
+    pipelineInfo.pColorBlendState = &blend;
+    pipelineInfo.layout = vulkanPipelineLayout_;
+    pipelineInfo.renderPass = vulkanRenderPass_;
+    VkPipeline pipeline = VK_NULL_HANDLE;
+    const VkResult result = vkCreateGraphicsPipelines(vulkanDevice_, VK_NULL_HANDLE, 1,
+        &pipelineInfo, nullptr, &pipeline);
+    if (result != VK_SUCCESS)
+    {
+        if (std::getenv("XERENGE_XENOS_SHADER_TRACE") != nullptr)
+            std::cerr << "Xenos Vulkan pipeline failed: " << result << '\n';
+        return false;
+    }
+    vulkanPipelines_.emplace(key, pipeline);
+    if (std::getenv("XERENGE_XENOS_SHADER_TRACE") != nullptr)
+        std::cerr << "Xenos Vulkan pipeline ready vs=0x" << std::hex
+                  << activeVertexShaderHash_ << " ps=0x" << activePixelShaderHash_
+                  << std::dec << '\n';
     return true;
 }
 
@@ -392,6 +582,11 @@ void XenosGpu::rasterizeDraw(uint8_t* guestBase, uint32_t initiator)
     if ((primitive != 1u && primitive != 8u) || source != 2u || count == 0 ||
         gpuRegisters_[0x2318] != 0 || gpuRegisters_[0x2104] == 0)
         return;
+
+    // Materialize the native pipeline as soon as both bound stages are known.
+    // Draw submission remains on the bootstrap path until its resources and
+    // render target have been uploaded below.
+    ensureGraphicsPipeline();
 
     const uint32_t fetchRegister = 0x4800u + activeVertexFetchConstantIndex_ * 2u;
     const uint32_t fetch0 = vertexFetchRegisters_[fetchRegister - 0x4800u];
