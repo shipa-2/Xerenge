@@ -2700,6 +2700,8 @@ int main(int argc, char** argv)
             std::cout << "Xenos shader cache: "
                       << (shaderCache.available() ? std::to_string(shaderCache.entryCount) : "none")
                       << " entries\n" << std::flush;
+            if (!gXenosGpu.initializeVulkan())
+                std::cerr << "warning: Xenos Vulkan backend initialization failed\n";
 
             std::atomic<bool> guestReturned = false;
             std::thread guestThread([guestPtr = guest.get(), &guestReturned]

@@ -1,4 +1,5 @@
 #include "xenos_gpu.h"
+#include "shader_cache_runtime.h"
 
 #include <algorithm>
 #include <atomic>
@@ -10,7 +11,97 @@
 #define XXH_INLINE_ALL
 #include <xxhash.h>
 
-#include "shader_cache_runtime.h"
+XenosGpu::~XenosGpu()
+{
+    if (vulkanDevice_ != VK_NULL_HANDLE)
+    {
+        vkDeviceWaitIdle(vulkanDevice_);
+        for (const auto& [_, module] : vulkanShaderModules_)
+            vkDestroyShaderModule(vulkanDevice_, module, nullptr);
+        vkDestroyDevice(vulkanDevice_, nullptr);
+    }
+    if (vulkanInstance_ != VK_NULL_HANDLE)
+        vkDestroyInstance(vulkanInstance_, nullptr);
+}
+
+bool XenosGpu::initializeVulkan()
+{
+    std::lock_guard lock(mutex_);
+    if (vulkanDevice_ != VK_NULL_HANDLE)
+        return true;
+
+    VkApplicationInfo application{VK_STRUCTURE_TYPE_APPLICATION_INFO};
+    application.pApplicationName = "Xerenge Xenos backend";
+    application.apiVersion = VK_API_VERSION_1_1;
+    VkInstanceCreateInfo instanceInfo{VK_STRUCTURE_TYPE_INSTANCE_CREATE_INFO};
+    instanceInfo.pApplicationInfo = &application;
+    if (vkCreateInstance(&instanceInfo, nullptr, &vulkanInstance_) != VK_SUCCESS)
+        return false;
+
+    uint32_t physicalCount = 0;
+    vkEnumeratePhysicalDevices(vulkanInstance_, &physicalCount, nullptr);
+    std::vector<VkPhysicalDevice> physicalDevices(physicalCount);
+    vkEnumeratePhysicalDevices(vulkanInstance_, &physicalCount, physicalDevices.data());
+    for (VkPhysicalDevice candidate : physicalDevices)
+    {
+        uint32_t familyCount = 0;
+        vkGetPhysicalDeviceQueueFamilyProperties(candidate, &familyCount, nullptr);
+        std::vector<VkQueueFamilyProperties> families(familyCount);
+        vkGetPhysicalDeviceQueueFamilyProperties(candidate, &familyCount, families.data());
+        for (uint32_t i = 0; i < familyCount; ++i)
+            if ((families[i].queueFlags & VK_QUEUE_GRAPHICS_BIT) != 0u)
+            {
+                vulkanPhysicalDevice_ = candidate;
+                vulkanQueueFamily_ = i;
+                break;
+            }
+        if (vulkanPhysicalDevice_ != VK_NULL_HANDLE)
+            break;
+    }
+    if (vulkanPhysicalDevice_ == VK_NULL_HANDLE)
+        return false;
+
+    const float priority = 1.0f;
+    VkDeviceQueueCreateInfo queueInfo{VK_STRUCTURE_TYPE_DEVICE_QUEUE_CREATE_INFO};
+    queueInfo.queueFamilyIndex = vulkanQueueFamily_;
+    queueInfo.queueCount = 1;
+    queueInfo.pQueuePriorities = &priority;
+    VkDeviceCreateInfo deviceInfo{VK_STRUCTURE_TYPE_DEVICE_CREATE_INFO};
+    deviceInfo.queueCreateInfoCount = 1;
+    deviceInfo.pQueueCreateInfos = &queueInfo;
+    if (vkCreateDevice(vulkanPhysicalDevice_, &deviceInfo, nullptr, &vulkanDevice_) != VK_SUCCESS)
+        return false;
+    vkGetDeviceQueue(vulkanDevice_, vulkanQueueFamily_, 0, &vulkanQueue_);
+
+    VkPhysicalDeviceProperties properties{};
+    vkGetPhysicalDeviceProperties(vulkanPhysicalDevice_, &properties);
+    std::cout << "Xenos Vulkan backend: " << properties.deviceName << '\n';
+    return true;
+}
+
+bool XenosGpu::ensureShaderModule(uint64_t shaderHash)
+{
+    if (vulkanDevice_ == VK_NULL_HANDLE)
+        return false;
+    if (vulkanShaderModules_.find(shaderHash) != vulkanShaderModules_.end())
+        return true;
+    const auto cache = xerengeShaderCache();
+    const auto* entry = cache.find(shaderHash);
+    if (entry == nullptr)
+        return false;
+    size_t wordCount = 0;
+    const uint32_t* words = cache.spirv(*entry, wordCount);
+    if (words == nullptr)
+        return false;
+    VkShaderModuleCreateInfo info{VK_STRUCTURE_TYPE_SHADER_MODULE_CREATE_INFO};
+    info.codeSize = wordCount * sizeof(uint32_t);
+    info.pCode = words;
+    VkShaderModule module = VK_NULL_HANDLE;
+    if (vkCreateShaderModule(vulkanDevice_, &info, nullptr, &module) != VK_SUCCESS)
+        return false;
+    vulkanShaderModules_.emplace(shaderHash, module);
+    return true;
+}
 
 namespace
 {
@@ -251,6 +342,7 @@ void XenosGpu::loadPointerShader(uint8_t* guestBase, uint32_t address,
         return;
     }
     const auto* match = xerengeShaderCache().findMicrocode(hash);
+    const bool moduleReady = match != nullptr && ensureShaderModule(match->shaderHash);
     if (std::getenv("XERENGE_XENOS_SHADER_TRACE") != nullptr)
     {
         std::cerr << "Xenos pointer shader stage=" << shaderType
@@ -261,6 +353,7 @@ void XenosGpu::loadPointerShader(uint8_t* guestBase, uint32_t address,
         if (match != nullptr)
         {
             std::cerr << " compiled=0x" << match->shaderHash;
+            std::cerr << " module=" << (moduleReady ? "ready" : "missing");
             if (const auto* compiled = xerengeShaderCache().find(match->shaderHash))
             {
                 size_t spirvWords = 0;
@@ -894,6 +987,8 @@ void XenosGpu::processBuffer(uint8_t* guestBase, uint32_t guestAddress,
                     }
                     const auto cache = xerengeShaderCache();
                     const auto* match = cache.findMicrocode(hash);
+                    const bool moduleReady =
+                        match != nullptr && ensureShaderModule(match->shaderHash);
                     if (std::getenv("XERENGE_XENOS_SHADER_TRACE") != nullptr)
                     {
                         std::cerr << "Xenos shader cache "
@@ -904,6 +999,7 @@ void XenosGpu::processBuffer(uint8_t* guestBase, uint32_t guestAddress,
                         if (match != nullptr)
                         {
                             std::cerr << " compiled=0x" << std::hex << match->shaderHash;
+                            std::cerr << " module=" << (moduleReady ? "ready" : "missing");
                             if (const auto* compiled = cache.find(match->shaderHash))
                             {
                                 size_t spirvWords = 0;

@@ -3,11 +3,15 @@
 #include <array>
 #include <cstdint>
 #include <mutex>
+#include <unordered_map>
 #include <vector>
+
+#include <vulkan/vulkan.h>
 
 class XenosGpu
 {
 public:
+    ~XenosGpu();
     static constexpr uint32_t kMmioBase = 0x7FC80000u;
     static constexpr uint32_t kMmioSize = 0x10000u;
     static constexpr uint32_t kCpRbBase = 0x1C0u;
@@ -19,6 +23,7 @@ public:
     void initializeRingBuffer(uint32_t guestAddress, uint32_t sizeLog2);
     void enableReadPointerWriteBack(uint32_t guestAddress, uint32_t blockSizeLog2);
     void processSubmittedBuffer(uint8_t* guestBase, uint32_t guestAddress, uint32_t dwordCount);
+    bool initializeVulkan();
     void present(uint32_t width, uint32_t height);
     bool presentFromGuest(uint8_t* guestBase, uint32_t guestAddress, uint32_t width, uint32_t height);
     std::vector<uint8_t> framebufferCopy() const;
@@ -45,6 +50,7 @@ private:
     void rememberVertexFetchStrides(const uint32_t* code, uint32_t dwordCount);
     void loadPointerShader(uint8_t* guestBase, uint32_t address,
         uint32_t shaderType, uint32_t startSize);
+    bool ensureShaderModule(uint64_t shaderHash);
 
     std::array<uint32_t, 0x2000> registers_{};
     // Xenos Type-0 packets address the 3D register file by dword index.
@@ -83,4 +89,10 @@ private:
     uint32_t lastFrameWidth_ = 0;
     uint32_t lastFrameHeight_ = 0;
     std::array<uint64_t, 256> opcodeCounts_{};
+    VkInstance vulkanInstance_ = VK_NULL_HANDLE;
+    VkPhysicalDevice vulkanPhysicalDevice_ = VK_NULL_HANDLE;
+    VkDevice vulkanDevice_ = VK_NULL_HANDLE;
+    VkQueue vulkanQueue_ = VK_NULL_HANDLE;
+    uint32_t vulkanQueueFamily_ = 0;
+    std::unordered_map<uint64_t, VkShaderModule> vulkanShaderModules_;
 };
