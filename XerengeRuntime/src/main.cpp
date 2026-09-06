@@ -195,6 +195,20 @@ public:
             ctx.r3.u32 = 1;
             return;
         }
+        if (service == "XamContentCreate" || service == "XamContentCreateEnumerator" ||
+            service == "XamNotifyCreateListener" || service == "XamSessionCreateHandle" ||
+            service == "XamVoiceCreate" || service == "XMACreateContext")
+        {
+            ctx.r3.u32 = createObject(base);
+            return;
+        }
+        if (service == "XamContentClose" || service == "XamVoiceClose" || service == "NtClose" ||
+            service == "ObDereferenceObject")
+        {
+            releaseObject(ctx.r3.u32);
+            ctx.r3.u32 = 0;
+            return;
+        }
         if (service == "RtlInitializeCriticalSection")
         {
             clear(base, ctx.r3.u32, 0x20);
@@ -227,6 +241,38 @@ public:
         ctx.r3.u32 = 0xC0000001u; // STATUS_UNSUCCESSFUL
     }
 
+    bool invokeCallback(uint32_t address, PPCContext& ctx)
+    {
+        if (address < kVtableBase || address >= kVtableBase + 3 * 4)
+            return false;
+
+        const uint32_t method = (address - kVtableBase) / 4;
+        const uint32_t object = ctx.r3.u32;
+        auto it = objects_.find(object);
+        if (it == objects_.end())
+        {
+            ctx.r3.u32 = 0xC000000Du; // STATUS_INVALID_PARAMETER
+            return true;
+        }
+        if (method == 0)
+        {
+            ++it->second;
+            ctx.r3.u32 = 1;
+        }
+        else if (method == 1)
+        {
+            releaseObject(object);
+            ctx.r3.u32 = 0;
+        }
+        else
+        {
+            ctx.r3.u32 = 0x80004002u; // E_NOINTERFACE
+        }
+        return true;
+    }
+
+    static constexpr uint32_t vtableBase() { return kVtableBase; }
+
 private:
     uint32_t allocate(uint32_t size, uint8_t* base)
     {
@@ -247,9 +293,41 @@ private:
             std::memset(base + address, 0, size);
     }
 
+    uint32_t createObject(uint8_t* base)
+    {
+        const uint32_t object = allocate(0x20, base);
+        if (object == 0)
+            return 0;
+        storeU32(base, object, kVtableBase);
+        objects_.emplace(object, 1);
+        return object;
+    }
+
+    void releaseObject(uint32_t object)
+    {
+        auto it = objects_.find(object);
+        if (it == objects_.end())
+            return;
+        if (it->second > 1)
+            --it->second;
+        else
+        {
+            objects_.erase(it);
+            allocations_.erase(object);
+        }
+    }
+
+    static void storeU32(uint8_t* base, uint32_t address, uint32_t value)
+    {
+        const uint32_t bigEndianValue = __builtin_bswap32(value);
+        std::memcpy(base + address, &bigEndianValue, sizeof(bigEndianValue));
+    }
+
     uint32_t heapCursor_ = 0x60000000u;
     static constexpr uint32_t heapLimit_ = 0x68000000u;
+    static constexpr uint32_t kVtableBase = 0x81000000u;
     std::unordered_map<uint32_t, uint32_t> allocations_;
+    std::unordered_map<uint32_t, uint32_t> objects_;
 };
 
 XboxServiceLayer gXboxServices;
@@ -259,8 +337,10 @@ extern "C" void PPCImportedServiceTrap(const char* service, PPCContext& ctx, uin
     gXboxServices.invoke(service, ctx, base);
 }
 
-extern "C" void PPCUnknownIndirectTrap(uint32_t address, PPCContext& ctx, uint8_t*)
+extern "C" void PPCUnknownIndirectTrap(uint32_t address, PPCContext& ctx, uint8_t* base)
 {
+    if (gXboxServices.invokeCallback(address, ctx))
+        return;
     ++gPpcUnknownIndirectCalls;
     if (gPpcUnknownIndirectCalls <= 40)
     {
