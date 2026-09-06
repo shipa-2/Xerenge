@@ -140,6 +140,22 @@ void XenosGpu::processRing(uint8_t* guestBase)
         {
             ++type3Count_;
             length = ((packet >> 16) & 0x3FFFu) + 2;
+            const uint32_t opcode = (packet >> 8) & 0xFFu;
+            if (opcode == 0x22u || opcode == 0x23u || opcode == 0x2Du ||
+                opcode == 0x2Eu || opcode == 0x36u)
+                ++drawPacketCount_;
+            if (opcode == 0x64u)
+            {
+                ++swapPacketCount_;
+                if (length >= 5 && readPointer_ + 4 < target)
+                {
+                    lastFrameWidth_ = loadGuestBE(guestBase,
+                        ringBase_ + (readPointer_ + 3) * 4);
+                    lastFrameHeight_ = loadGuestBE(guestBase,
+                        ringBase_ + (readPointer_ + 4) * 4);
+                    ++frameCount_;
+                }
+            }
         }
 
         if (length == 0 || length > target - readPointer_)
