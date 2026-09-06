@@ -268,6 +268,13 @@ void XenosGpu::rasterizeDraw(uint8_t* guestBase, uint32_t initiator)
     constexpr uint32_t height = 720;
     if (edram_.size() != size_t(width) * height * 4)
         edram_.assign(size_t(width) * height * 4, 0);
+    const uint32_t colorMask = gpuRegisters_[0x2104u];
+    auto writeColorMasked = [&](size_t pixel, const uint8_t* color)
+    {
+        for (uint32_t component = 0; component < 4; ++component)
+            if ((colorMask & (1u << component)) != 0u)
+                edram_[pixel + component] = color[component];
+    };
 
     const uint32_t firstIndex = gpuRegisters_[0x2102] & 0x00FFFFFFu;
     const uint32_t drawVertices = primitive == 8u ? std::min(count, 3u) : count;
@@ -372,7 +379,7 @@ void XenosGpu::rasterizeDraw(uint8_t* guestBase, uint32_t initiator)
             if (std::isfinite(value))
                 color[component] = static_cast<uint8_t>(std::clamp(value, 0.0f, 1.0f) * 255.0f);
         }
-        std::memcpy(edram_.data() + pixel, color, sizeof(color));
+        writeColorMasked(pixel, color);
     }
 
         if (primitive == 8u && drawVertices == 3u)
@@ -561,8 +568,7 @@ void XenosGpu::rasterizeDraw(uint8_t* guestBase, uint32_t initiator)
                         }
                         if (alphaTest && output[3] / 255.0f < alphaThreshold)
                             continue;
-                        std::memcpy(edram_.data() + (size_t(y) * width + x) * 4,
-                            output.data(), output.size());
+                        writeColorMasked((size_t(y) * width + x) * 4, output.data());
                     }
                 }
         };
