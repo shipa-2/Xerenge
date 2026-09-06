@@ -1303,6 +1303,18 @@ public:
             ctx.r3.u32 = createObject(base);
             return;
         }
+        if (service == "XNotifyGetNext")
+        {
+            // BOOL XNotifyGetNext(listener, filter, id, parameter). The
+            // bootstrap runtime has no host notification source yet, so
+            // return an empty queue and initialize both optional outputs.
+            if (ctx.r5.u32 != 0)
+                storeU32(base, ctx.r5.u32, 0);
+            if (ctx.r6.u32 != 0)
+                storeU32(base, ctx.r6.u32, 0);
+            ctx.r3.u32 = 0;
+            return;
+        }
         if (service == "XamContentClose" || service == "XamVoiceClose" || service == "NtClose" ||
             service == "ObDereferenceObject")
         {
@@ -1763,6 +1775,20 @@ extern "C" uint32_t PPCMaterializeObject(PPCContext& ctx, uint8_t* base)
 extern "C" void PPCImportedServiceTrap(const char* service, PPCContext& ctx, uint8_t* base)
 {
     gXboxServices.invoke(service, ctx, base);
+}
+
+// Calls to these XAM thunks are emitted as direct title calls by XenonRecomp,
+// while indirect imports already use ppc_import_stubs.cpp. Strong definitions
+// here override the weak translated NOP wrappers and keep both paths on the
+// same service implementation.
+extern "C" void sub_825C64DC(PPCContext& ctx, uint8_t* base)
+{
+    gXboxServices.invoke("XamNotifyCreateListener", ctx, base);
+}
+
+extern "C" void sub_825C614C(PPCContext& ctx, uint8_t* base)
+{
+    gXboxServices.invoke("XNotifyGetNext", ctx, base);
 }
 
 extern "C" void PPCUnknownIndirectTrap(uint32_t address, PPCContext& ctx, uint8_t* base)
