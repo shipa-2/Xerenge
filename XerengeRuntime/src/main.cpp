@@ -271,6 +271,16 @@ public:
         return true;
     }
 
+    void materializeNullObject(PPCContext& ctx, uint8_t* base)
+    {
+        const uint32_t slot = ctx.r3.u32;
+        if (slot < 0x82000000u || slot >= 0x90000000u)
+            return;
+        const uint32_t object = createObject(base);
+        if (object != 0)
+            storeU32(base, slot, object);
+    }
+
     static constexpr uint32_t vtableBase() { return kVtableBase; }
 
 private:
@@ -341,11 +351,26 @@ extern "C" void PPCUnknownIndirectTrap(uint32_t address, PPCContext& ctx, uint8_
 {
     if (gXboxServices.invokeCallback(address, ctx))
         return;
+    if (address == 0)
+    {
+        gXboxServices.materializeNullObject(ctx, base);
+        ctx.r3.u32 = 0;
+        return;
+    }
+    if (address >= PPC_IMAGE_BASE && address < PPC_CODE_BASE)
+    {
+        if (gPpcUnknownIndirectCalls <= 40)
+            std::cerr << "unsupported Xbox callback address below recompiled code: 0x"
+                      << std::hex << address << std::dec << '\n';
+        ctx.r3.u32 = 0;
+        return;
+    }
     ++gPpcUnknownIndirectCalls;
     if (gPpcUnknownIndirectCalls <= 40)
     {
         std::cerr << "unresolved PPC indirect target: 0x" << std::hex << address
                   << " from lr=0x" << ctx.lr << " r1=0x" << ctx.r1.u64
+                  << " r3=0x" << ctx.r3.u64 << " r4=0x" << ctx.r4.u64
                   << " r11=0x" << ctx.r11.u64 << " r30=0x" << ctx.r30.u64
                   << " r31=0x" << ctx.r31.u64 << std::dec << '\n';
     }
