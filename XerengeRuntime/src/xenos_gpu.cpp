@@ -8,6 +8,8 @@
 
 namespace
 {
+constexpr uint32_t kEdramSize = 10u * 1024u * 1024u;
+
 uint32_t loadGuestBE(const uint8_t* base, uint32_t address)
 {
     uint32_t value = 0;
@@ -97,6 +99,36 @@ void XenosGpu::writeGpuRegister(uint32_t index, uint32_t value)
         gpuRegisters_[index] = value;
 }
 
+void XenosGpu::resolveToGuest(uint8_t* guestBase)
+{
+    const uint32_t physicalDestination = gpuRegisters_[0x2319];
+    if (physicalDestination == 0)
+        return;
+
+    if (edram_.empty())
+        edram_.resize(kEdramSize, 0);
+
+    // RB_COPY_DEST_BASE is a 29-bit physical address. The runtime maps the
+    // title's physical allocations through the 0x60000000 guest alias.
+    const uint32_t destination =
+        0x60000000u | (physicalDestination & 0x1FFFFFFFu);
+    constexpr uint32_t width = 1280;
+    constexpr uint32_t height = 720;
+    constexpr size_t byteCount = size_t(width) * height * 4;
+    if (destination > 0xFFFFFFFFu - byteCount)
+        return;
+
+    // The linear path is deliberately limited to the portion of EDRAM that
+    // exists in this bring-up. Once the software rasterizer writes tiled
+    // samples, this is replaced by the Xenos tile resolve routine.
+    const size_t copyCount = std::min(byteCount, edram_.size());
+    std::memcpy(guestBase + destination, edram_.data(), copyCount);
+    ++resolveCount_;
+    if (std::getenv("XERENGE_XENOS_RESOLVE_TRACE") != nullptr)
+        std::cerr << "Xenos resolve destination=0x" << std::hex << destination
+                  << " bytes=" << std::dec << copyCount << '\n';
+}
+
 void XenosGpu::processSubmittedBuffer(uint8_t* guestBase, uint32_t guestAddress, uint32_t dwordCount)
 {
     std::lock_guard lock(mutex_);
@@ -175,6 +207,13 @@ void XenosGpu::processBuffer(uint8_t* guestBase, uint32_t guestAddress,
                     guestBase, guestAddress + (offset + 2) * 4);
                 std::cerr << "Xenos immediate shader type=" << shaderType
                           << " dwords=" << (startSize & 0xFFFFu) << '\n';
+            }
+            if (opcode == 0x46u && length >= 2 && offset + 1 < dwordCount)
+            {
+                const uint32_t event = loadGuestBE(
+                    guestBase, guestAddress + (offset + 1) * 4);
+                if (event == 6u)
+                    resolveToGuest(guestBase);
             }
             if (std::getenv("XERENGE_XENOS_PACKET_TRACE") != nullptr)
             {
@@ -352,6 +391,13 @@ void XenosGpu::processRing(uint8_t* guestBase)
                                 loadGuestBE(guestBase,
                                     ringBase_ + (readPointer_ + 1 + i) * 4));
                 }
+            }
+            if (opcode == 0x46u && length >= 2 && readPointer_ + 1 < target)
+            {
+                const uint32_t event = loadGuestBE(guestBase,
+                    ringBase_ + (readPointer_ + 1) * 4);
+                if (event == 6u)
+                    resolveToGuest(guestBase);
             }
             if (opcode == 0x3Fu && length >= 3 && readPointer_ + 2 < target)
             {

@@ -37,6 +37,7 @@ public:
 
 private:
     void writeGpuRegister(uint32_t index, uint32_t value);
+    void resolveToGuest(uint8_t* guestBase);
     void processBuffer(uint8_t* guestBase, uint32_t guestAddress,
         uint32_t dwordCount, uint32_t recursionDepth);
     void processRing(uint8_t* guestBase);
@@ -48,6 +49,7 @@ private:
     std::array<uint32_t, 0x8000> gpuRegisters_{};
     mutable std::recursive_mutex mutex_;
     std::vector<uint8_t> framebuffer_;
+    std::vector<uint8_t> edram_;
     uint32_t writePointer_ = 0;
     uint32_t readPointer_ = 0;
     uint32_t ringBase_ = 0;
@@ -60,6 +62,7 @@ private:
     uint64_t drawPacketCount_ = 0;
     uint64_t swapPacketCount_ = 0;
     uint64_t frameCount_ = 0;
+    uint64_t resolveCount_ = 0;
     uint32_t lastFrameWidth_ = 0;
     uint32_t lastFrameHeight_ = 0;
     std::array<uint64_t, 256> opcodeCounts_{};
