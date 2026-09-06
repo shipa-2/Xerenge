@@ -6,6 +6,8 @@
 #include <cstdlib>
 #include <cstring>
 #include <cmath>
+#include <filesystem>
+#include <fstream>
 #include <iostream>
 
 #define XXH_INLINE_ALL
@@ -313,6 +315,18 @@ void XenosGpu::loadPointerShader(uint8_t* guestBase, uint32_t address,
     const uint32_t guestAddress = gpuPhysicalToGuest(address & 0x3FFFFFFCu);
     const size_t byteSize = size_t(dwordCount) * sizeof(uint32_t);
     const uint64_t hash = XXH3_64bits(guestBase + guestAddress, byteSize);
+    if (const char* captureDirectory = std::getenv("XERENGE_XENOS_SHADER_CAPTURE_DIR"))
+    {
+        std::error_code error;
+        std::filesystem::create_directories(captureDirectory, error);
+        const auto path = std::filesystem::path(captureDirectory) /
+            (std::to_string(hash) + (shaderType == 0u ? ".vs.bin" : ".ps.bin"));
+        if (!error && !std::filesystem::exists(path))
+        {
+            std::ofstream stream(path, std::ios::binary);
+            stream.write(reinterpret_cast<const char*>(guestBase + guestAddress), byteSize);
+        }
+    }
     if (std::getenv("XERENGE_XENOS_SHADER_DUMP") != nullptr)
     {
         std::cerr << "Xenos pointer shader code stage=" << shaderType
