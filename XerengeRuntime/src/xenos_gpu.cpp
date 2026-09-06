@@ -116,6 +116,24 @@ void XenosGpu::enableReadPointerWriteBack(uint32_t guestAddress, uint32_t)
 
 void XenosGpu::writeGpuRegister(uint32_t index, uint32_t value)
 {
+    if (index >= 0x4800u && index < 0x4800u + vertexFetchRegisters_.size())
+    {
+        const uint32_t fetchIndex = index - 0x4800u;
+        if ((value & 0x3u) == 3u)
+        {
+            vertexFetchRegisters_[fetchIndex] = value;
+            pendingVertexFetchRegister_ = index;
+            return;
+        }
+        if (pendingVertexFetchRegister_ != 0xFFFFFFFFu &&
+            index == pendingVertexFetchRegister_ + 1u)
+        {
+            vertexFetchRegisters_[fetchIndex] = value;
+            pendingVertexFetchRegister_ = 0xFFFFFFFFu;
+            return;
+        }
+        pendingVertexFetchRegister_ = 0xFFFFFFFFu;
+    }
     if (index < gpuRegisters_.size())
     {
         gpuRegisters_[index] = value;
@@ -214,8 +232,8 @@ void XenosGpu::rasterizeDraw(uint8_t* guestBase, uint32_t initiator)
         return;
 
     const uint32_t fetchRegister = 0x4800u + activeVertexFetchConstantIndex_ * 2u;
-    const uint32_t fetch0 = gpuRegisters_[fetchRegister];
-    const uint32_t fetch1 = gpuRegisters_[fetchRegister + 1u];
+    const uint32_t fetch0 = vertexFetchRegisters_[fetchRegister - 0x4800u];
+    const uint32_t fetch1 = vertexFetchRegisters_[fetchRegister - 0x4800u + 1u];
     if (std::getenv("XERENGE_XENOS_VERTEX_TRACE") != nullptr)
         std::cerr << "Xenos vertex-fetch slot=" << activeVertexFetchConstantIndex_
                   << " reg=0x" << std::hex << fetchRegister
@@ -624,8 +642,8 @@ void XenosGpu::processBuffer(uint8_t* guestBase, uint32_t guestAddress,
             {
                 const uint32_t index = writeOne ? baseRegister : baseRegister + i;
                 if (index < gpuRegisters_.size())
-                    gpuRegisters_[index] = loadGuestBE(
-                        guestBase, guestAddress + (offset + 1 + i) * 4);
+                    writeGpuRegister(index, loadGuestBE(
+                        guestBase, guestAddress + (offset + 1 + i) * 4));
             }
         }
         else if (type == 3)
@@ -951,8 +969,8 @@ void XenosGpu::processRing(uint8_t* guestBase)
             {
                 const uint32_t index = writeOne ? baseRegister : baseRegister + i;
                 if (index < gpuRegisters_.size())
-                    gpuRegisters_[index] = loadGuestBE(
-                        guestBase, ringBase_ + (readPointer_ + 1 + i) * 4);
+                    writeGpuRegister(index, loadGuestBE(
+                        guestBase, ringBase_ + (readPointer_ + 1 + i) * 4));
             }
         }
         else if (type == 3)

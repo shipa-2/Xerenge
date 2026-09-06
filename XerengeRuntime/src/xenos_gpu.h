@@ -51,6 +51,11 @@ private:
     // Keeping it separate from the MMIO register window lets draw handling
     // inspect the state accumulated through indirect command buffers.
     std::array<uint32_t, 0x8000> gpuRegisters_{};
+    // Vertex and texture fetch constants share the Xenos register window but
+    // are consumed by different shader stages. Keep vertex descriptors
+    // separately so a vf0 upload cannot destroy tf0 for the pixel shader.
+    std::array<uint32_t, 192> vertexFetchRegisters_{};
+    uint32_t pendingVertexFetchRegister_ = 0xFFFFFFFFu;
     std::array<uint32_t, 96> vertexFetchStrideWords_{};
     uint64_t activeVertexShaderHash_ = 0;
     uint64_t activePixelShaderHash_ = 0;
