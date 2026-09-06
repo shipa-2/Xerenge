@@ -42,12 +42,14 @@ private:
     void processBuffer(uint8_t* guestBase, uint32_t guestAddress,
         uint32_t dwordCount, uint32_t recursionDepth);
     void processRing(uint8_t* guestBase);
+    void rememberVertexFetchStrides(const uint32_t* code, uint32_t dwordCount);
 
     std::array<uint32_t, 0x2000> registers_{};
     // Xenos Type-0 packets address the 3D register file by dword index.
     // Keeping it separate from the MMIO register window lets draw handling
     // inspect the state accumulated through indirect command buffers.
     std::array<uint32_t, 0x8000> gpuRegisters_{};
+    std::array<uint32_t, 96> vertexFetchStrideWords_{};
     mutable std::recursive_mutex mutex_;
     std::vector<uint8_t> framebuffer_;
     std::vector<uint8_t> edram_;

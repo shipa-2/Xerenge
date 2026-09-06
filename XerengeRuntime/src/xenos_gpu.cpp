@@ -107,7 +107,31 @@ void XenosGpu::enableReadPointerWriteBack(uint32_t guestAddress, uint32_t)
 void XenosGpu::writeGpuRegister(uint32_t index, uint32_t value)
 {
     if (index < gpuRegisters_.size())
+    {
         gpuRegisters_[index] = value;
+        if (index == 0x2104u && std::getenv("XERENGE_XENOS_MASK_TRACE") != nullptr)
+            std::cerr << "Xenos RB_COLOR_MASK=0x" << std::hex << value << std::dec << '\n';
+    }
+}
+
+void XenosGpu::rememberVertexFetchStrides(const uint32_t* code, uint32_t dwordCount)
+{
+    // Immediate Xenos vertex shaders are triples of dwords.  The stride is
+    // carried by the third word of a full vfetch instruction, while the
+    // fetch constant index is carried by the first word.  Recording this
+    // small piece of metadata lets the bootstrap rasterizer use the same
+    // layout as the shader without hard-coding a program id.
+    for (uint32_t offset = 0; offset + 2 < dwordCount; offset += 3)
+    {
+        const uint32_t word0 = code[offset];
+        if ((word0 & 0x1Fu) != 0u) // FetchOpcode::VertexFetch.
+            continue;
+        const uint32_t constantIndex =
+            (((word0 >> 20) & 0x1Fu) * 3u) + ((word0 >> 25) & 0x3u);
+        const uint32_t stride = code[offset + 2] & 0xFFu;
+        if (constantIndex < vertexFetchStrideWords_.size() && stride != 0u)
+            vertexFetchStrideWords_[constantIndex] = stride;
+    }
 }
 
 void XenosGpu::rasterizeDraw(uint8_t* guestBase, uint32_t initiator)
@@ -129,7 +153,14 @@ void XenosGpu::rasterizeDraw(uint8_t* guestBase, uint32_t initiator)
 
     const uint32_t physicalAddress = (fetch0 >> 2) << 2;
     const uint32_t vertexAddress = gpuPhysicalToGuest(physicalAddress);
-    const uint32_t strideWords = (fetch1 >> 2) & 0xFFFFFFu;
+    // The fetch constant's second word is the buffer size, not the vertex
+    // stride.  Xenos encodes the stride in each vfetch instruction; the
+    // bootstrap VS loaded by Burnout uses a seven-dword vertex and its
+    // constant therefore remains zero in the register file.  The metadata is
+    // populated when an immediate vertex shader is received below.
+    uint32_t strideWords = vertexFetchStrideWords_[0];
+    if (strideWords == 0u)
+        strideWords = (fetch1 >> 2) & 0xFFFFFFu;
     if (strideWords < 3 || strideWords > 0x1000)
         return;
 
@@ -329,6 +360,15 @@ void XenosGpu::processBuffer(uint8_t* guestBase, uint32_t guestAddress,
                     guestBase, guestAddress + (offset + 2) * 4) & 0xFFFFu;
                 if (codeDwords != 0 && codeDwords <= length - 3)
                 {
+                    if (shaderType == 0u)
+                    {
+                        std::array<uint32_t, 1024> code{};
+                        const uint32_t copied = std::min<uint32_t>(codeDwords, code.size());
+                        for (uint32_t i = 0; i < copied; ++i)
+                            code[i] = loadGuestBE(
+                                guestBase, guestAddress + (offset + 3 + i) * 4);
+                        rememberVertexFetchStrides(code.data(), copied);
+                    }
                     const size_t byteSize = size_t(codeDwords) * sizeof(uint32_t);
                     const uint64_t hash = XXH3_64bits(
                         guestBase + guestAddress + (offset + 3) * 4, byteSize);
