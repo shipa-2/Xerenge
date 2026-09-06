@@ -15,6 +15,7 @@
 #include <optional>
 #include <string_view>
 #include <string>
+#include <thread>
 #include <unordered_map>
 #include <vector>
 
@@ -464,6 +465,35 @@ public:
             ctx.r3.u32 = 0;
             return;
         }
+        if (service == "ExCreateThread")
+        {
+            // Xbox ABI: r3 is the output handle, r5 is the optional thread
+            // id, r7 is the guest start address and r8 its context.  The
+            // The xapi startup trampoline in r6 is itself a recompiled guest
+            // function.  Entering it preserves the title's TLS and callback
+            // setup before PPCDispatchIndirect invokes the requested start
+            // address.
+            const uint32_t handleAddress = ctx.r3.u32;
+            const uint32_t threadIdAddress = ctx.r5.u32;
+            const uint32_t startAddress = ctx.r7.u32;
+            const uint32_t startContext = ctx.r8.u32;
+            if (std::getenv("XERENGE_PPC_TRACE") != nullptr)
+                std::cerr << "ExCreateThread handle=0x" << std::hex << handleAddress
+                          << " startup=0x" << ctx.r6.u32
+                          << " start=0x" << startAddress
+                          << " context=0x" << startContext
+                          << " flags=0x" << ctx.r9.u32 << std::dec << '\n';
+            const uint32_t handle = createObject(base);
+            if (handleAddress != 0)
+                storeU32(base, handleAddress, handle);
+            const uint32_t threadId = nextThreadId_.fetch_add(1, std::memory_order_relaxed);
+            if (threadIdAddress != 0)
+                storeU32(base, threadIdAddress, threadId);
+            if (handle != 0 && startAddress != 0)
+                launchGuestThread(base, ctx.r6.u32, startAddress, startContext, threadId);
+            ctx.r3.u32 = handle != 0 ? 0 : 0xC0000017u;
+            return;
+        }
         if (service == "VdGetSystemCommandBuffer")
         {
             // Xenia exposes these as stable guest tokens.  The title passes
@@ -809,6 +839,19 @@ public:
     }
 
 private:
+    void launchGuestThread(uint8_t* base, uint32_t startupAddress, uint32_t startAddress,
+        uint32_t startContext, uint32_t threadId)
+    {
+        std::thread([base, startupAddress, startAddress, startContext, threadId]
+        {
+            PPCContext threadContext{};
+            threadContext.r1.u32 = 0x70000000u - ((threadId & 0xFFu) * 0x10000u);
+            threadContext.r3.u32 = startAddress;
+            threadContext.r4.u32 = startContext;
+            PPCDispatchIndirect(threadContext, base, startupAddress);
+        }).detach();
+    }
+
     uint32_t allocate(uint32_t size, uint8_t* base)
     {
         constexpr uint32_t alignment = 16;
@@ -896,6 +939,7 @@ private:
     bool vtableAllocated_ = false;
     std::array<uint32_t, 64> tlsSlots_{};
     std::array<bool, 64> tlsUsed_{};
+    std::atomic<uint32_t> nextThreadId_{1};
 };
 
 XboxServiceLayer gXboxServices;
