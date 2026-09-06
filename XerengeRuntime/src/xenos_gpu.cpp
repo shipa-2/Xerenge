@@ -55,7 +55,12 @@ bool XenosGpu::presentFromGuest(uint8_t* guestBase, uint32_t guestAddress,
     width = std::clamp(width, 1u, 4096u);
     height = std::clamp(height, 1u, 4096u);
     const size_t byteCount = static_cast<size_t>(width) * height * 4;
-    if (guestAddress == 0 || guestAddress > 0xFFFFFFFFu - byteCount)
+    // Xenos render targets are exposed through the title's 0x60000000
+    // physical-memory alias.  Reject low values passed by a malformed or
+    // not-yet-initialized VdSwap call instead of copying arbitrary guest
+    // memory into the displayed framebuffer.
+    if (guestAddress < 0x60000000u || guestAddress >= 0x80000000u ||
+        guestAddress > 0xFFFFFFFFu - byteCount)
         return false;
 
     // The first bring-up path uses the guest surface as a linear X8R8G8B8
@@ -83,6 +88,11 @@ bool XenosGpu::presentFromGuest(uint8_t* guestBase, uint32_t guestAddress,
                   << " nonzeroRgbPixels=" << nonzeroRgbPixels
                   << " checksum=0x" << std::hex << checksum << std::dec << '\n';
     }
+    // The display engine scans this surface out as X8R8G8B8.  Render-target
+    // alpha is not desktop-window transparency; Burnout leaves it at zero
+    // while writing valid RGB, so make scanout pixels opaque for OpenGL.
+    for (size_t i = 0; i < framebuffer_.size(); i += 4)
+        framebuffer_[i + 3] = 255;
     lastFrameWidth_ = width;
     lastFrameHeight_ = height;
     return true;
@@ -637,13 +647,24 @@ void XenosGpu::resolveToGuest(uint8_t* guestBase)
     if (std::getenv("XERENGE_XENOS_RESOLVE_TRACE") != nullptr)
     {
         size_t nonzeroPixels = 0;
+        size_t nonzeroAlphaPixels = 0;
+        size_t rgbWithZeroAlphaPixels = 0;
+        size_t whiteRgbPixels = 0;
+        uint32_t firstNonzeroPixel = 0;
         uint32_t firstPixel = 0;
         uint32_t differentPixels = 0;
         for (size_t i = 0; i + 3 < copyCount; i += 4)
         {
             nonzeroPixels += (edram_[i] | edram_[i + 1] | edram_[i + 2]) != 0;
+            nonzeroAlphaPixels += edram_[i + 3] != 0;
+            rgbWithZeroAlphaPixels +=
+                (edram_[i] | edram_[i + 1] | edram_[i + 2]) != 0 && edram_[i + 3] == 0;
+            whiteRgbPixels += edram_[i] == 255 && edram_[i + 1] == 255 &&
+                edram_[i + 2] == 255;
             const uint32_t pixel = uint32_t(edram_[i]) | (uint32_t(edram_[i + 1]) << 8) |
                 (uint32_t(edram_[i + 2]) << 16) | (uint32_t(edram_[i + 3]) << 24);
+            if (firstNonzeroPixel == 0 && (pixel & 0x00FFFFFFu) != 0)
+                firstNonzeroPixel = pixel;
             if (i == 0)
                 firstPixel = pixel;
             differentPixels += pixel != firstPixel;
@@ -651,6 +672,10 @@ void XenosGpu::resolveToGuest(uint8_t* guestBase)
         std::cerr << "Xenos resolve destination=0x" << std::hex << destination
                   << " bytes=" << std::dec << copyCount
                   << " nonzeroRgbPixels=" << nonzeroPixels
+                  << " nonzeroAlphaPixels=" << nonzeroAlphaPixels
+                  << " rgbWithZeroAlphaPixels=" << rgbWithZeroAlphaPixels
+                  << " whiteRgbPixels=" << whiteRgbPixels
+                  << " firstNonzeroPixel=0x" << std::hex << firstNonzeroPixel << std::dec
                   << " differentFromFirst=" << differentPixels
                   << " firstPixel=0x" << std::hex << firstPixel << std::dec << '\n';
     }

@@ -1559,7 +1559,9 @@ public:
     bool materializeGuestObject(uint32_t object, uint8_t* base)
     {
         std::lock_guard lock(stateMutex_);
-        if (object < 0x82000000u || object >= 0x90000000u)
+        const bool titleObject = object >= 0x82000000u && object < 0x90000000u;
+        const bool guestHeapObject = object >= 0x60000000u && object < 0x80000000u;
+        if (!titleObject && !guestHeapObject)
             return false;
         if (objects_.find(object) == objects_.end())
             objects_.emplace(object, 1);
@@ -1767,6 +1769,28 @@ extern "C" void PPCUnknownIndirectTrap(uint32_t address, PPCContext& ctx, uint8_
 {
     if (gXboxServices.invokeCallback(address, ctx))
         return;
+    if (address == 0x80000000u && ctx.lr == 0x82381170u)
+    {
+        // The title leaves this optional platform handler at the Xenon
+        // sentinel value 0x80000000.  It is called only to notify the
+        // platform after resource setup; treating the absent handler as a
+        // successful no-op keeps the guest on its normal initialization path.
+        ctx.r3.u32 = 0;
+        return;
+    }
+    if (ctx.lr == 0x8234796Cu &&
+        ctx.r31.u32 >= 0x82000000u && ctx.r31.u32 < 0x90000000u)
+    {
+        // CGtSoundListenerManagerBase::Update walks the listener array at
+        // this point.  Until the audio backend creates listeners, the retail
+        // BSS contains an uninitialized count, which otherwise turns into a
+        // huge loop of bogus indirect calls and starves video initialization.
+        // The current runtime has no audio listener backend, so terminate the
+        // list after the first invalid entry and let the graphics path run.
+        XboxServiceLayer::writeGuestU32(base, ctx.r31.u32 + 8u, 0u);
+        ctx.r3.u32 = 0;
+        return;
+    }
     if (ctx.lr == 0x8256424Cu && ctx.r3.u32 == 0x49242492u)
     {
         // The early resource manager contains an uninitialized platform
@@ -1802,6 +1826,19 @@ extern "C" void PPCUnknownIndirectTrap(uint32_t address, PPCContext& ctx, uint8_
             PPCContext objectContext = ctx;
             objectContext.r3.u32 = slot;
             ctx.r3.u32 = gXboxServices.materializeNullObject(objectContext, base);
+            return;
+        }
+    }
+    if (ctx.lr == 0x82095B04u &&
+        ctx.r3.u32 >= 0x60000000u && ctx.r3.u32 < 0x80000000u)
+    {
+        // The resource bootstrap can receive a guest-heap platform object
+        // before its vtable has been installed.  Its next instructions load
+        // [object+0], then call slot 24; install the synthetic Xbox vtable at
+        // that exact object so the call returns through invokeCallback.
+        if (gXboxServices.materializeGuestObject(ctx.r3.u32, base))
+        {
+            ctx.r3.u32 = 0;
             return;
         }
     }
@@ -2609,8 +2646,6 @@ int main(int argc, char** argv)
             glfwMakeContextCurrent(window);
             glfwSwapInterval(1);
             glPixelStorei(GL_UNPACK_ALIGNMENT, 1);
-            glEnable(GL_BLEND);
-            glBlendFunc(GL_SRC_ALPHA, GL_ONE_MINUS_SRC_ALPHA);
             bool readbackReported = false;
             while (!glfwWindowShouldClose(window))
             {
