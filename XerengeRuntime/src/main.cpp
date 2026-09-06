@@ -540,7 +540,7 @@ class XboxServiceLayer
 public:
     void invoke(std::string_view service, PPCContext& ctx, uint8_t* base)
     {
-        std::lock_guard lock(stateMutex_);
+        std::unique_lock lock(stateMutex_);
         ++gPpcServiceCalls;
         if (service.compare(0, 7, "__imp__") == 0)
             service.remove_prefix(7);
@@ -686,6 +686,10 @@ public:
             // The graphics worker uses a kernel event to drain the command
             // queue. A bounded timeout keeps the guest cooperative while
             // allowing it to poll an event that has no host object yet.
+            // Do not hold the service-state mutex while sleeping: the timer
+            // and graphics workers otherwise starve the title's main thread
+            // at the host lock even though the guest wait is only a timeout.
+            lock.unlock();
             std::this_thread::sleep_for(std::chrono::microseconds(100));
             if (std::getenv("XERENGE_PPC_TRACE") != nullptr)
             {
@@ -824,6 +828,7 @@ public:
             // These calls are used by the title's timer worker. Returning
             // immediately makes the worker consume the entire host core and
             // starves the guest thread that advances the game state.
+            lock.unlock();
             std::this_thread::sleep_for(std::chrono::microseconds(100));
             ctx.r3.u32 = 0;
             return;
@@ -901,7 +906,6 @@ public:
                 storeU32(base, ctx.r3.u32, 0xBEEF0000u);
             if (ctx.r4.u32 != 0)
                 storeU32(base, ctx.r4.u32, 0xBEEF0001u);
-            gXenosGpu.initializeRingBuffer(0xBEEF0000u, 16);
             ctx.r3.u32 = 0;
             return;
         }
@@ -916,11 +920,29 @@ public:
             const uint32_t fetch3 = loadU32(base, fetch + 12);
             const uint32_t fetch4 = loadU32(base, fetch + 16);
             const uint32_t fetch5 = loadU32(base, fetch + 20);
-            const uint32_t fallbackWidth = (fetch2 & 0x1FFFu) + 1;
-            const uint32_t fallbackHeight = ((fetch2 >> 13) & 0x1FFFu) + 1;
-            const uint32_t width = ctx.r11.u32 != 0 ? loadU32(base, ctx.r11.u32) : fallbackWidth;
+            const uint32_t fallbackWidth = 1280;
+            const uint32_t fallbackHeight = 720;
+            const uint32_t requestedWidth = ctx.r11.u32 != 0 ? loadU32(base, ctx.r11.u32) : 0;
             const uint32_t heightPointer = loadU32(base, ctx.r1.u32 + 84);
-            const uint32_t height = heightPointer != 0 ? loadU32(base, heightPointer) : fallbackHeight;
+            const uint32_t requestedHeight = heightPointer != 0 ? loadU32(base, heightPointer) : 0;
+            // The title's VdSwap wrapper passes several stack pointers whose
+            // positions vary between dashboard/runtime builds. Reject values
+            // that are clearly pointers or one-pixel sentinels and use the
+            // mode encoded in the fetch packet as the display extent.
+            const uint32_t width = requestedWidth >= 320 && requestedWidth <= 4096
+                ? requestedWidth : fallbackWidth;
+            const uint32_t height = requestedHeight >= 240 && requestedHeight <= 4096
+                ? requestedHeight : fallbackHeight;
+
+            std::array<uint32_t, 16> sourceCommands{};
+            for (uint32_t i = 0; i < sourceCommands.size(); ++i)
+                sourceCommands[i] = loadU32(base, buffer + i * 4);
+
+            // The command buffer already contains the title's PM4 stream.
+            // Consume it before writing the platform swap packet below;
+            // overwriting the first dwords first would erase the actual draw
+            // commands and make a real frame indistinguishable from a clear.
+            gXenosGpu.processSubmittedBuffer(base, buffer, 64);
 
             // VdSwap reserves 64 dwords in the primary ring and fills it with
             // a fetch update followed by Xenia's observable XE_SWAP packet.
@@ -945,6 +967,10 @@ public:
                 static std::atomic<uint32_t> swapTraceCount = 0;
                 if (swapTraceCount.fetch_add(1, std::memory_order_relaxed) < 8)
                 {
+                    std::cerr << "VdSwap source 0x" << std::hex << buffer << ":";
+                    for (const uint32_t value : sourceCommands)
+                        std::cerr << " " << value;
+                    std::cerr << std::dec << '\n';
                     std::cerr << "VdSwap caller=0x" << std::hex << ctx.lr
                               << " command buffer 0x" << ctx.r3.u32 << ":";
                     for (uint32_t i = 0; i < 8; ++i)
@@ -963,7 +989,20 @@ public:
                               << " swaps=" << gXenosGpu.swapPacketCount()
                               << " frames=" << gXenosGpu.frameCount()
                               << " size=" << gXenosGpu.lastFrameWidth() << 'x'
-                              << gXenosGpu.lastFrameHeight() << '\n';
+                              << gXenosGpu.lastFrameHeight()
+                              << " opcodes={";
+                    bool firstOpcode = true;
+                    for (uint32_t opcode = 0; opcode < 256; ++opcode)
+                    {
+                        const uint64_t count = gXenosGpu.opcodeCount(opcode);
+                        if (count == 0)
+                            continue;
+                        if (!firstOpcode)
+                            std::cerr << ',';
+                        firstOpcode = false;
+                        std::cerr << std::hex << opcode << ':' << std::dec << count;
+                    }
+                    std::cerr << "}\n";
                 }
             }
             ctx.r3.u32 = 0;

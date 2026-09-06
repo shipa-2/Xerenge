@@ -23,6 +23,7 @@ void storeGuestBE(uint8_t* base, uint32_t address, uint32_t value)
 
 void XenosGpu::initializeRingBuffer(uint32_t guestAddress, uint32_t sizeLog2)
 {
+    std::lock_guard lock(mutex_);
     ringBase_ = guestAddress;
     ringSizeDwords_ = sizeLog2 < 31 ? (1u << sizeLog2) : 0;
     readPointer_ = 0;
@@ -31,11 +32,13 @@ void XenosGpu::initializeRingBuffer(uint32_t guestAddress, uint32_t sizeLog2)
 
 void XenosGpu::enableReadPointerWriteBack(uint32_t guestAddress, uint32_t)
 {
+    std::lock_guard lock(mutex_);
     readPointerWriteback_ = guestAddress;
 }
 
 void XenosGpu::processSubmittedBuffer(uint8_t* guestBase, uint32_t guestAddress, uint32_t dwordCount)
 {
+    std::lock_guard lock(mutex_);
     uint32_t offset = 0;
     while (offset < dwordCount)
     {
@@ -57,6 +60,7 @@ void XenosGpu::processSubmittedBuffer(uint8_t* guestBase, uint32_t guestAddress,
             ++type3Count_;
             length = ((packet >> 16) & 0x3FFFu) + 2;
             const uint32_t opcode = (packet >> 8) & 0xFFu;
+            ++opcodeCounts_[opcode];
             // Xenos PM4 draw packets.  The low seven bits are used by the
             // hardware opcode field; accepting both forms keeps this parser
             // useful for command streams produced by different compilers.
@@ -85,6 +89,7 @@ void XenosGpu::processSubmittedBuffer(uint8_t* guestBase, uint32_t guestAddress,
 
 void XenosGpu::write(uint8_t* guestBase, uint32_t address, uint64_t value, uint32_t width)
 {
+    std::lock_guard lock(mutex_);
     ++mmioWriteCount_;
     if (address < kMmioBase || address >= kMmioBase + kMmioSize || width != 4)
         return;
@@ -111,6 +116,14 @@ void XenosGpu::write(uint8_t* guestBase, uint32_t address, uint64_t value, uint3
     else if (index == kCpRbWptr)
     {
         writePointer_ = registerValue;
+        if (std::getenv("XERENGE_PPC_MMIO_TRACE") != nullptr && writePointer_ <= 0x80)
+        {
+            std::cerr << "Xenos ring base=0x" << std::hex << ringBase_
+                      << " wptr=0x" << writePointer_ << ":";
+            for (uint32_t i = 0; i < std::min<uint32_t>(writePointer_, 32); ++i)
+                std::cerr << " " << loadGuestBE(guestBase, ringBase_ + i * 4);
+            std::cerr << std::dec << '\n';
+        }
         processRing(guestBase);
     }
 }
@@ -141,6 +154,7 @@ void XenosGpu::processRing(uint8_t* guestBase)
             ++type3Count_;
             length = ((packet >> 16) & 0x3FFFu) + 2;
             const uint32_t opcode = (packet >> 8) & 0xFFu;
+            ++opcodeCounts_[opcode];
             if (opcode == 0x22u || opcode == 0x23u || opcode == 0x2Du ||
                 opcode == 0x2Eu || opcode == 0x36u)
                 ++drawPacketCount_;

@@ -2,6 +2,7 @@
 
 #include <array>
 #include <cstdint>
+#include <mutex>
 
 class XenosGpu
 {
@@ -25,6 +26,7 @@ public:
     uint64_t frameCount() const { return frameCount_; }
     uint32_t lastFrameWidth() const { return lastFrameWidth_; }
     uint32_t lastFrameHeight() const { return lastFrameHeight_; }
+    uint64_t opcodeCount(uint32_t opcode) const { return opcodeCounts_[opcode & 0xFFu]; }
     uint32_t writePointer() const { return writePointer_; }
     bool ringConfigured() const { return ringBase_ != 0 && ringSizeDwords_ != 0; }
 
@@ -32,6 +34,7 @@ private:
     void processRing(uint8_t* guestBase);
 
     std::array<uint32_t, 0x2000> registers_{};
+    mutable std::recursive_mutex mutex_;
     uint32_t writePointer_ = 0;
     uint32_t readPointer_ = 0;
     uint32_t ringBase_ = 0;
@@ -46,4 +49,5 @@ private:
     uint64_t frameCount_ = 0;
     uint32_t lastFrameWidth_ = 0;
     uint32_t lastFrameHeight_ = 0;
+    std::array<uint64_t, 256> opcodeCounts_{};
 };
