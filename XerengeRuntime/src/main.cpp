@@ -182,6 +182,7 @@ std::atomic<uint32_t> gPpcLastFunction = 0;
 std::atomic<uint64_t> gPpcFunctionTransitions = 0;
 std::atomic<uint64_t> gPpcFunctionCalls = 0;
 std::atomic<bool> gPpcTraceEnabled = false;
+XenosGpu gXenosGpu;
 
 void ppcWatchdogSignal(int)
 {
@@ -384,7 +385,6 @@ extern "C" uint32_t PPCGuestClock()
 
 extern "C" void PPCGuestMmioStore(uint8_t* base, uint32_t address, uint64_t value, uint32_t width)
 {
-    static XenosGpu xenosGpu;
     static std::atomic<uint32_t> storeCount = 0;
     const uint32_t sequence = storeCount.fetch_add(1, std::memory_order_relaxed);
     if (std::getenv("XERENGE_PPC_MMIO_TRACE") != nullptr &&
@@ -394,7 +394,7 @@ extern "C" void PPCGuestMmioStore(uint8_t* base, uint32_t address, uint64_t valu
                   << address << " value=0x" << value << " width=" << std::dec << width << '\n';
     }
 
-    xenosGpu.write(base, address, value, width);
+    gXenosGpu.write(base, address, value, width);
 
     // Keep the guest-visible big-endian backing bytes until the command
     // processor is connected.  The hook makes MMIO traffic observable while
@@ -437,10 +437,171 @@ public:
         if (service.compare(0, 7, "__imp__") == 0)
             service.remove_prefix(7);
 
+        if (service.size() >= 2 && service[0] == 'V' && service[1] == 'd')
+        {
+            static std::atomic<uint32_t> vdTraceCount = 0;
+            if (std::getenv("XERENGE_PPC_TRACE") != nullptr &&
+                vdTraceCount.fetch_add(1, std::memory_order_relaxed) < 64)
+                std::cerr << "Xbox video service " << service
+                          << " r3=0x" << std::hex << ctx.r3.u32
+                          << " r4=0x" << ctx.r4.u32 << std::dec << '\n';
+        }
+
+        if (service == "VdInitializeRingBuffer")
+        {
+            gXenosGpu.initializeRingBuffer(ctx.r3.u32, ctx.r4.u32);
+            ctx.r3.u32 = 0;
+            return;
+        }
+        if (service == "VdGetSystemCommandBuffer")
+        {
+            // Xenia exposes these as stable guest tokens.  The title passes
+            // them back to VdSwap and uses the first value as the command
+            // buffer identity, so keep the documented ABI values here.
+            if (ctx.r3.u32 != 0)
+                storeU32(base, ctx.r3.u32, 0xBEEF0000u);
+            if (ctx.r4.u32 != 0)
+                storeU32(base, ctx.r4.u32, 0xBEEF0001u);
+            gXenosGpu.initializeRingBuffer(0xBEEF0000u, 16);
+            ctx.r3.u32 = 0;
+            return;
+        }
+        if (service == "VdSwap")
+        {
+            const uint32_t buffer = ctx.r3.u32;
+            const uint32_t fetch = ctx.r4.u32;
+            const uint32_t frontbuffer = ctx.r8.u32 != 0 ? loadU32(base, ctx.r8.u32) : 0;
+            const uint32_t fetch0 = loadU32(base, fetch + 0);
+            const uint32_t fetch1 = loadU32(base, fetch + 4);
+            const uint32_t fetch2 = loadU32(base, fetch + 8);
+            const uint32_t fetch3 = loadU32(base, fetch + 12);
+            const uint32_t fetch4 = loadU32(base, fetch + 16);
+            const uint32_t fetch5 = loadU32(base, fetch + 20);
+            const uint32_t fallbackWidth = (fetch2 & 0x1FFFu) + 1;
+            const uint32_t fallbackHeight = ((fetch2 >> 13) & 0x1FFFu) + 1;
+            const uint32_t width = ctx.r11.u32 != 0 ? loadU32(base, ctx.r11.u32) : fallbackWidth;
+            const uint32_t heightPointer = loadU32(base, ctx.r1.u32 + 84);
+            const uint32_t height = heightPointer != 0 ? loadU32(base, heightPointer) : fallbackHeight;
+
+            // VdSwap reserves 64 dwords in the primary ring and fills it with
+            // a fetch update followed by Xenia's observable XE_SWAP packet.
+            // The same PM4 layout is understood by the Xenos command parser.
+            storeU32(base, buffer + 0, (5u << 16) | 0x4000u);
+            storeU32(base, buffer + 4, fetch0);
+            storeU32(base, buffer + 8, fetch1);
+            storeU32(base, buffer + 12, fetch2);
+            storeU32(base, buffer + 16, fetch3);
+            storeU32(base, buffer + 20, fetch4);
+            storeU32(base, buffer + 24, fetch5);
+            storeU32(base, buffer + 28, (3u << 30) | (3u << 16) | (0x64u << 8));
+            storeU32(base, buffer + 32, 0x53574150u); // 'SWAP'
+            storeU32(base, buffer + 36, frontbuffer);
+            storeU32(base, buffer + 40, width);
+            storeU32(base, buffer + 44, height);
+            for (uint32_t i = 12; i < 64; ++i)
+                storeU32(base, buffer + i * 4, 0x80000000u);
+            gXenosGpu.processSubmittedBuffer(base, buffer, 64);
+            if (std::getenv("XERENGE_PPC_TRACE") != nullptr)
+            {
+                static std::atomic<uint32_t> swapTraceCount = 0;
+                if (swapTraceCount.fetch_add(1, std::memory_order_relaxed) < 8)
+                {
+                    std::cerr << "VdSwap command buffer 0x" << std::hex << ctx.r3.u32 << ":";
+                    for (uint32_t i = 0; i < 8; ++i)
+                        std::cerr << " " << loadU32(base, ctx.r3.u32 + i * 4);
+                    std::cerr << " fetch=0x" << ctx.r4.u32 << ":";
+                    for (uint32_t i = 0; i < 6; ++i)
+                        std::cerr << " " << loadU32(base, ctx.r4.u32 + i * 4);
+                    std::cerr << " r5=0x" << ctx.r5.u32
+                              << " r6=0x" << ctx.r6.u32
+                              << " r7=0x" << ctx.r7.u32
+                              << " r8=0x" << ctx.r8.u32
+                              << " r9=0x" << ctx.r9.u32
+                              << " r10=0x" << ctx.r10.u32
+                              << std::dec << " packets=" << gXenosGpu.packetCount() << '\n';
+                }
+            }
+            ctx.r3.u32 = 0;
+            return;
+        }
+        if (service == "VdSetDisplayMode")
+        {
+            ctx.r3.u32 = 0;
+            return;
+        }
+        if (service == "VdGetCurrentDisplayGamma")
+        {
+            if (ctx.r3.u32 != 0)
+                storeU32(base, ctx.r3.u32, 2);
+            if (ctx.r4.u32 != 0)
+            {
+                const uint32_t gamma = 0x400E38E4u; // 2.22222233f, BE
+                std::memcpy(base + ctx.r4.u32, &gamma, sizeof(gamma));
+            }
+            ctx.r3.u32 = 0;
+            return;
+        }
+        if (service == "VdEnableRingBufferRPtrWriteBack")
+        {
+            gXenosGpu.enableReadPointerWriteBack(ctx.r3.u32, ctx.r4.u32);
+            ctx.r3.u32 = 0;
+            return;
+        }
+        if (service == "VdInitializeEngines")
+        {
+            ctx.r3.u32 = 1;
+            return;
+        }
+        if (service == "VdGetGraphicsAsicID")
+        {
+            ctx.r3.u32 = 0x11;
+            return;
+        }
+        if (service == "VdIsHSIOTrainingSucceeded")
+        {
+            ctx.r3.u32 = 1;
+            return;
+        }
+        if (service == "VdQueryVideoFlags")
+        {
+            ctx.r3.u32 = 3;
+            return;
+        }
+        if (service == "VdInitializeEDRAM")
+        {
+            ctx.r3.u32 = 1;
+            return;
+        }
+        if (service == "VdRetrainEDRAM" || service == "VdRetrainEDRAMWorker" ||
+            service == "VdEnableDisableClockGating" || service == "VdShutdownEngines" ||
+            service == "VdSetGraphicsInterruptCallback" ||
+            service == "VdSetSystemCommandBufferGpuIdentifierAddress" ||
+            service == "VdPersistDisplay" || service == "VdCallGraphicsNotificationRoutines")
+        {
+            ctx.r3.u32 = 0;
+            return;
+        }
+
         if (service == "XamAlloc" || service == "ExAllocatePoolWithTag" || service == "RtlAllocateHeap")
         {
             const uint32_t size = std::max<uint32_t>(ctx.r3.u32, 1);
             ctx.r3.u32 = allocate(size, base);
+            return;
+        }
+        if (service == "NtAllocateVirtualMemory")
+        {
+            // NT signature: process, *base, zeroBits, *size, allocationType,
+            // protection.  The title uses the current process pseudo-handle;
+            // guest pointers in r4/r6 carry the requested range.
+            const uint32_t sizeAddress = ctx.r6.u32;
+            const uint32_t requested = sizeAddress != 0 ? loadU32(base, sizeAddress) : 0;
+            const uint32_t size = std::max<uint32_t>(requested, 0x1000u);
+            const uint32_t allocation = allocate(size, base);
+            if (ctx.r4.u32 != 0)
+                storeU32(base, ctx.r4.u32, allocation);
+            if (sizeAddress != 0)
+                storeU32(base, sizeAddress, size);
+            ctx.r3.u32 = allocation != 0 ? 0 : 0xC0000017u; // STATUS_NO_MEMORY
             return;
         }
         if (service == "XamFree" || service == "ExFreePool" || service == "RtlFreeHeap")
@@ -524,6 +685,29 @@ public:
         }
         if (service == "XGetGameRegion" || service == "XGetVideoMode")
         {
+            ctx.r3.u32 = 0;
+            return;
+        }
+        if (service == "RtlInitAnsiString")
+        {
+            const uint32_t destination = ctx.r3.u32;
+            const uint32_t source = ctx.r4.u32;
+            uint32_t length = 0;
+            if (destination != 0 && source != 0)
+            {
+                while (length < 0x1000u && base[source + length] != 0)
+                    ++length;
+                storeU16(base, destination, static_cast<uint16_t>(std::min<uint32_t>(length, 0xFFFFu)));
+                storeU16(base, destination + 2,
+                    static_cast<uint16_t>(std::min<uint32_t>(length + 1, 0xFFFFu)));
+                storeU32(base, destination + 4, source);
+            }
+            ctx.r3.u32 = 0;
+            return;
+        }
+        if (service == "KeBugCheck" || service == "HalReturnToFirmware")
+        {
+            // Keep the guest alive while the platform bootstrap is emulated.
             ctx.r3.u32 = 0;
             return;
         }
@@ -672,6 +856,12 @@ private:
     static void storeU32(uint8_t* base, uint32_t address, uint32_t value)
     {
         const uint32_t bigEndianValue = __builtin_bswap32(value);
+        std::memcpy(base + address, &bigEndianValue, sizeof(bigEndianValue));
+    }
+
+    static void storeU16(uint8_t* base, uint32_t address, uint16_t value)
+    {
+        const uint16_t bigEndianValue = __builtin_bswap16(value);
         std::memcpy(base + address, &bigEndianValue, sizeof(bigEndianValue));
     }
 

@@ -14,10 +14,14 @@ public:
     static constexpr uint32_t kCpRbWptr = 0x1C5u;
 
     void write(uint8_t* guestBase, uint32_t address, uint64_t value, uint32_t width);
+    void initializeRingBuffer(uint32_t guestAddress, uint32_t sizeLog2);
+    void enableReadPointerWriteBack(uint32_t guestAddress, uint32_t blockSizeLog2);
+    void processSubmittedBuffer(uint8_t* guestBase, uint32_t guestAddress, uint32_t dwordCount);
 
     uint64_t mmioWriteCount() const { return mmioWriteCount_; }
     uint64_t packetCount() const { return packetCount_; }
     uint32_t writePointer() const { return writePointer_; }
+    bool ringConfigured() const { return ringBase_ != 0 && ringSizeDwords_ != 0; }
 
 private:
     void processRing(uint8_t* guestBase);

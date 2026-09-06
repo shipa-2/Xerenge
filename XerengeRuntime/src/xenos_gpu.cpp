@@ -21,6 +21,49 @@ void storeGuestBE(uint8_t* base, uint32_t address, uint32_t value)
 }
 }
 
+void XenosGpu::initializeRingBuffer(uint32_t guestAddress, uint32_t sizeLog2)
+{
+    ringBase_ = guestAddress;
+    ringSizeDwords_ = sizeLog2 < 31 ? (1u << sizeLog2) : 0;
+    readPointer_ = 0;
+    writePointer_ = 0;
+}
+
+void XenosGpu::enableReadPointerWriteBack(uint32_t guestAddress, uint32_t)
+{
+    readPointerWriteback_ = guestAddress;
+}
+
+void XenosGpu::processSubmittedBuffer(uint8_t* guestBase, uint32_t guestAddress, uint32_t dwordCount)
+{
+    uint32_t offset = 0;
+    while (offset < dwordCount)
+    {
+        const uint32_t packet = loadGuestBE(guestBase, guestAddress + offset * 4);
+        if (packet == 0)
+        {
+            ++offset;
+            continue;
+        }
+        const uint32_t type = packet >> 30;
+        uint32_t length = 1;
+        if (type == 0)
+        {
+            ++type0Count_;
+            length = ((packet >> 16) & 0x3FFFu) + 1;
+        }
+        else if (type == 3)
+        {
+            ++type3Count_;
+            length = ((packet >> 16) & 0x3FFFu) + 2;
+        }
+        if (length == 0 || length > dwordCount - offset)
+            break;
+        ++packetCount_;
+        offset += length;
+    }
+}
+
 void XenosGpu::write(uint8_t* guestBase, uint32_t address, uint64_t value, uint32_t width)
 {
     ++mmioWriteCount_;
