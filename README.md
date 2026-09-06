@@ -24,6 +24,7 @@ ctest --test-dir build-runtime --output-on-failure
 ./build-runtime/xerenge-runtime path/to/game.xex
 ./build-runtime/xerenge-runtime --inspect path/to/game.xex
 ./build-runtime/xerenge-runtime --extract-image path/to/plain.xex image.bin
+./build-runtime/xerenge-runtime --map-image path/to/game.xex
 ```
 
 `--inspect` currently reads the XEX2 header and security metadata. It does not
@@ -32,3 +33,7 @@ retail/devkit candidates and expands the XEX basic compression format. The
 Burnout beta image is recovered as a valid PE image; its local output matches
 the independently produced decrypted image byte-for-byte. Normal LZX
 compression and PPC execution remain separate stages.
+
+`--map-image` validates the decoded PE32 image, creates its guest address-space
+layout, checks the entry point and section ranges, and prints the mapped section
+table. It does not call guest code yet.

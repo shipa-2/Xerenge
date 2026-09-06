@@ -2,6 +2,7 @@
 #include <openssl/evp.h>
 #include <vulkan/vulkan.h>
 
+#include <algorithm>
 #include <array>
 #include <cstdint>
 #include <fstream>
@@ -31,6 +32,24 @@ struct XexInfo
     uint32_t fileFormatInfoOffset = 0;
     uint32_t fileFormatInfoSize = 0;
     std::array<uint8_t, 16> encryptedImageKey{};
+};
+
+struct PeSection
+{
+    std::string name;
+    uint32_t virtualAddress = 0;
+    uint32_t virtualSize = 0;
+    uint32_t rawSize = 0;
+    uint32_t characteristics = 0;
+};
+
+struct MappedImage
+{
+    uint32_t base = 0;
+    uint32_t entryPoint = 0;
+    uint32_t size = 0;
+    std::vector<uint8_t> memory;
+    std::vector<PeSection> sections;
 };
 
 constexpr std::array<uint8_t, 16> kRetailKey{
@@ -78,6 +97,17 @@ bool readBytesAt(std::ifstream& input, uint64_t offset, void* data, size_t size)
     input.seekg(static_cast<std::streamoff>(offset));
     input.read(static_cast<char*>(data), static_cast<std::streamsize>(size));
     return input.gcount() == static_cast<std::streamsize>(size);
+}
+
+uint16_t readLE16(const uint8_t* data)
+{
+    return static_cast<uint16_t>(data[0]) | (static_cast<uint16_t>(data[1]) << 8);
+}
+
+uint32_t readLE32(const uint8_t* data)
+{
+    return static_cast<uint32_t>(data[0]) | (static_cast<uint32_t>(data[1]) << 8) |
+        (static_cast<uint32_t>(data[2]) << 16) | (static_cast<uint32_t>(data[3]) << 24);
 }
 
 std::optional<XexInfo> inspectXex(const std::string& path)
@@ -316,6 +346,95 @@ bool extractImage(const std::string& path, const XexInfo& info, const std::strin
     return destination.good();
 }
 
+std::optional<MappedImage> mapPeImage(const std::vector<uint8_t>& image, const XexInfo& xex)
+{
+    if (image.size() < 0x40 || image[0] != 'M' || image[1] != 'Z')
+    {
+        std::cerr << "decoded image is not a DOS/PE image\n";
+        return std::nullopt;
+    }
+    const uint32_t peOffset = readLE32(image.data() + 0x3c);
+    if (peOffset > image.size() - 24 || readLE32(image.data() + peOffset) != 0x00004550)
+    {
+        std::cerr << "decoded image has an invalid PE header\n";
+        return std::nullopt;
+    }
+
+    const uint8_t* fileHeader = image.data() + peOffset + 4;
+    const uint16_t sectionCount = readLE16(fileHeader + 2);
+    const uint16_t optionalSize = readLE16(fileHeader + 16);
+    const uint8_t* optionalHeader = fileHeader + 20;
+    if (readLE16(optionalHeader) != 0x10b || optionalHeader + optionalSize > image.data() + image.size() ||
+        sectionCount == 0 || sectionCount > 96 || optionalSize < 60)
+    {
+        std::cerr << "unsupported or invalid PE32 optional header\n";
+        return std::nullopt;
+    }
+
+    const uint32_t entryRva = readLE32(optionalHeader + 16);
+    const uint32_t imageBase = readLE32(optionalHeader + 28);
+    const uint32_t imageSize = readLE32(optionalHeader + 56);
+    if (imageSize == 0 || entryRva >= imageSize)
+    {
+        std::cerr << "invalid PE image size or entry point\n";
+        return std::nullopt;
+    }
+
+    const uint8_t* sectionTable = optionalHeader + optionalSize;
+    const uint64_t sectionTableSize = static_cast<uint64_t>(sectionCount) * 40;
+    if (sectionTable + sectionTableSize > image.data() + image.size())
+    {
+        std::cerr << "PE section table exceeds decoded image\n";
+        return std::nullopt;
+    }
+
+    MappedImage mapped{};
+    mapped.base = xex.imageBase != 0 ? xex.imageBase : imageBase;
+    mapped.entryPoint = mapped.base + entryRva;
+    mapped.size = imageSize;
+    mapped.memory.assign(imageSize, 0);
+    std::copy(image.begin(), image.begin() + std::min<size_t>(image.size(), imageSize), mapped.memory.begin());
+
+    for (uint16_t i = 0; i < sectionCount; ++i)
+    {
+        const uint8_t* section = sectionTable + static_cast<size_t>(i) * 40;
+        const uint32_t virtualSize = readLE32(section + 8);
+        const uint32_t virtualAddress = readLE32(section + 12);
+        const uint32_t rawSize = readLE32(section + 16);
+        const uint32_t characteristics = readLE32(section + 36);
+        const uint32_t mappedSize = std::max(virtualSize, rawSize);
+        if (virtualAddress > imageSize || mappedSize > imageSize - virtualAddress)
+        {
+            std::cerr << "PE section exceeds guest image: " << i << '\n';
+            return std::nullopt;
+        }
+        size_t nameLength = 0;
+        while (nameLength < 8 && section[nameLength] != '\0')
+            ++nameLength;
+        mapped.sections.push_back({std::string(reinterpret_cast<const char*>(section), nameLength),
+            virtualAddress, virtualSize, rawSize, characteristics});
+    }
+    return mapped;
+}
+
+bool mapAndPrintImage(const std::string& path, const XexInfo& info)
+{
+    std::vector<uint8_t> image;
+    if (!decodeImage(path, info, image))
+        return false;
+    const auto mapped = mapPeImage(image, info);
+    if (!mapped)
+        return false;
+    std::cout << "mapped PE image: base=0x" << std::hex << mapped->base
+              << " entry=0x" << mapped->entryPoint << " size=0x" << mapped->size
+              << std::dec << " sections=" << mapped->sections.size() << '\n';
+    for (const auto& section : mapped->sections)
+        std::cout << "  " << section.name << " RVA=0x" << std::hex << section.virtualAddress
+                  << " virtual=0x" << section.virtualSize << " raw=0x" << section.rawSize
+                  << " flags=0x" << section.characteristics << std::dec << '\n';
+    return true;
+}
+
 void printXexInfo(const XexInfo& info)
 {
     std::cout << "XEX2 image: " << info.size << " bytes\n"
@@ -409,6 +528,17 @@ int main(int argc, char** argv)
         }
         const auto info = inspectXex(argv[2]);
         return info && extractImage(argv[2], *info, argv[3]) ? 0 : 1;
+    }
+
+    if (argc > 1 && std::string(argv[1]) == "--map-image")
+    {
+        if (argc != 3)
+        {
+            std::cerr << "usage: xerenge-runtime --map-image <file.xex>\n";
+            return 2;
+        }
+        const auto info = inspectXex(argv[2]);
+        return info && mapAndPrintImage(argv[2], *info) ? 0 : 1;
     }
 
     if (argc > 2)

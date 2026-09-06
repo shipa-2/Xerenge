@@ -20,11 +20,13 @@ stay local.
 - `XerengeRuntime` now unwraps AES keys, decodes XEX basic compression, and
   recovers the beta image as a valid PE image. The decrypted result was checked
   against an independent local image byte-for-byte.
+- The runtime validates and maps the recovered PE32 image into a guest address
+  space, including its 17 sections and entry point.
 
 ## Execution order
 
-1. Map the recovered PE sections into guest memory and validate the entry point,
-   imports, and section permissions before executing any PPC code.
+1. Parse the PE import table and XEX import libraries, then bind kernel/XAM
+   stubs into a runtime service table.
 2. Keep the two tool forks buildable from clean clones and record the exact
    upstream commit they are based on.
 3. Add a small fixture format or synthetic container generator that contains no
