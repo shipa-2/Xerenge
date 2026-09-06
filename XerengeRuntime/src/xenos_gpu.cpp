@@ -10,6 +10,11 @@ namespace
 {
 constexpr uint32_t kEdramSize = 10u * 1024u * 1024u;
 
+uint32_t gpuPhysicalToGuest(uint32_t physicalAddress)
+{
+    return 0x60000000u | (physicalAddress & 0x1FFFFFFFu);
+}
+
 uint32_t loadGuestBE(const uint8_t* base, uint32_t address)
 {
     uint32_t value = 0;
@@ -260,11 +265,15 @@ void XenosGpu::processBuffer(uint8_t* guestBase, uint32_t guestAddress,
                 ++drawPacketCount_;
                 if (std::getenv("XERENGE_XENOS_DRAW_TRACE") != nullptr)
                 {
+                    const uint32_t initiator = gpuRegisters_[0x21FC];
                     std::cerr << "Xenos draw state surface=0x" << std::hex
                               << gpuRegisters_[0x2000]
                               << " color=0x" << gpuRegisters_[0x2001]
                               << " mask=0x" << gpuRegisters_[0x2104]
-                              << " initiator=0x" << gpuRegisters_[0x21FC]
+                              << " initiator=0x" << initiator
+                              << " prim=" << (initiator & 0x3Fu)
+                              << " source=" << ((initiator >> 6) & 0x3u)
+                              << " indices=" << (initiator >> 16)
                               << " program=0x" << gpuRegisters_[0x2180]
                               << " vsConst=0x" << gpuRegisters_[0x2307]
                               << " psConst=0x" << gpuRegisters_[0x2308]
@@ -274,6 +283,37 @@ void XenosGpu::processBuffer(uint8_t* guestBase, uint32_t guestAddress,
                               << " copyInfo=0x" << gpuRegisters_[0x231B]
                               << " clear=0x" << gpuRegisters_[0x231E]
                               << std::dec << '\n';
+                    if (std::getenv("XERENGE_XENOS_FETCH_TRACE") != nullptr)
+                    {
+                        std::cerr << "Xenos fetch0=" << std::hex;
+                        for (uint32_t i = 0; i < 6; ++i)
+                            std::cerr << " " << gpuRegisters_[0x4800 + i];
+                        std::cerr << " fetch1=";
+                        for (uint32_t i = 0; i < 6; ++i)
+                            std::cerr << " " << gpuRegisters_[0x4806 + i];
+                        std::cerr << std::dec << '\n';
+                        const uint32_t fetch0 = gpuRegisters_[0x4800];
+                        const uint32_t fetch1 = gpuRegisters_[0x4801];
+                        if ((fetch0 & 0x3u) == 3u)
+                        {
+                            const uint32_t physicalAddress = (fetch0 >> 2) << 2;
+                            const uint32_t address = gpuPhysicalToGuest(physicalAddress);
+                            const uint32_t words = (fetch1 >> 2) & 0xFFFFFFu;
+                            std::cerr << "Xenos vertex-data physical=0x" << std::hex
+                                      << physicalAddress << " guest=0x" << address
+                                      << " words=" << std::dec << words << ':';
+                            for (uint32_t vertex = 0; vertex < 3; ++vertex)
+                            {
+                                std::cerr << " [";
+                                for (uint32_t word = 0; word < words; ++word)
+                                    std::cerr << (word ? " " : "") << std::hex
+                                              << loadGuestBE(guestBase,
+                                                  address + (vertex * words + word) * 4);
+                                std::cerr << "]";
+                            }
+                            std::cerr << std::dec << '\n';
+                        }
+                    }
                 }
             }
             if (opcode == 0x64u)
@@ -428,11 +468,15 @@ void XenosGpu::processRing(uint8_t* guestBase)
                 ++drawPacketCount_;
                 if (std::getenv("XERENGE_XENOS_DRAW_TRACE") != nullptr)
                 {
+                    const uint32_t initiator = gpuRegisters_[0x21FC];
                     std::cerr << "Xenos draw state surface=0x" << std::hex
                               << gpuRegisters_[0x2000]
                               << " color=0x" << gpuRegisters_[0x2001]
                               << " mask=0x" << gpuRegisters_[0x2104]
-                              << " initiator=0x" << gpuRegisters_[0x21FC]
+                              << " initiator=0x" << initiator
+                              << " prim=" << (initiator & 0x3Fu)
+                              << " source=" << ((initiator >> 6) & 0x3u)
+                              << " indices=" << (initiator >> 16)
                               << " program=0x" << gpuRegisters_[0x2180]
                               << " vsConst=0x" << gpuRegisters_[0x2307]
                               << " psConst=0x" << gpuRegisters_[0x2308]
@@ -442,6 +486,37 @@ void XenosGpu::processRing(uint8_t* guestBase)
                               << " copyInfo=0x" << gpuRegisters_[0x231B]
                               << " clear=0x" << gpuRegisters_[0x231E]
                               << std::dec << '\n';
+                    if (std::getenv("XERENGE_XENOS_FETCH_TRACE") != nullptr)
+                    {
+                        std::cerr << "Xenos fetch0=" << std::hex;
+                        for (uint32_t i = 0; i < 6; ++i)
+                            std::cerr << " " << gpuRegisters_[0x4800 + i];
+                        std::cerr << " fetch1=";
+                        for (uint32_t i = 0; i < 6; ++i)
+                            std::cerr << " " << gpuRegisters_[0x4806 + i];
+                        std::cerr << std::dec << '\n';
+                        const uint32_t fetch0 = gpuRegisters_[0x4800];
+                        const uint32_t fetch1 = gpuRegisters_[0x4801];
+                        if ((fetch0 & 0x3u) == 3u)
+                        {
+                            const uint32_t physicalAddress = (fetch0 >> 2) << 2;
+                            const uint32_t address = gpuPhysicalToGuest(physicalAddress);
+                            const uint32_t words = (fetch1 >> 2) & 0xFFFFFFu;
+                            std::cerr << "Xenos vertex-data physical=0x" << std::hex
+                                      << physicalAddress << " guest=0x" << address
+                                      << " words=" << std::dec << words << ':';
+                            for (uint32_t vertex = 0; vertex < 3; ++vertex)
+                            {
+                                std::cerr << " [";
+                                for (uint32_t word = 0; word < words; ++word)
+                                    std::cerr << (word ? " " : "") << std::hex
+                                              << loadGuestBE(guestBase,
+                                                  address + (vertex * words + word) * 4);
+                                std::cerr << "]";
+                            }
+                            std::cerr << std::dec << '\n';
+                        }
+                    }
                 }
             }
             if (opcode == 0x64u)
