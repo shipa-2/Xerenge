@@ -5,6 +5,7 @@
 
 #include <algorithm>
 #include <array>
+#include <atomic>
 #include <chrono>
 #include <cstring>
 #include <cstdint>
@@ -173,6 +174,26 @@ private:
 #ifdef XERENGE_HAS_PPC
 uint64_t gPpcServiceCalls = 0;
 uint64_t gPpcUnknownIndirectCalls = 0;
+std::atomic<uint32_t> gPpcLastFunction = 0;
+std::atomic<uint64_t> gPpcFunctionTransitions = 0;
+
+extern "C" void PPCTraceFunction(uint32_t address, PPCContext& ctx, uint8_t*)
+{
+    static std::atomic<uint32_t> waitTraceCount = 0;
+    if (address == 0x825AC688 && waitTraceCount.fetch_add(1, std::memory_order_relaxed) < 8)
+        std::cerr << "wait wrapper entry r3=0x" << std::hex << ctx.r3.u32
+                  << " r7=0x" << ctx.r7.u32 << " r8=0x" << ctx.r8.u32
+                  << " r28=0x" << ctx.r28.u32 << std::dec << '\n';
+    const uint32_t previous = gPpcLastFunction.exchange(address, std::memory_order_relaxed);
+    if (previous != address && gPpcFunctionTransitions.fetch_add(1, std::memory_order_relaxed) < 500)
+    {
+        std::cerr << "guest function: 0x" << std::hex << address;
+        if (address == 0x825AC688)
+            std::cerr << " r3=0x" << ctx.r3.u32 << " r8=0x" << ctx.r8.u32
+                      << " r10=0x" << ctx.r10.u32 << " r11=0x" << ctx.r11.u32;
+        std::cerr << std::dec << '\n';
+    }
+}
 
 class XboxServiceLayer
 {
