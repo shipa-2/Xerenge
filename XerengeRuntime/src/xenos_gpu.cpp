@@ -373,6 +373,25 @@ void XenosGpu::rasterizeDraw(uint8_t* guestBase, uint32_t initiator)
                       << " format=" << (texture1 & 0x3Fu)
                       << " size=" << std::dec << textureWidth << 'x' << textureHeight
                       << " pitch=" << ((texture0 >> 22) & 0x1FFu) << '\n';
+        bool alphaTest = false;
+        float alphaThreshold = 0.0f;
+        if (const auto* microcode = xerengeShaderCache().findMicrocode(
+                activePixelShaderHash_))
+        {
+            if (const auto* shader = xerengeShaderCache().find(microcode->shaderHash))
+                alphaTest = (shader->specConstantsMask & (1u << 1)) != 0u;
+        }
+        if (alphaTest)
+        {
+            const uint32_t sharedBase = gpuPhysicalToGuest(gpuRegisters_[0x2308u]);
+            const uint32_t raw = loadGuestBE(guestBase, sharedBase + 308u);
+            std::memcpy(&alphaThreshold, &raw, sizeof(alphaThreshold));
+            if (!std::isfinite(alphaThreshold))
+                alphaThreshold = 0.0f;
+            if (std::getenv("XERENGE_XENOS_TEXTURE_TRACE") != nullptr)
+                std::cerr << "Xenos alpha-test threshold=" << alphaThreshold
+                          << " shared=0x" << std::hex << sharedBase << std::dec << '\n';
+        }
         const uint32_t texturePitchBlocks = std::max(32u,
             ((textureWidth + 3u) / 4u + 31u) & ~31u);
         const uint32_t textureBase = gpuPhysicalToGuest(
@@ -467,6 +486,8 @@ void XenosGpu::rasterizeDraw(uint8_t* guestBase, uint32_t initiator)
                                     (output[component] / 255.0f) * factor, 0.0f, 1.0f) * 255.0f);
                             }
                         }
+                        if (alphaTest && output[3] / 255.0f < alphaThreshold)
+                            continue;
                         std::memcpy(edram_.data() + (size_t(y) * width + x) * 4,
                             output.data(), output.size());
                     }
