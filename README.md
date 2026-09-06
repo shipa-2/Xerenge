@@ -25,6 +25,7 @@ ctest --test-dir build-runtime --output-on-failure
 ./build-runtime/xerenge-runtime --inspect path/to/game.xex
 ./build-runtime/xerenge-runtime --extract-image path/to/plain.xex image.bin
 ./build-runtime/xerenge-runtime --map-image path/to/game.xex
+./build-runtime/xerenge-runtime --imports path/to/game.xex
 ```
 
 `--inspect` currently reads the XEX2 header and security metadata. It does not
@@ -37,3 +38,6 @@ compression and PPC execution remain separate stages.
 `--map-image` validates the decoded PE32 image, creates its guest address-space
 layout, checks the entry point and section ranges, and prints the mapped section
 table. It does not call guest code yet.
+
+`--imports` parses the XEX import-library metadata and reports the service
+groups that must be bound before guest code can run.

@@ -22,6 +22,8 @@ stay local.
   against an independent local image byte-for-byte.
 - The runtime validates and maps the recovered PE32 image into a guest address
   space, including its 17 sections and entry point.
+- The runtime parses the XEX import table and identifies `xam.xex` and
+  `xboxkrnl.exe`, including their 449 imported ordinals.
 
 ## Execution order
 

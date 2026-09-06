@@ -14,6 +14,12 @@
 
 namespace
 {
+struct XexImportLibrary
+{
+    std::string name;
+    uint16_t importCount = 0;
+};
+
 struct XexInfo
 {
     uint64_t size = 0;
@@ -32,6 +38,7 @@ struct XexInfo
     uint32_t fileFormatInfoOffset = 0;
     uint32_t fileFormatInfoSize = 0;
     std::array<uint8_t, 16> encryptedImageKey{};
+    std::vector<XexImportLibrary> importLibraries;
 };
 
 struct PeSection
@@ -90,6 +97,12 @@ bool readBE32At(std::ifstream& input, uint64_t offset, uint32_t& value)
 {
     input.seekg(static_cast<std::streamoff>(offset));
     return readBE32(input, value);
+}
+
+bool readBE16At(std::ifstream& input, uint64_t offset, uint16_t& value)
+{
+    input.seekg(static_cast<std::streamoff>(offset));
+    return readBE16(input, value);
 }
 
 bool readBytesAt(std::ifstream& input, uint64_t offset, void* data, size_t size)
@@ -210,6 +223,57 @@ std::optional<XexInfo> inspectXex(const std::string& path)
             if (!readBE16(input, info.encryptionType) || !readBE16(input, info.compressionType))
                 return std::nullopt;
             info.fileFormatInfoSize = infoSize;
+        }
+        else if (key == 0x000103ff)
+        {
+            if (value > fileSize - 12)
+            {
+                std::cerr << "import library header is outside XEX: " << path << '\n';
+                return std::nullopt;
+            }
+            uint32_t importSize = 0;
+            uint32_t stringTableSize = 0;
+            uint32_t libraryCount = 0;
+            if (!readBE32At(input, value, importSize) || !readBE32At(input, value + 4, stringTableSize) ||
+                !readBE32At(input, value + 8, libraryCount) || importSize < 12 ||
+                value + importSize > fileSize || stringTableSize > importSize - 12)
+            {
+                std::cerr << "invalid XEX import library header: " << path << '\n';
+                return std::nullopt;
+            }
+            std::vector<char> strings(stringTableSize);
+            if (!readBytesAt(input, value + 12, strings.data(), strings.size()))
+                return std::nullopt;
+            std::vector<std::string> stringNames;
+            for (size_t stringOffset = 0; stringOffset < strings.size();)
+            {
+                const char* string = strings.data() + stringOffset;
+                const size_t remaining = strings.size() - stringOffset;
+                const void* terminator = std::find(string, string + remaining, '\0');
+                if (terminator == string + remaining)
+                    return std::nullopt;
+                stringNames.emplace_back(string);
+                stringOffset += static_cast<const char*>(terminator) - string + 1;
+            }
+            uint64_t libraryOffset = value + 12 + stringTableSize;
+            for (uint32_t libraryIndex = 0; libraryIndex < libraryCount; ++libraryIndex)
+            {
+                uint32_t librarySize = 0;
+                uint16_t nameOffset = 0;
+                uint16_t importCount = 0;
+                if (libraryOffset + 40 > value + importSize ||
+                    !readBE32At(input, libraryOffset, librarySize) || librarySize < 40 ||
+                    libraryOffset + librarySize > value + importSize ||
+                    !readBE16At(input, libraryOffset + 36, nameOffset) ||
+                    !readBE16At(input, libraryOffset + 38, importCount) ||
+                    nameOffset >= stringNames.size())
+                {
+                    std::cerr << "invalid XEX import library entry: " << path << '\n';
+                    return std::nullopt;
+                }
+                info.importLibraries.push_back({stringNames[nameOffset], importCount});
+                libraryOffset += librarySize;
+            }
         }
     }
 
@@ -451,6 +515,18 @@ void printXexInfo(const XexInfo& info)
               << "  compression type: " << info.compressionType << '\n';
 }
 
+void printImports(const XexInfo& info)
+{
+    uint32_t total = 0;
+    std::cout << "XEX import libraries: " << info.importLibraries.size() << '\n';
+    for (const auto& library : info.importLibraries)
+    {
+        total += library.importCount;
+        std::cout << "  " << library.name << ": " << library.importCount << " imports\n";
+    }
+    std::cout << "total imports: " << total << '\n';
+}
+
 bool initializeVulkan(VkInstance& instance, VkPhysicalDevice& physicalDevice)
 {
     uint32_t glfwExtensionCount = 0;
@@ -539,6 +615,20 @@ int main(int argc, char** argv)
         }
         const auto info = inspectXex(argv[2]);
         return info && mapAndPrintImage(argv[2], *info) ? 0 : 1;
+    }
+
+    if (argc > 1 && std::string(argv[1]) == "--imports")
+    {
+        if (argc != 3)
+        {
+            std::cerr << "usage: xerenge-runtime --imports <file.xex>\n";
+            return 2;
+        }
+        const auto info = inspectXex(argv[2]);
+        if (!info)
+            return 1;
+        printImports(*info);
+        return 0;
     }
 
     if (argc > 2)
