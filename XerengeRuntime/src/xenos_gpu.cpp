@@ -144,6 +144,58 @@ void XenosGpu::rememberVertexFetchStrides(const uint32_t* code, uint32_t dwordCo
     }
 }
 
+void XenosGpu::loadPointerShader(uint8_t* guestBase, uint32_t address,
+    uint32_t shaderType, uint32_t startSize)
+{
+    const uint32_t start = startSize >> 16;
+    const uint32_t dwordCount = startSize & 0xFFFFu;
+    if (start != 0 || dwordCount == 0 || dwordCount > 0x4000u)
+        return;
+    const uint32_t guestAddress = gpuPhysicalToGuest(address & 0x3FFFFFFCu);
+    const size_t byteSize = size_t(dwordCount) * sizeof(uint32_t);
+    const uint64_t hash = XXH3_64bits(guestBase + guestAddress, byteSize);
+    if (std::getenv("XERENGE_XENOS_SHADER_DUMP") != nullptr)
+    {
+        std::cerr << "Xenos pointer shader code stage=" << shaderType
+                  << " dwords=" << dwordCount << ':';
+        for (uint32_t i = 0; i < dwordCount; ++i)
+            std::cerr << " " << std::hex
+                      << loadGuestBE(guestBase, guestAddress + i * 4);
+        std::cerr << std::dec << '\n';
+    }
+    if (shaderType == 0u)
+    {
+        activeVertexShaderHash_ = hash;
+        activeVertexShaderDwords_ = dwordCount;
+        std::array<uint32_t, 1024> code{};
+        const uint32_t copied = std::min<uint32_t>(dwordCount, code.size());
+        for (uint32_t i = 0; i < copied; ++i)
+            code[i] = loadGuestBE(guestBase, guestAddress + i * 4);
+        rememberVertexFetchStrides(code.data(), copied);
+    }
+    else if (shaderType == 1u)
+    {
+        activePixelShaderHash_ = hash;
+        activePixelShaderDwords_ = dwordCount;
+    }
+    else
+    {
+        return;
+    }
+    const auto* match = xerengeShaderCache().findMicrocode(hash);
+    if (std::getenv("XERENGE_XENOS_SHADER_TRACE") != nullptr)
+    {
+        std::cerr << "Xenos pointer shader stage=" << shaderType
+                  << " guest=0x" << std::hex << guestAddress
+                  << " dwords=" << std::dec << dwordCount
+                  << " cache=" << (match != nullptr ? "hit" : "miss")
+                  << " hash=0x" << std::hex << hash;
+        if (match != nullptr)
+            std::cerr << " compiled=0x" << match->shaderHash;
+        std::cerr << std::dec << '\n';
+    }
+}
+
 void XenosGpu::rasterizeDraw(uint8_t* guestBase, uint32_t initiator)
 {
     // Burnout uses auto-indexed point draws during bootstrap and three-vertex
@@ -494,6 +546,14 @@ void XenosGpu::processBuffer(uint8_t* guestBase, uint32_t guestAddress,
                         std::cerr << std::dec << '\n';
                 }
             }
+            if (opcode == 0x27u && length >= 3 && offset + 2 < dwordCount)
+            {
+                const uint32_t address = loadGuestBE(
+                    guestBase, guestAddress + (offset + 1) * 4);
+                const uint32_t startSize = loadGuestBE(
+                    guestBase, guestAddress + (offset + 2) * 4);
+                loadPointerShader(guestBase, address, address & 0x3u, startSize);
+            }
             if (opcode == 0x46u && length >= 2 && offset + 1 < dwordCount)
             {
                 const uint32_t event = loadGuestBE(
@@ -559,6 +619,10 @@ void XenosGpu::processBuffer(uint8_t* guestBase, uint32_t guestAddress,
                               << " source=" << ((initiator >> 6) & 0x3u)
                               << " indices=" << (initiator >> 16)
                               << " program=0x" << gpuRegisters_[0x2180]
+                              << " vsShader=0x" << activeVertexShaderHash_
+                              << "/" << activeVertexShaderDwords_
+                              << " psShader=0x" << activePixelShaderHash_
+                              << "/" << activePixelShaderDwords_
                               << " vsConst=0x" << gpuRegisters_[0x2307]
                               << " psConst=0x" << gpuRegisters_[0x2308]
                               << " copyBase=0x" << gpuRegisters_[0x2319]
@@ -754,6 +818,14 @@ void XenosGpu::processRing(uint8_t* guestBase)
                     for (uint32_t i = 0; i < sizeDwords; ++i)
                         writeGpuRegister(index + i,
                             loadGuestBE(guestBase, source + i * 4));
+            }
+            if (opcode == 0x27u && length >= 3 && readPointer_ + 2 < target)
+            {
+                const uint32_t address = loadGuestBE(guestBase,
+                    ringBase_ + (readPointer_ + 1) * 4);
+                const uint32_t startSize = loadGuestBE(guestBase,
+                    ringBase_ + (readPointer_ + 2) * 4);
+                loadPointerShader(guestBase, address, address & 0x3u, startSize);
             }
             if (opcode == 0x46u && length >= 2 && readPointer_ + 1 < target)
             {

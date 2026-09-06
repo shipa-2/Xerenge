@@ -43,6 +43,8 @@ private:
         uint32_t dwordCount, uint32_t recursionDepth);
     void processRing(uint8_t* guestBase);
     void rememberVertexFetchStrides(const uint32_t* code, uint32_t dwordCount);
+    void loadPointerShader(uint8_t* guestBase, uint32_t address,
+        uint32_t shaderType, uint32_t startSize);
 
     std::array<uint32_t, 0x2000> registers_{};
     // Xenos Type-0 packets address the 3D register file by dword index.
@@ -50,6 +52,10 @@ private:
     // inspect the state accumulated through indirect command buffers.
     std::array<uint32_t, 0x8000> gpuRegisters_{};
     std::array<uint32_t, 96> vertexFetchStrideWords_{};
+    uint64_t activeVertexShaderHash_ = 0;
+    uint64_t activePixelShaderHash_ = 0;
+    uint32_t activeVertexShaderDwords_ = 0;
+    uint32_t activePixelShaderDwords_ = 0;
     mutable std::recursive_mutex mutex_;
     std::vector<uint8_t> framebuffer_;
     std::vector<uint8_t> edram_;
