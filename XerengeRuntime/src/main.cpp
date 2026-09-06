@@ -191,6 +191,7 @@ std::atomic<uint64_t> gPpcFunctionTransitions = 0;
 std::atomic<uint64_t> gPpcFunctionCalls = 0;
 std::atomic<bool> gPpcTraceEnabled = false;
 std::atomic<uint32_t> gResourceStateWatchAddress = 0;
+std::atomic<uint16_t> gInputButtons = 0;
 thread_local uint32_t gPpcCurrentFunction = 0;
 thread_local uint32_t gPpcCurrentCaller = 0;
 thread_local std::array<uint32_t, 5> gPpcLastDataRoutineArgs{};
@@ -706,7 +707,9 @@ public:
         if (std::getenv("XERENGE_SERVICE_TRACE") != nullptr)
         {
             static std::atomic<uint32_t> serviceTraceCount = 0;
-            if (serviceTraceCount.fetch_add(1, std::memory_order_relaxed) < 256)
+            const uint32_t traceIndex =
+                serviceTraceCount.fetch_add(1, std::memory_order_relaxed);
+            if (traceIndex < 256 || std::getenv("XERENGE_SERVICE_TRACE_ALL") != nullptr)
                 std::cerr << "Xbox service " << service
                           << " r3=0x" << std::hex << ctx.r3.u32
                           << " r4=0x" << ctx.r4.u32
@@ -1315,6 +1318,56 @@ public:
             ctx.r3.u32 = 0;
             return;
         }
+        if (service == "XamInputGetState")
+        {
+            constexpr uint32_t kErrorDeviceNotConnected = 1167u;
+            const uint32_t userIndex = ctx.r3.u32;
+            const uint32_t state = ctx.r5.u32;
+            if (userIndex != 0 || state == 0)
+            {
+                ctx.r3.u32 = kErrorDeviceNotConnected;
+                return;
+            }
+            // XINPUT_STATE is a packet number followed by the 12-byte gamepad
+            // state. Expose pad 0 as connected and idle until host input is
+            // wired into these fields.
+            clear(base, state, 16);
+            const uint32_t packet = inputPacketNumber_++;
+            storeU32(base, state, packet);
+            uint16_t buttons = gInputButtons.load(std::memory_order_relaxed);
+            if (std::getenv("XERENGE_AUTO_START") != nullptr &&
+                packet >= 20u && packet < 24u)
+                buttons |= 0x0010u;
+            storeU16(base, state + 4, buttons);
+            ctx.r3.u32 = 0; // ERROR_SUCCESS.
+            return;
+        }
+        if (service == "XamInputSetState")
+        {
+            ctx.r3.u32 = ctx.r3.u32 == 0 ? 0u : 1167u;
+            return;
+        }
+        if (service == "XamUserGetSigninState")
+        {
+            // XUSER_SIGNIN_STATE_SIGNED_IN_LOCALLY for the primary pad.
+            ctx.r3.u32 = ctx.r3.u32 == 0 ? 1u : 0u;
+            return;
+        }
+        if (service == "XamUserGetXUID")
+        {
+            constexpr uint32_t kErrorNoSuchUser = 1317u;
+            const uint32_t userIndex = ctx.r3.u32;
+            const uint32_t output = ctx.r5.u32;
+            if (userIndex != 0 || output == 0)
+            {
+                ctx.r3.u32 = kErrorNoSuchUser;
+                return;
+            }
+            const uint64_t xuid = __builtin_bswap64(0xE000000000000001ull);
+            std::memcpy(base + output, &xuid, sizeof(xuid));
+            ctx.r3.u32 = 0;
+            return;
+        }
         if (service == "XamContentClose" || service == "XamVoiceClose" || service == "NtClose" ||
             service == "ObDereferenceObject")
         {
@@ -1762,6 +1815,7 @@ private:
     std::array<uint32_t, 64> tlsSlots_{};
     std::array<bool, 64> tlsUsed_{};
     std::atomic<uint32_t> nextThreadId_{1};
+    uint32_t inputPacketNumber_ = 1;
     std::recursive_mutex stateMutex_;
 };
 
@@ -2698,6 +2752,16 @@ int main(int argc, char** argv)
                 }
                 glfwSwapBuffers(window);
                 glfwPollEvents();
+                uint16_t buttons = 0;
+                buttons |= glfwGetKey(window, GLFW_KEY_UP) == GLFW_PRESS ? 0x0001u : 0u;
+                buttons |= glfwGetKey(window, GLFW_KEY_DOWN) == GLFW_PRESS ? 0x0002u : 0u;
+                buttons |= glfwGetKey(window, GLFW_KEY_LEFT) == GLFW_PRESS ? 0x0004u : 0u;
+                buttons |= glfwGetKey(window, GLFW_KEY_RIGHT) == GLFW_PRESS ? 0x0008u : 0u;
+                buttons |= glfwGetKey(window, GLFW_KEY_ENTER) == GLFW_PRESS ? 0x0010u : 0u;
+                buttons |= glfwGetKey(window, GLFW_KEY_BACKSPACE) == GLFW_PRESS ? 0x0020u : 0u;
+                buttons |= glfwGetKey(window, GLFW_KEY_SPACE) == GLFW_PRESS ? 0x1000u : 0u;
+                buttons |= glfwGetKey(window, GLFW_KEY_ESCAPE) == GLFW_PRESS ? 0x2000u : 0u;
+                gInputButtons.store(buttons, std::memory_order_relaxed);
             }
             glfwDestroyWindow(window);
             glfwTerminate();

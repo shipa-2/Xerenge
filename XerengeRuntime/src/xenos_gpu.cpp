@@ -619,11 +619,10 @@ void XenosGpu::rasterizeDraw(uint8_t* guestBase, uint32_t initiator)
                     {
                         const float u = w0 * va.uv[0] + w1 * vb.uv[0] + w2 * vc.uv[0];
                         const float v = w0 * va.uv[1] + w1 * vb.uv[1] + w2 * vc.uv[1];
-                        const auto color = sampleTexture(u, v);
                         const bool hasSampledTexture = !pixelShaderPassesInterpolator &&
                             (hasDxt3Texture || hasRgba8Texture);
                         std::array<uint8_t, 4> output = hasSampledTexture
-                            ? color : drawColor;
+                            ? sampleTexture(u, v) : drawColor;
                         if (hasSampledTexture || pixelShaderPassesInterpolator)
                         {
                             for (uint32_t component = 0; component < 4; ++component)
