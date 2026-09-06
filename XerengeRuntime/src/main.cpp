@@ -12,6 +12,7 @@
 #include <fstream>
 #include <iomanip>
 #include <iostream>
+#include <memory>
 #include <mutex>
 #include <optional>
 #include <string_view>
@@ -27,6 +28,7 @@
 #include <unistd.h>
 
 #include "ppc_recomp_shared.h"
+#include "shader_cache_runtime.h"
 #include "xenos_gpu.h"
 #endif
 #include "xbox_media.h"
@@ -188,6 +190,32 @@ std::atomic<uint64_t> gPpcFunctionTransitions = 0;
 std::atomic<uint64_t> gPpcFunctionCalls = 0;
 std::atomic<bool> gPpcTraceEnabled = false;
 XenosGpu gXenosGpu;
+std::atomic<uint32_t> gGraphicsInterruptCallback = 0;
+std::atomic<uint32_t> gGraphicsInterruptContext = 0;
+thread_local bool gInGraphicsInterruptCallback = false;
+
+void dispatchGraphicsInterrupt(uint8_t* base)
+{
+    const uint32_t callback = gGraphicsInterruptCallback.load(std::memory_order_acquire);
+    const uint32_t context = gGraphicsInterruptContext.load(std::memory_order_acquire);
+    if (callback == 0 || gInGraphicsInterruptCallback)
+        return;
+
+    gInGraphicsInterruptCallback = true;
+    PPCContext interrupt{};
+    interrupt.r1.u32 = 0x6E000000u;
+    interrupt.r3.u32 = 1; // Xenos interrupt notification: command processor.
+    interrupt.r4.u32 = context;
+    if (std::getenv("XERENGE_PPC_TRACE") != nullptr)
+    {
+        static std::atomic<uint32_t> traceCount = 0;
+        if (traceCount.fetch_add(1, std::memory_order_relaxed) < 16)
+            std::cerr << "graphics interrupt callback=0x" << std::hex << callback
+                      << " context=0x" << context << std::dec << '\n';
+    }
+    PPCDispatchIndirect(interrupt, base, callback);
+    gInGraphicsInterruptCallback = false;
+}
 
 void ppcWatchdogSignal(int)
 {
@@ -502,6 +530,13 @@ extern "C" void PPCGuestMmioStore(uint8_t* base, uint32_t address, uint64_t valu
     }
 
     gXenosGpu.write(base, address, value, width);
+
+    // CP_RB_WPTR is the guest's submission doorbell.  The title registers a
+    // kernel callback for this event and waits for it while bootstrapping the
+    // renderer, so deliver it after the command processor has consumed the
+    // newly submitted ring segment.
+    if (address == XenosGpu::kMmioBase + XenosGpu::kCpRbWptr * 4 && width == 4)
+        dispatchGraphicsInterrupt(base);
 
     // Keep the guest-visible big-endian backing bytes until the command
     // processor is connected.  The hook makes MMIO traffic observable while
@@ -922,17 +957,14 @@ public:
             const uint32_t fetch5 = loadU32(base, fetch + 20);
             const uint32_t fallbackWidth = 1280;
             const uint32_t fallbackHeight = 720;
+            // The title's wrapper passes ABI-specific stack pointers in these
+            // slots. Keep the host presentation mode stable until the display
+            // mode service is implemented and validated against a real frame.
             const uint32_t requestedWidth = ctx.r11.u32 != 0 ? loadU32(base, ctx.r11.u32) : 0;
             const uint32_t heightPointer = loadU32(base, ctx.r1.u32 + 84);
             const uint32_t requestedHeight = heightPointer != 0 ? loadU32(base, heightPointer) : 0;
-            // The title's VdSwap wrapper passes several stack pointers whose
-            // positions vary between dashboard/runtime builds. Reject values
-            // that are clearly pointers or one-pixel sentinels and use the
-            // mode encoded in the fetch packet as the display extent.
-            const uint32_t width = requestedWidth >= 320 && requestedWidth <= 4096
-                ? requestedWidth : fallbackWidth;
-            const uint32_t height = requestedHeight >= 240 && requestedHeight <= 4096
-                ? requestedHeight : fallbackHeight;
+            const uint32_t width = fallbackWidth;
+            const uint32_t height = fallbackHeight;
 
             std::array<uint32_t, 16> sourceCommands{};
             for (uint32_t i = 0; i < sourceCommands.size(); ++i)
@@ -943,6 +975,9 @@ public:
             // overwriting the first dwords first would erase the actual draw
             // commands and make a real frame indistinguishable from a clear.
             gXenosGpu.processSubmittedBuffer(base, buffer, 64);
+            const bool frontbufferRead = gXenosGpu.presentFromGuest(base, frontbuffer, width, height);
+            if (!frontbufferRead)
+                gXenosGpu.present(width, height);
 
             // VdSwap reserves 64 dwords in the primary ring and fills it with
             // a fetch update followed by Xenia's observable XE_SWAP packet.
@@ -967,6 +1002,9 @@ public:
                 static std::atomic<uint32_t> swapTraceCount = 0;
                 if (swapTraceCount.fetch_add(1, std::memory_order_relaxed) < 8)
                 {
+                    uint32_t frontbufferNonzero = 0;
+                    for (uint32_t i = 0; i < 4096; ++i)
+                        frontbufferNonzero += loadU32(base, frontbuffer + i * 4) != 0;
                     std::cerr << "VdSwap source 0x" << std::hex << buffer << ":";
                     for (const uint32_t value : sourceCommands)
                         std::cerr << " " << value;
@@ -978,7 +1016,11 @@ public:
                     std::cerr << " fetch=0x" << ctx.r4.u32 << ":";
                     for (uint32_t i = 0; i < 6; ++i)
                         std::cerr << " " << loadU32(base, ctx.r4.u32 + i * 4);
-                    std::cerr << " r5=0x" << ctx.r5.u32
+                    std::cerr << " frontbuffer=0x" << frontbuffer
+                              << " nonzeroWords4096=" << std::dec << frontbufferNonzero
+                              << " requested=" << requestedWidth << 'x' << requestedHeight
+                              << std::hex
+                              << " r5=0x" << ctx.r5.u32
                               << " r6=0x" << ctx.r6.u32
                               << " r7=0x" << ctx.r7.u32
                               << " r8=0x" << ctx.r8.u32
@@ -1056,9 +1098,18 @@ public:
             ctx.r3.u32 = 1;
             return;
         }
+        if (service == "VdSetGraphicsInterruptCallback")
+        {
+            gGraphicsInterruptCallback.store(ctx.r3.u32, std::memory_order_release);
+            gGraphicsInterruptContext.store(ctx.r4.u32, std::memory_order_release);
+            if (std::getenv("XERENGE_PPC_TRACE") != nullptr)
+                std::cerr << "registered graphics interrupt callback=0x" << std::hex
+                          << ctx.r3.u32 << " context=0x" << ctx.r4.u32 << std::dec << '\n';
+            ctx.r3.u32 = 0;
+            return;
+        }
         if (service == "VdRetrainEDRAM" || service == "VdRetrainEDRAMWorker" ||
             service == "VdEnableDisableClockGating" || service == "VdShutdownEngines" ||
-            service == "VdSetGraphicsInterruptCallback" ||
             service == "VdSetSystemCommandBufferGpuIdentifierAddress" ||
             service == "VdPersistDisplay" || service == "VdCallGraphicsNotificationRoutines")
         {
@@ -2277,11 +2328,11 @@ int main(int argc, char** argv)
         const auto mapped = mapPeImage(image, *info);
         if (!mapped)
             return 1;
-        PpcGuestMemory guest;
-        if (!guest.initialize(*mapped))
+        auto guest = std::make_unique<PpcGuestMemory>();
+        if (!guest->initialize(*mapped))
             return 1;
         std::cout << "prepared PPC guest memory: 4 GiB reservation, "
-                  << guest.functionCount() << " function mappings, entry point resolved\n";
+                  << guest->functionCount() << " function mappings, entry point resolved\n";
         if (std::string(argv[1]) == "--ppc-entry")
         {
             const char* mediaPath = argc == 4 ? argv[3] : std::getenv("XERENGE_MEDIA");
@@ -2293,9 +2344,70 @@ int main(int argc, char** argv)
                     std::cout << "XDVDFS media mounted: " << mediaPath << '\n';
             }
             gPpcServiceCalls = 0;
-            guest.invokeEntryPoint();
-            std::cout << "PPC entry point returned after " << gPpcServiceCalls
-                      << " service calls\n";
+            const auto shaderCache = xerengeShaderCache();
+            std::cout << "Xenos shader cache: "
+                      << (shaderCache.available() ? std::to_string(shaderCache.entryCount) : "none")
+                      << " entries\n" << std::flush;
+
+            std::atomic<bool> guestReturned = false;
+            std::thread guestThread([guestPtr = guest.get(), &guestReturned]
+            {
+                guestPtr->invokeEntryPoint();
+                guestReturned.store(true, std::memory_order_release);
+            });
+
+            if (!glfwInit())
+            {
+                guestThread.join();
+                std::cout << "PPC entry point returned after " << gPpcServiceCalls
+                          << " service calls\n";
+                return 0;
+            }
+            glfwWindowHint(GLFW_CLIENT_API, GLFW_OPENGL_API);
+            GLFWwindow* window = glfwCreateWindow(1280, 720, "Xerenge Burnout video", nullptr, nullptr);
+            if (window == nullptr)
+            {
+                glfwTerminate();
+                guestThread.join();
+                return 1;
+            }
+            glfwMakeContextCurrent(window);
+            glfwSwapInterval(1);
+            glPixelStorei(GL_UNPACK_ALIGNMENT, 1);
+            bool readbackReported = false;
+            while (!glfwWindowShouldClose(window))
+            {
+                const auto pixels = gXenosGpu.framebufferCopy();
+                glViewport(0, 0, 1280, 720);
+                glClearColor(0.0f, 0.0f, 0.0f, 1.0f);
+                glClear(GL_COLOR_BUFFER_BIT);
+                if (!pixels.empty())
+                {
+                    glRasterPos2f(-1.0f, -1.0f);
+                    glPixelZoom(1.0f, 1.0f);
+                    glDrawPixels(static_cast<GLsizei>(gXenosGpu.lastFrameWidth()),
+                        static_cast<GLsizei>(gXenosGpu.lastFrameHeight()),
+                        GL_RGBA, GL_UNSIGNED_BYTE, pixels.data());
+                    if (!readbackReported)
+                    {
+                        std::cout << "Xenos framebuffer readback: "
+                                  << gXenosGpu.lastFrameWidth() << 'x'
+                                  << gXenosGpu.lastFrameHeight() << " checksum=0x"
+                                  << std::hex << gXenosGpu.framebufferChecksum() << std::dec
+                                  << "\n" << std::flush;
+                        readbackReported = true;
+                    }
+                }
+                glfwSwapBuffers(window);
+                glfwPollEvents();
+            }
+            glfwDestroyWindow(window);
+            glfwTerminate();
+            // PPC worker threads are guest-owned and have no cancellation ABI
+            // yet. Keep their guest backing alive until process exit.
+            guest.release();
+            guestThread.detach();
+            return 0;
         }
         return 0;
 #else

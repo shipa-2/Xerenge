@@ -19,6 +19,60 @@ void storeGuestBE(uint8_t* base, uint32_t address, uint32_t value)
     const uint32_t encoded = __builtin_bswap32(value);
     std::memcpy(base + address, &encoded, sizeof(encoded));
 }
+
+}
+
+void XenosGpu::present(uint32_t width, uint32_t height)
+{
+    std::lock_guard lock(mutex_);
+    width = std::clamp(width, 1u, 4096u);
+    height = std::clamp(height, 1u, 4096u);
+    framebuffer_.assign(static_cast<size_t>(width) * height * 4, 0);
+    for (size_t i = 3; i < framebuffer_.size(); i += 4)
+        framebuffer_[i] = 255;
+    lastFrameWidth_ = width;
+    lastFrameHeight_ = height;
+}
+
+bool XenosGpu::presentFromGuest(uint8_t* guestBase, uint32_t guestAddress,
+    uint32_t width, uint32_t height)
+{
+    std::lock_guard lock(mutex_);
+    width = std::clamp(width, 1u, 4096u);
+    height = std::clamp(height, 1u, 4096u);
+    const size_t byteCount = static_cast<size_t>(width) * height * 4;
+    if (guestAddress == 0 || guestAddress > 0xFFFFFFFFu - byteCount)
+        return false;
+
+    // The first bring-up path uses the guest surface as a linear X8R8G8B8
+    // readback.  Xenos tiling/swizzle is handled separately once command
+    // packets identify the render-target format; keeping the copy here makes
+    // a title-provided frontbuffer observable without fabricating pixels.
+    framebuffer_.resize(byteCount);
+    std::memcpy(framebuffer_.data(), guestBase + guestAddress, byteCount);
+    for (size_t i = 0; i < framebuffer_.size(); i += 4)
+        framebuffer_[i + 3] = 255;
+    lastFrameWidth_ = width;
+    lastFrameHeight_ = height;
+    return true;
+}
+
+std::vector<uint8_t> XenosGpu::framebufferCopy() const
+{
+    std::lock_guard lock(mutex_);
+    return framebuffer_;
+}
+
+uint64_t XenosGpu::framebufferChecksum() const
+{
+    std::lock_guard lock(mutex_);
+    uint64_t hash = 1469598103934665603ull;
+    for (const uint8_t byte : framebuffer_)
+    {
+        hash ^= byte;
+        hash *= 1099511628211ull;
+    }
+    return hash;
 }
 
 void XenosGpu::initializeRingBuffer(uint32_t guestAddress, uint32_t sizeLog2)

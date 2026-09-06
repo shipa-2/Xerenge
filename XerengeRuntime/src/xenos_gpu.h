@@ -3,6 +3,7 @@
 #include <array>
 #include <cstdint>
 #include <mutex>
+#include <vector>
 
 class XenosGpu
 {
@@ -18,6 +19,10 @@ public:
     void initializeRingBuffer(uint32_t guestAddress, uint32_t sizeLog2);
     void enableReadPointerWriteBack(uint32_t guestAddress, uint32_t blockSizeLog2);
     void processSubmittedBuffer(uint8_t* guestBase, uint32_t guestAddress, uint32_t dwordCount);
+    void present(uint32_t width, uint32_t height);
+    bool presentFromGuest(uint8_t* guestBase, uint32_t guestAddress, uint32_t width, uint32_t height);
+    std::vector<uint8_t> framebufferCopy() const;
+    uint64_t framebufferChecksum() const;
 
     uint64_t mmioWriteCount() const { return mmioWriteCount_; }
     uint64_t packetCount() const { return packetCount_; }
@@ -35,6 +40,7 @@ private:
 
     std::array<uint32_t, 0x2000> registers_{};
     mutable std::recursive_mutex mutex_;
+    std::vector<uint8_t> framebuffer_;
     uint32_t writePointer_ = 0;
     uint32_t readPointer_ = 0;
     uint32_t ringBase_ = 0;

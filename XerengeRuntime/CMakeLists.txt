@@ -25,15 +25,26 @@ add_executable(xerenge-runtime
     src/main.cpp
     src/xenos_gpu.cpp
     src/xbox_media.cpp
+    src/shader_cache_runtime.cpp
 )
 
 target_link_libraries(xerenge-runtime PRIVATE Vulkan::Vulkan OpenGL::GL Xerenge::Crypto PkgConfig::GLFW3)
 target_compile_definitions(xerenge-runtime PRIVATE GLFW_INCLUDE_NONE)
+target_include_directories(xerenge-runtime PRIVATE "${CMAKE_CURRENT_SOURCE_DIR}/src")
 
 # XenonRecomp output is intentionally generated outside the repository.  When
 # supplied, build it as a separate library so the runtime can be linked to the
 # recompiled game without checking game code into source control.
 set(XERENGE_PPC_DIRECTORY "" CACHE PATH "Directory containing XenonRecomp PPC output")
+set(XERENGE_SHADER_CACHE_CPP "" CACHE FILEPATH "Generated XenosRecomp shader cache source")
+if(XERENGE_SHADER_CACHE_CPP)
+    if(NOT EXISTS "${XERENGE_SHADER_CACHE_CPP}")
+        message(FATAL_ERROR "XERENGE_SHADER_CACHE_CPP does not exist")
+    endif()
+    target_sources(xerenge-runtime PRIVATE "${XERENGE_SHADER_CACHE_CPP}")
+    target_compile_definitions(xerenge-runtime PRIVATE XERENGE_HAS_SHADER_CACHE=1)
+    message(STATUS "Building with generated XenosRecomp shader cache: ${XERENGE_SHADER_CACHE_CPP}")
+endif()
 if(XERENGE_PPC_DIRECTORY)
     if(NOT EXISTS "${XERENGE_PPC_DIRECTORY}/ppc_recomp_shared.h")
         message(FATAL_ERROR "XERENGE_PPC_DIRECTORY does not contain XenonRecomp output")
