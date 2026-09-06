@@ -28,7 +28,8 @@ add_executable(xerenge-runtime
     src/shader_cache_runtime.cpp
 )
 
-target_link_libraries(xerenge-runtime PRIVATE Vulkan::Vulkan OpenGL::GL Xerenge::Crypto PkgConfig::GLFW3)
+target_link_libraries(xerenge-runtime PRIVATE Vulkan::Vulkan OpenGL::GL Xerenge::Crypto
+    PkgConfig::GLFW3 ${CMAKE_DL_LIBS})
 target_compile_definitions(xerenge-runtime PRIVATE GLFW_INCLUDE_NONE)
 target_include_directories(xerenge-runtime PRIVATE "${CMAKE_CURRENT_SOURCE_DIR}/src")
 

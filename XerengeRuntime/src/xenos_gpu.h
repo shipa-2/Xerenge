@@ -36,6 +36,8 @@ public:
     bool ringConfigured() const { return ringBase_ != 0 && ringSizeDwords_ != 0; }
 
 private:
+    void processBuffer(uint8_t* guestBase, uint32_t guestAddress,
+        uint32_t dwordCount, uint32_t recursionDepth);
     void processRing(uint8_t* guestBase);
 
     std::array<uint32_t, 0x2000> registers_{};

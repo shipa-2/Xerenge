@@ -93,6 +93,15 @@ void XenosGpu::enableReadPointerWriteBack(uint32_t guestAddress, uint32_t)
 void XenosGpu::processSubmittedBuffer(uint8_t* guestBase, uint32_t guestAddress, uint32_t dwordCount)
 {
     std::lock_guard lock(mutex_);
+    processBuffer(guestBase, guestAddress, dwordCount, 0);
+}
+
+void XenosGpu::processBuffer(uint8_t* guestBase, uint32_t guestAddress,
+    uint32_t dwordCount, uint32_t recursionDepth)
+{
+    if (recursionDepth > 8 || dwordCount > (1u << 22))
+        return;
+
     uint32_t offset = 0;
     while (offset < dwordCount)
     {
@@ -115,6 +124,19 @@ void XenosGpu::processSubmittedBuffer(uint8_t* guestBase, uint32_t guestAddress,
             length = ((packet >> 16) & 0x3FFFu) + 2;
             const uint32_t opcode = (packet >> 8) & 0xFFu;
             ++opcodeCounts_[opcode];
+            if (opcode == 0x3Fu && length >= 3 && offset + 2 < dwordCount)
+            {
+                // CP_INDIRECT_BUFFER stores a 29-bit physical address.  The
+                // title's physical allocations live in the 0x60000000 guest
+                // alias, while PM4 strips those high virtual-address bits.
+                const uint32_t physicalAddress =
+                    loadGuestBE(guestBase, guestAddress + (offset + 1) * 4);
+                const uint32_t indirectCount =
+                    loadGuestBE(guestBase, guestAddress + (offset + 2) * 4) & 0xFFFFFu;
+                const uint32_t indirectAddress =
+                    0x60000000u | (physicalAddress & 0x1FFFFFFFu);
+                processBuffer(guestBase, indirectAddress, indirectCount, recursionDepth + 1);
+            }
             // Xenos PM4 draw packets.  The low seven bits are used by the
             // hardware opcode field; accepting both forms keeps this parser
             // useful for command streams produced by different compilers.
@@ -209,6 +231,16 @@ void XenosGpu::processRing(uint8_t* guestBase)
             length = ((packet >> 16) & 0x3FFFu) + 2;
             const uint32_t opcode = (packet >> 8) & 0xFFu;
             ++opcodeCounts_[opcode];
+            if (opcode == 0x3Fu && length >= 3 && readPointer_ + 2 < target)
+            {
+                const uint32_t physicalAddress = loadGuestBE(guestBase,
+                    ringBase_ + (readPointer_ + 1) * 4);
+                const uint32_t indirectCount = loadGuestBE(guestBase,
+                    ringBase_ + (readPointer_ + 2) * 4) & 0xFFFFFu;
+                const uint32_t indirectAddress =
+                    0x60000000u | (physicalAddress & 0x1FFFFFFFu);
+                processBuffer(guestBase, indirectAddress, indirectCount, 1);
+            }
             if (opcode == 0x22u || opcode == 0x23u || opcode == 0x2Du ||
                 opcode == 0x2Eu || opcode == 0x36u)
                 ++drawPacketCount_;

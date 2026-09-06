@@ -23,6 +23,7 @@
 
 #ifdef XERENGE_HAS_PPC
 #include <sys/mman.h>
+#include <dlfcn.h>
 #include <execinfo.h>
 #include <signal.h>
 #include <unistd.h>
@@ -189,6 +190,11 @@ std::atomic<uint32_t> gPpcLastFunction = 0;
 std::atomic<uint64_t> gPpcFunctionTransitions = 0;
 std::atomic<uint64_t> gPpcFunctionCalls = 0;
 std::atomic<bool> gPpcTraceEnabled = false;
+std::atomic<uint32_t> gResourceStateWatchAddress = 0;
+thread_local uint32_t gPpcCurrentFunction = 0;
+thread_local uint32_t gPpcCurrentCaller = 0;
+thread_local std::array<uint32_t, 5> gPpcLastDataRoutineArgs{};
+thread_local uint32_t gPpcLastDataRoutine = 0;
 XenosGpu gXenosGpu;
 std::atomic<uint32_t> gGraphicsInterruptCallback = 0;
 std::atomic<uint32_t> gGraphicsInterruptContext = 0;
@@ -235,6 +241,14 @@ extern "C" void PPCTraceStore(uint32_t address, uint32_t value, uint64_t lr)
 
 extern "C" void PPCTraceFunction(uint32_t address, PPCContext& ctx, uint8_t* base)
 {
+    gPpcCurrentFunction = address;
+    gPpcCurrentCaller = static_cast<uint32_t>(ctx.lr);
+    if (address == 0x825847A8u || address == 0x82584E38u)
+    {
+        gPpcLastDataRoutine = address;
+        gPpcLastDataRoutineArgs = {
+            ctx.r3.u32, ctx.r4.u32, ctx.r5.u32, ctx.r6.u32, ctx.r7.u32};
+    }
     const uint64_t callCount = gPpcFunctionCalls.fetch_add(1, std::memory_order_relaxed) + 1;
     if (address == 0x82355500u && ctx.r3.u32 != 0)
     {
@@ -588,6 +602,33 @@ extern "C" uint32_t PPCGuestClock()
 
 extern "C" void PPCGuestStoreU32(uint8_t* base, uint32_t address, uint32_t value)
 {
+    const uint32_t watchedResourceState =
+        gResourceStateWatchAddress.load(std::memory_order_relaxed);
+    if (watchedResourceState != 0 && address == watchedResourceState &&
+        std::getenv("XERENGE_PPC_TRACE") != nullptr)
+    {
+        static std::atomic<uint32_t> stateStoreTraceCount = 0;
+        if (stateStoreTraceCount.fetch_add(1, std::memory_order_relaxed) < 64)
+        {
+            void* returnAddress = __builtin_return_address(0);
+            Dl_info symbol{};
+            const bool resolved = dladdr(returnAddress, &symbol) != 0;
+            const uintptr_t imageOffset = resolved
+                ? reinterpret_cast<uintptr_t>(returnAddress) -
+                    reinterpret_cast<uintptr_t>(symbol.dli_fbase)
+                : 0;
+            std::cerr << "resource state store address=0x" << std::hex << address
+                      << " value=" << value
+                      << " function=0x" << gPpcCurrentFunction
+                      << " caller=0x" << gPpcCurrentCaller
+                      << " nativeOffset=0x" << imageOffset
+                      << " dataRoutine=0x" << gPpcLastDataRoutine
+                      << " args=" << gPpcLastDataRoutineArgs[0] << ','
+                      << gPpcLastDataRoutineArgs[1] << ',' << gPpcLastDataRoutineArgs[2]
+                      << ',' << gPpcLastDataRoutineArgs[3] << ','
+                      << gPpcLastDataRoutineArgs[4] << std::dec << '\n';
+        }
+    }
     if (address >= XenosGpu::kMmioBase && address < XenosGpu::kMmioBase + XenosGpu::kMmioSize)
     {
         PPCGuestMmioStore(base, address, value, 4);
@@ -773,6 +814,7 @@ public:
                 // the resource queue.
                 if (startAddress == 0x821109F8u && loadU32(base, startContext + 48) == 0)
                 {
+                    gResourceStateWatchAddress.store(startContext + 48, std::memory_order_relaxed);
                     storeU32(base, startContext + 48, 2);
                     std::cerr << "bootstrapped resource thread state object=0x"
                               << std::hex << startContext << " state=2" << std::dec << '\n';
@@ -1212,9 +1254,16 @@ public:
             return;
         }
 
-        if (service == "XamAlloc" || service == "ExAllocatePoolWithTag" || service == "RtlAllocateHeap")
+        if (service == "XamAlloc" || service == "ExAllocatePoolWithTag")
         {
             const uint32_t size = std::max<uint32_t>(ctx.r3.u32, 1);
+            ctx.r3.u32 = allocate(size, base);
+            return;
+        }
+        if (service == "RtlAllocateHeap")
+        {
+            // NT ABI: RtlAllocateHeap(heapHandle, flags, size).
+            const uint32_t size = std::max<uint32_t>(ctx.r5.u32, 1);
             ctx.r3.u32 = allocate(size, base);
             return;
         }
@@ -1234,9 +1283,16 @@ public:
             ctx.r3.u32 = allocation != 0 ? 0 : 0xC0000017u; // STATUS_NO_MEMORY
             return;
         }
-        if (service == "XamFree" || service == "ExFreePool" || service == "RtlFreeHeap")
+        if (service == "XamFree" || service == "ExFreePool")
         {
             allocations_.erase(ctx.r3.u32);
+            ctx.r3.u32 = 1;
+            return;
+        }
+        if (service == "RtlFreeHeap")
+        {
+            // NT ABI: RtlFreeHeap(heapHandle, flags, allocation).
+            allocations_.erase(ctx.r5.u32);
             ctx.r3.u32 = 1;
             return;
         }
