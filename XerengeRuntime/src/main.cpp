@@ -1593,6 +1593,16 @@ extern "C" void PPCUnknownIndirectTrap(uint32_t address, PPCContext& ctx, uint8_
 {
     if (gXboxServices.invokeCallback(address, ctx))
         return;
+    if (address == 0x630u && ctx.r30.u32 == 0x826AFCD4u)
+    {
+        // The loader clears this callback-list head while zeroing BSS after
+        // the early host-side initialization.  The list walk in
+        // sub_825B3A58 expects an empty circular sentinel here; otherwise the
+        // zeroed node is interpreted as a callback at address 0x630.
+        XboxServiceLayer::writeGuestU32(base, 0x826AFCD4u, 0x826AFCD4u);
+        ctx.r3.u32 = 0;
+        return;
+    }
     if (ctx.lr == 0x82382180u)
     {
         // Growable title allocators pass the output byte count in r6 and the
