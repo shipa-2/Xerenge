@@ -12,7 +12,9 @@
 #include <iomanip>
 #include <iostream>
 #include <optional>
+#include <string_view>
 #include <string>
+#include <unordered_map>
 #include <vector>
 
 #ifdef XERENGE_HAS_PPC
@@ -172,15 +174,89 @@ private:
 uint64_t gPpcServiceCalls = 0;
 uint64_t gPpcUnknownIndirectCalls = 0;
 
-extern "C" void PPCImportedServiceTrap(const char* service, PPCContext& ctx, uint8_t*)
+class XboxServiceLayer
 {
-    // The generated import wrappers arrive here until a service is implemented.
-    // Returning STATUS_NOT_IMPLEMENTED keeps the ABI explicit and gives the
-    // launcher a deterministic failure instead of an unresolved host symbol.
-    ++gPpcServiceCalls;
-    if (gPpcServiceCalls <= 20)
-        std::cerr << "unimplemented Xbox service invoked: " << service << '\n';
-    ctx.r3.u64 = 0;
+public:
+    void invoke(std::string_view service, PPCContext& ctx, uint8_t* base)
+    {
+        ++gPpcServiceCalls;
+        if (service.compare(0, 7, "__imp__") == 0)
+            service.remove_prefix(7);
+
+        if (service == "XamAlloc" || service == "ExAllocatePoolWithTag" || service == "RtlAllocateHeap")
+        {
+            const uint32_t size = std::max<uint32_t>(ctx.r3.u32, 1);
+            ctx.r3.u32 = allocate(size, base);
+            return;
+        }
+        if (service == "XamFree" || service == "ExFreePool" || service == "RtlFreeHeap")
+        {
+            allocations_.erase(ctx.r3.u32);
+            ctx.r3.u32 = 1;
+            return;
+        }
+        if (service == "RtlInitializeCriticalSection")
+        {
+            clear(base, ctx.r3.u32, 0x20);
+            ctx.r3.u32 = 0;
+            return;
+        }
+        if (service == "RtlEnterCriticalSection" || service == "RtlLeaveCriticalSection")
+        {
+            ctx.r3.u32 = 0;
+            return;
+        }
+        if (service == "KeGetCurrentProcessType")
+        {
+            ctx.r3.u32 = 1;
+            return;
+        }
+        if (service == "XGetLanguage")
+        {
+            ctx.r3.u32 = 1; // English, the neutral title default.
+            return;
+        }
+        if (service == "XGetGameRegion" || service == "XGetVideoMode")
+        {
+            ctx.r3.u32 = 0;
+            return;
+        }
+
+        if (gPpcServiceCalls <= 40)
+            std::cerr << "unimplemented Xbox service: " << service << '\n';
+        ctx.r3.u32 = 0xC0000001u; // STATUS_UNSUCCESSFUL
+    }
+
+private:
+    uint32_t allocate(uint32_t size, uint8_t* base)
+    {
+        constexpr uint32_t alignment = 16;
+        const uint32_t alignedSize = (size + alignment - 1) & ~(alignment - 1);
+        if (heapCursor_ > heapLimit_ - alignedSize)
+            return 0;
+        const uint32_t address = heapCursor_;
+        heapCursor_ += alignedSize;
+        allocations_.emplace(address, alignedSize);
+        std::memset(base + address, 0, alignedSize);
+        return address;
+    }
+
+    static void clear(uint8_t* base, uint32_t address, uint32_t size)
+    {
+        if (address != 0)
+            std::memset(base + address, 0, size);
+    }
+
+    uint32_t heapCursor_ = 0x60000000u;
+    static constexpr uint32_t heapLimit_ = 0x68000000u;
+    std::unordered_map<uint32_t, uint32_t> allocations_;
+};
+
+XboxServiceLayer gXboxServices;
+
+extern "C" void PPCImportedServiceTrap(const char* service, PPCContext& ctx, uint8_t* base)
+{
+    gXboxServices.invoke(service, ctx, base);
 }
 
 extern "C" void PPCUnknownIndirectTrap(uint32_t address, PPCContext& ctx, uint8_t*)
