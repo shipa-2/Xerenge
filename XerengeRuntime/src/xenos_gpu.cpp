@@ -248,6 +248,7 @@ void XenosGpu::rasterizeDraw(uint8_t* guestBase, uint32_t initiator)
     {
         std::array<float, 3> position{};
         std::array<float, 2> uv{};
+        std::array<float, 4> color{1.0f, 1.0f, 1.0f, 1.0f};
     };
     std::array<RasterVertex, 3> triangle{};
     std::array<uint8_t, 4> drawColor{255, 255, 255, 255};
@@ -304,15 +305,25 @@ void XenosGpu::rasterizeDraw(uint8_t* guestBase, uint32_t initiator)
             continue;
 
         std::array<float, 2> uv{};
+        // The pointer VS uses vfetch_full at offset 0, then vfetch_mini
+        // offset 2 -> r0 (UV) and offset 4 -> r1 (the PS multiplier).
         for (uint32_t component = 0; component < 2; ++component)
         {
-            const uint32_t raw = loadGuestBE(guestBase, address + (4 + component) * 4);
+            const uint32_t raw = loadGuestBE(guestBase, address + (2 + component) * 4);
             std::memcpy(&uv[component], &raw, sizeof(float));
             if (!std::isfinite(uv[component]))
                 uv[component] = 0.0f;
         }
+        std::array<float, 4> vertexColor{1.0f, 1.0f, 1.0f, 1.0f};
+        for (uint32_t component = 0; component < 4; ++component)
+        {
+            const uint32_t raw = loadGuestBE(guestBase, address + (4 + component) * 4);
+            std::memcpy(&vertexColor[component], &raw, sizeof(float));
+            if (!std::isfinite(vertexColor[component]))
+                vertexColor[component] = 1.0f;
+        }
         if (primitive == 8u && i < triangle.size())
-            triangle[i] = {{xNdc, yNdc, position[2]}, uv};
+            triangle[i] = {{xNdc, yNdc, position[2]}, uv, vertexColor};
         if (primitive == 8u)
             continue;
 
@@ -444,8 +455,20 @@ void XenosGpu::rasterizeDraw(uint8_t* guestBase, uint32_t initiator)
                         const float u = w0 * va.uv[0] + w1 * vb.uv[0] + w2 * vc.uv[0];
                         const float v = w0 * va.uv[1] + w1 * vb.uv[1] + w2 * vc.uv[1];
                         const auto color = sampleTexture(u, v);
+                        std::array<uint8_t, 4> output = hasDxt3Texture
+                            ? color : drawColor;
+                        if (hasDxt3Texture)
+                        {
+                            for (uint32_t component = 0; component < 4; ++component)
+                            {
+                                const float factor = w0 * va.color[component] +
+                                    w1 * vb.color[component] + w2 * vc.color[component];
+                                output[component] = static_cast<uint8_t>(std::clamp(
+                                    (output[component] / 255.0f) * factor, 0.0f, 1.0f) * 255.0f);
+                            }
+                        }
                         std::memcpy(edram_.data() + (size_t(y) * width + x) * 4,
-                            hasDxt3Texture ? color.data() : drawColor.data(), 4);
+                            output.data(), output.size());
                     }
                 }
         };
@@ -460,6 +483,9 @@ void XenosGpu::rasterizeDraw(uint8_t* guestBase, uint32_t initiator)
         v3.position[1] = v0.position[1] + v2.position[1] - v1.position[1];
         v3.uv[0] = v0.uv[0] + v2.uv[0] - v1.uv[0];
         v3.uv[1] = v0.uv[1] + v2.uv[1] - v1.uv[1];
+        for (uint32_t component = 0; component < 4; ++component)
+            v3.color[component] = v0.color[component] + v2.color[component] -
+                v1.color[component];
         fillTriangle(v0, v2, v3);
         if (std::getenv("XERENGE_XENOS_DRAW_TRACE") != nullptr)
             std::cerr << "Xenos triangle rasterized v0=" << triangle[0].position[0] << ','
