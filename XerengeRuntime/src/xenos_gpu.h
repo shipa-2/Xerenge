@@ -37,6 +37,7 @@ public:
 
 private:
     void writeGpuRegister(uint32_t index, uint32_t value);
+    void rasterizeDraw(uint8_t* guestBase, uint32_t initiator);
     void resolveToGuest(uint8_t* guestBase);
     void processBuffer(uint8_t* guestBase, uint32_t guestAddress,
         uint32_t dwordCount, uint32_t recursionDepth);

@@ -4,6 +4,7 @@
 #include <atomic>
 #include <cstdlib>
 #include <cstring>
+#include <cmath>
 #include <iostream>
 
 namespace
@@ -102,6 +103,69 @@ void XenosGpu::writeGpuRegister(uint32_t index, uint32_t value)
 {
     if (index < gpuRegisters_.size())
         gpuRegisters_[index] = value;
+}
+
+void XenosGpu::rasterizeDraw(uint8_t* guestBase, uint32_t initiator)
+{
+    // The first Burnout command stream uses auto-indexed point draws for its
+    // bootstrap/UI geometry. Resolve draws use primitive 8 and RB_COPY_CONTROL
+    // is nonzero, so they must not enter this path.
+    const uint32_t primitive = initiator & 0x3Fu;
+    const uint32_t source = (initiator >> 6) & 0x3u;
+    const uint32_t count = initiator >> 16;
+    if (primitive != 1u || source != 2u || count == 0 ||
+        gpuRegisters_[0x2318] != 0 || gpuRegisters_[0x2104] == 0)
+        return;
+
+    const uint32_t fetch0 = gpuRegisters_[0x4800];
+    const uint32_t fetch1 = gpuRegisters_[0x4801];
+    if ((fetch0 & 0x3u) != 3u)
+        return;
+
+    const uint32_t physicalAddress = (fetch0 >> 2) << 2;
+    const uint32_t vertexAddress = gpuPhysicalToGuest(physicalAddress);
+    const uint32_t strideWords = (fetch1 >> 2) & 0xFFFFFFu;
+    if (strideWords < 3 || strideWords > 0x1000)
+        return;
+
+    constexpr uint32_t width = 1280;
+    constexpr uint32_t height = 720;
+    if (edram_.size() != size_t(width) * height * 4)
+        edram_.assign(size_t(width) * height * 4, 0);
+
+    const uint32_t firstIndex = gpuRegisters_[0x2102] & 0x00FFFFFFu;
+    for (uint32_t i = 0; i < count; ++i)
+    {
+        const uint32_t address = vertexAddress +
+            (firstIndex + i) * strideWords * sizeof(uint32_t);
+        uint32_t bits[3]{};
+        for (uint32_t component = 0; component < 3; ++component)
+            bits[component] = loadGuestBE(guestBase, address + component * 4);
+
+        float position[3];
+        std::memcpy(&position[0], &bits[0], sizeof(position));
+        if (!std::isfinite(position[0]) || !std::isfinite(position[1]) ||
+            !std::isfinite(position[2]) || position[2] < -1.0f || position[2] > 1.0f)
+            continue;
+
+        const float xNdc = position[0];
+        const float yNdc = position[1];
+        if (xNdc < -1.0f || xNdc > 1.0f || yNdc < -1.0f || yNdc > 1.0f)
+            continue;
+
+        const uint32_t x = std::min(width - 1,
+            static_cast<uint32_t>((xNdc * 0.5f + 0.5f) * width));
+        const uint32_t y = std::min(height - 1,
+            static_cast<uint32_t>((1.0f - (yNdc * 0.5f + 0.5f)) * height));
+        const size_t pixel = (size_t(y) * width + x) * 4;
+        // Preserve the real geometry coverage while the pixel-shader export
+        // path is being brought up. This is intentionally a white opaque
+        // fragment, never a full-frame fallback or synthetic clear.
+        edram_[pixel + 0] = 0xFF;
+        edram_[pixel + 1] = 0xFF;
+        edram_[pixel + 2] = 0xFF;
+        edram_[pixel + 3] = 0xFF;
+    }
 }
 
 void XenosGpu::resolveToGuest(uint8_t* guestBase)
@@ -255,6 +319,7 @@ void XenosGpu::processBuffer(uint8_t* guestBase, uint32_t guestAddress,
                 // same state as a SET_CONSTANT/Type-0 packet would provide.
                 gpuRegisters_[0x21FC] = loadGuestBE(
                     guestBase, guestAddress + (offset + 1) * 4);
+                rasterizeDraw(guestBase, gpuRegisters_[0x21FC]);
             }
             // Xenos PM4 draw packets.  The low seven bits are used by the
             // hardware opcode field; accepting both forms keeps this parser
@@ -461,6 +526,7 @@ void XenosGpu::processRing(uint8_t* guestBase)
             {
                 gpuRegisters_[0x21FC] = loadGuestBE(
                     guestBase, ringBase_ + (readPointer_ + 1) * 4);
+                rasterizeDraw(guestBase, gpuRegisters_[0x21FC]);
             }
             if (opcode == 0x22u || opcode == 0x23u || opcode == 0x2Du ||
                 opcode == 0x2Eu || opcode == 0x36u)
