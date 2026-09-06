@@ -559,7 +559,8 @@ public:
                           << " r6=0x" << ctx.r6.u32
                           << " r7=0x" << ctx.r7.u32
                           << " r8=0x" << ctx.r8.u32
-                          << " r9=0x" << ctx.r9.u32 << std::dec << '\n';
+                          << " r9=0x" << ctx.r9.u32
+                          << " caller=0x" << ctx.lr << std::dec << '\n';
         }
 
         if (service.size() >= 2 && service[0] == 'V' && service[1] == 'd')
@@ -584,7 +585,8 @@ public:
                           << " r6=0x" << ctx.r6.u32
                           << " r7=0x" << ctx.r7.u32
                           << " r8=0x" << ctx.r8.u32
-                          << " r9=0x" << ctx.r9.u32 << std::dec << '\n';
+                          << " r9=0x" << ctx.r9.u32
+                          << " caller=0x" << ctx.lr << std::dec << '\n';
         }
         if ((service == "NtCreateFile" || service == "NtReadFile" ||
              service == "NtWriteFile" || service == "NtQueryInformationFile") &&
@@ -690,6 +692,7 @@ public:
                 static std::atomic<uint32_t> waitTraceCount = 0;
                 if (waitTraceCount.fetch_add(1, std::memory_order_relaxed) < 8)
                     std::cerr << "kernel event wait object=0x" << std::hex << ctx.r3.u32
+                              << " caller=0x" << ctx.lr
                               << std::dec << '\n';
             }
             ctx.r3.u32 = 258; // STATUS_TIMEOUT
