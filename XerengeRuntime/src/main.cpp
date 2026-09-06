@@ -282,6 +282,18 @@ extern "C" void PPCTraceFunction(uint32_t address, PPCContext& ctx, uint8_t* bas
     if (!gPpcTraceEnabled.load(std::memory_order_relaxed))
         return;
 
+    if (address == 0x825AE708u)
+    {
+        static std::atomic<uint32_t> threadCreateTraceCount = 0;
+        if (threadCreateTraceCount.fetch_add(1, std::memory_order_relaxed) < 16)
+            std::cerr << "thread create wrapper r3=0x" << std::hex << ctx.r3.u32
+                      << " r5=0x" << ctx.r5.u32 << " r6=0x" << ctx.r6.u32
+                      << " r7=0x" << ctx.r7.u32 << " r8=0x" << ctx.r8.u32
+                      << " r9=0x" << ctx.r9.u32
+                      << " caller=0x" << static_cast<uint32_t>(ctx.lr)
+                      << std::dec << '\n';
+    }
+
     if (address == 0x8238D6B8u || address == 0x8238D488u)
     {
         static std::atomic<uint32_t> renderQueueTraceCount = 0;
@@ -295,25 +307,57 @@ extern "C" void PPCTraceFunction(uint32_t address, PPCContext& ctx, uint8_t* bas
             std::cerr << "render queue function=0x" << std::hex << address
                       << " r3=0x" << ctx.r3.u32;
             if (address == 0x8238D6B8u)
-                std::cerr << " head=0x" << guestWord(ctx.r3.u32)
+            {
+                const uint32_t head = guestWord(ctx.r3.u32);
+                std::cerr << " head=0x" << head
                           << " producer=0x" << guestWord(ctx.r3.u32 + 4)
+                          << " headNext=0x" << guestWord(head)
+                          << " consumer=0x" << guestWord(head + 628)
                           << " event=0x" << (ctx.r3.u32 + 32);
+            }
             std::cerr << "\n" << std::dec;
+        }
+    }
+    if (address == 0x825AE318u)
+    {
+        static std::atomic<uint32_t> ioTraceCount = 0;
+        if (ioTraceCount.fetch_add(1, std::memory_order_relaxed) < 24)
+        {
+            uint32_t status = 0;
+            if (ctx.r3.u32 != 0)
+            {
+                std::memcpy(&status, base + ctx.r3.u32, sizeof(status));
+                status = __builtin_bswap32(status);
+            }
+            std::cerr << "resource io check r3=0x" << std::hex << ctx.r3.u32
+                      << " status=" << status << " r4=0x" << ctx.r4.u32
+                      << " r5=0x" << ctx.r5.u32 << std::dec << '\n';
         }
     }
     if (address == 0x82104DD0u)
     {
         static std::atomic<uint32_t> stateTraceCount = 0;
+        uint32_t state = 0;
+        std::memcpy(&state, base + ctx.r3.u32 + 48, sizeof(state));
+        state = __builtin_bswap32(state);
         if (stateTraceCount.fetch_add(1, std::memory_order_relaxed) < 32)
         {
-            uint32_t state = 0;
-            std::memcpy(&state, base + ctx.r3.u32 + 48, sizeof(state));
-            state = __builtin_bswap32(state);
             uint32_t ioStatus = 0;
             std::memcpy(&ioStatus, base + ctx.r3.u32 + 22488, sizeof(ioStatus));
             ioStatus = __builtin_bswap32(ioStatus);
+            auto guestWord = [base](uint32_t address) {
+                uint32_t value = 0;
+                std::memcpy(&value, base + address, sizeof(value));
+                return __builtin_bswap32(value);
+            };
+            uint32_t submitted = guestWord(ctx.r3.u32 + 2336);
+            uint32_t completed = guestWord(ctx.r3.u32 + 2348);
+            uint32_t readIndex = guestWord(ctx.r3.u32 + 2344);
+            uint32_t readLimit = guestWord(ctx.r3.u32 + 2352);
             std::cerr << "resource state object=0x" << std::hex << ctx.r3.u32
-                      << " state=" << std::dec << state << " ioStatus=" << ioStatus << '\n';
+                      << " state=" << std::dec << state << " ioStatus=" << ioStatus
+                      << " submitted=" << submitted << " completed=" << completed
+                      << " readIndex=" << readIndex << " readLimit=" << readLimit << '\n';
         }
     }
 
@@ -710,7 +754,9 @@ public:
                           << " startup=0x" << ctx.r6.u32
                           << " start=0x" << startAddress
                           << " context=0x" << startContext
-                          << " flags=0x" << ctx.r9.u32 << std::dec << '\n';
+                          << " flags=0x" << ctx.r9.u32
+                          << " caller=0x" << static_cast<uint32_t>(ctx.lr)
+                          << std::dec << '\n';
             const uint32_t handle = createObject(base);
             if (handleAddress != 0)
                 storeU32(base, handleAddress, handle);
@@ -718,7 +764,21 @@ public:
             if (threadIdAddress != 0)
                 storeU32(base, threadIdAddress, threadId);
             if (handle != 0 && startAddress != 0)
+            {
+                if (startAddress == 0x821109F8u &&
+                    std::getenv("XERENGE_BOOTSTRAP_RESOURCE_STATE") != nullptr &&
+                    loadU32(base, startContext + 48) == 0)
+                {
+                    const char* stateText = std::getenv("XERENGE_BOOTSTRAP_RESOURCE_STATE_VALUE");
+                    const uint32_t initialState = stateText != nullptr
+                        ? static_cast<uint32_t>(std::strtoul(stateText, nullptr, 0)) : 2u;
+                    storeU32(base, startContext + 48, initialState);
+                    std::cerr << "bootstrapped resource thread state object=0x"
+                              << std::hex << startContext << " state=" << initialState
+                              << std::dec << '\n';
+                }
                 launchGuestThread(base, ctx.r6.u32, startAddress, startContext, threadId);
+            }
             ctx.r3.u32 = handle != 0 ? 0 : 0xC0000017u;
             return;
         }
@@ -1421,6 +1481,17 @@ public:
         }
         else
         {
+            if (std::getenv("XERENGE_PPC_TRACE") != nullptr)
+            {
+                static std::atomic<uint32_t> callbackTraceCount = 0;
+                if (callbackTraceCount.fetch_add(1, std::memory_order_relaxed) < 64)
+                    std::cerr << "synthetic vtable callback method=" << method
+                              << " object=0x" << std::hex << object
+                              << " caller=0x" << static_cast<uint32_t>(ctx.lr)
+                              << " r4=0x" << ctx.r4.u32 << " r5=0x" << ctx.r5.u32
+                              << " r6=0x" << ctx.r6.u32 << " r7=0x" << ctx.r7.u32
+                              << std::dec << '\n';
+            }
             // Most methods used during early title bring-up are notification
             // and configuration calls.  They return success while preserving
             // the object in r3 for the following guest call.
