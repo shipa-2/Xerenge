@@ -67,12 +67,21 @@ bool XenosGpu::presentFromGuest(uint8_t* guestBase, uint32_t guestAddress,
     if (std::getenv("XERENGE_FRAMEBUFFER_TRACE") != nullptr)
     {
         size_t nonzeroRgbPixels = 0;
+        uint64_t checksum = 1469598103934665603ull;
         for (size_t i = 0; i + 3 < framebuffer_.size(); i += 4)
+        {
             nonzeroRgbPixels += (framebuffer_[i] | framebuffer_[i + 1] |
                 framebuffer_[i + 2]) != 0;
+            for (size_t component = 0; component < 4; ++component)
+            {
+                checksum ^= framebuffer_[i + component];
+                checksum *= 1099511628211ull;
+            }
+        }
         std::cerr << "Xenos frontbuffer guest=0x" << std::hex << guestAddress
                   << " bytes=" << std::dec << byteCount
-                  << " nonzeroRgbPixels=" << nonzeroRgbPixels << '\n';
+                  << " nonzeroRgbPixels=" << nonzeroRgbPixels
+                  << " checksum=0x" << std::hex << checksum << std::dec << '\n';
     }
     for (size_t i = 0; i < framebuffer_.size(); i += 4)
         framebuffer_[i + 3] = 255;
