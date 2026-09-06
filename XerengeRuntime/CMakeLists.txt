@@ -28,6 +28,30 @@ add_executable(xerenge-runtime
 target_link_libraries(xerenge-runtime PRIVATE Vulkan::Vulkan OpenGL::GL Xerenge::Crypto PkgConfig::GLFW3)
 target_compile_definitions(xerenge-runtime PRIVATE GLFW_INCLUDE_NONE)
 
+# XenonRecomp output is intentionally generated outside the repository.  When
+# supplied, build it as a separate library so the runtime can be linked to the
+# recompiled game without checking game code into source control.
+set(XERENGE_PPC_DIRECTORY "" CACHE PATH "Directory containing XenonRecomp PPC output")
+if(XERENGE_PPC_DIRECTORY)
+    if(NOT EXISTS "${XERENGE_PPC_DIRECTORY}/ppc_recomp_shared.h")
+        message(FATAL_ERROR "XERENGE_PPC_DIRECTORY does not contain XenonRecomp output")
+    endif()
+    if(NOT CMAKE_CXX_COMPILER_ID MATCHES "Clang")
+        message(FATAL_ERROR "XenonRecomp PPC output requires Clang; configure with clang++")
+    endif()
+
+    file(GLOB XERENGE_PPC_SOURCES CONFIGURE_DEPENDS
+        "${XERENGE_PPC_DIRECTORY}/ppc_recomp.*.cpp"
+        "${XERENGE_PPC_DIRECTORY}/ppc_func_mapping.cpp")
+    add_library(xerenge-ppc STATIC ${XERENGE_PPC_SOURCES})
+    target_compile_features(xerenge-ppc PRIVATE cxx_std_20)
+    target_include_directories(xerenge-ppc PRIVATE
+        "${XERENGE_PPC_DIRECTORY}"
+        "${CMAKE_CURRENT_SOURCE_DIR}/../XenonRecomp/thirdparty/simde")
+    add_library(Xerenge::Ppc ALIAS xerenge-ppc)
+    message(STATUS "Building generated PPC module from ${XERENGE_PPC_DIRECTORY}")
+endif()
+
 include(CTest)
 if(BUILD_TESTING)
     add_test(
