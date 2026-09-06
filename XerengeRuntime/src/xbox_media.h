@@ -14,6 +14,7 @@ public:
     bool openFile(const std::string& xboxPath, uint32_t& handle, uint64_t& size);
     bool readFile(uint32_t handle, void* destination, uint32_t size, uint32_t& bytesRead);
     bool seekFile(uint32_t handle, int64_t distance, uint32_t method, uint64_t& position);
+    bool position(uint32_t handle, uint64_t& position) const;
     bool fileSize(uint32_t handle, uint64_t& size) const;
     void closeFile(uint32_t handle);
 

@@ -732,19 +732,43 @@ public:
         {
             uint64_t size = 0;
             const bool ok = gXboxMedia.fileSize(ctx.r3.u32, size);
-            if (ok && ctx.r5.u32 != 0 && ctx.r6.u32 >= 24)
+            uint64_t position = 0;
+            const bool hasPosition = gXboxMedia.position(ctx.r3.u32, position);
+            // The XDK wrapper uses class 34 to obtain EOF from the extended
+            // information record and class 14 to obtain the current offset.
+            if (ok && ctx.r5.u32 != 0 && ctx.r7.u32 == 34 && ctx.r6.u32 >= 48)
             {
-                storeU32(base, ctx.r5.u32 + 0, static_cast<uint32_t>(size >> 32));
-                storeU32(base, ctx.r5.u32 + 4, static_cast<uint32_t>(size));
-                storeU32(base, ctx.r5.u32 + 8, static_cast<uint32_t>(size >> 32));
-                storeU32(base, ctx.r5.u32 + 12, static_cast<uint32_t>(size));
-                storeU32(base, ctx.r5.u32 + 16, 1);
-                storeU32(base, ctx.r5.u32 + 20, 0);
+                storeU32(base, ctx.r5.u32 + 40, static_cast<uint32_t>(size >> 32));
+                storeU32(base, ctx.r5.u32 + 44, static_cast<uint32_t>(size));
+            }
+            else if (hasPosition && ctx.r5.u32 != 0 && ctx.r7.u32 == 14 && ctx.r6.u32 >= 8)
+            {
+                storeU32(base, ctx.r5.u32 + 0, static_cast<uint32_t>(position >> 32));
+                storeU32(base, ctx.r5.u32 + 4, static_cast<uint32_t>(position));
             }
             if (ctx.r4.u32 != 0)
             {
                 storeU32(base, ctx.r4.u32 + 0, ok ? 0u : 0xC0000008u);
-                storeU32(base, ctx.r4.u32 + 4, ok ? 24u : 0u);
+                storeU32(base, ctx.r4.u32 + 4, ok ? ctx.r6.u32 : 0u);
+            }
+            ctx.r3.u32 = ok ? 0u : 0xC0000008u;
+            return;
+        }
+        if (service == "NtSetInformationFile")
+        {
+            uint64_t offset = 0;
+            if (ctx.r5.u32 != 0)
+            {
+                offset = (static_cast<uint64_t>(loadU32(base, ctx.r5.u32)) << 32) |
+                    loadU32(base, ctx.r5.u32 + 4);
+            }
+            uint64_t position = 0;
+            const bool ok = offset <= INT64_MAX &&
+                gXboxMedia.seekFile(ctx.r3.u32, static_cast<int64_t>(offset), 0, position);
+            if (ctx.r4.u32 != 0)
+            {
+                storeU32(base, ctx.r4.u32 + 0, ok ? 0u : 0xC0000008u);
+                storeU32(base, ctx.r4.u32 + 4, ok ? ctx.r6.u32 : 0u);
             }
             ctx.r3.u32 = ok ? 0u : 0xC0000008u;
             return;

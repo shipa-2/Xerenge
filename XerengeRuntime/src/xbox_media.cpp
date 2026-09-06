@@ -186,6 +186,16 @@ bool XboxMedia::seekFile(uint32_t handle, int64_t distance, uint32_t method, uin
     return true;
 }
 
+bool XboxMedia::position(uint32_t handle, uint64_t& position) const
+{
+    std::lock_guard lock(mutex_);
+    const auto it = openFiles_.find(handle);
+    if (it == openFiles_.end())
+        return false;
+    position = it->second.position;
+    return true;
+}
+
 bool XboxMedia::fileSize(uint32_t handle, uint64_t& size) const
 {
     std::lock_guard lock(mutex_);
