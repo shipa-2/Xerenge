@@ -367,6 +367,21 @@ extern "C" void PPCTraceFunction(uint32_t address, PPCContext& ctx, uint8_t* bas
                   << " global82697264=0x" << guestWord(0x82697264)
                   << std::dec << '\n';
     }
+    static std::atomic<uint32_t> renderTraceCount = 0;
+    if ((address == 0x8237FCD0 || address == 0x8237FD58 ||
+         address == 0x8237FF98 || address == 0x82380FE8 ||
+         address == 0x82381688 || address == 0x82382578 ||
+         address == 0x82388688) &&
+        renderTraceCount.fetch_add(1, std::memory_order_relaxed) < 128)
+    {
+        std::cerr << "render path entry 0x" << std::hex << address
+                  << " r3=0x" << ctx.r3.u32
+                  << " r4=0x" << ctx.r4.u32
+                  << " r5=0x" << ctx.r5.u32
+                  << " r6=0x" << ctx.r6.u32
+                  << " r7=0x" << ctx.r7.u32
+                  << " r8=0x" << ctx.r8.u32 << std::dec << '\n';
+    }
     const uint32_t previous = gPpcLastFunction.exchange(address, std::memory_order_relaxed);
     if (previous != address && gPpcFunctionTransitions.fetch_add(1, std::memory_order_relaxed) < 5000)
     {
@@ -448,6 +463,22 @@ public:
         ++gPpcServiceCalls;
         if (service.compare(0, 7, "__imp__") == 0)
             service.remove_prefix(7);
+
+        // Keep service discovery useful without turning a boot trace into an
+        // unbounded log. A successful stub return can otherwise hide the
+        // first missing asset operation before the render loop.
+        if (std::getenv("XERENGE_SERVICE_TRACE") != nullptr)
+        {
+            static std::atomic<uint32_t> serviceTraceCount = 0;
+            if (serviceTraceCount.fetch_add(1, std::memory_order_relaxed) < 256)
+                std::cerr << "Xbox service " << service
+                          << " r3=0x" << std::hex << ctx.r3.u32
+                          << " r4=0x" << ctx.r4.u32
+                          << " r5=0x" << ctx.r5.u32
+                          << " r6=0x" << ctx.r6.u32
+                          << " r7=0x" << ctx.r7.u32
+                          << " r8=0x" << ctx.r8.u32 << std::dec << '\n';
+        }
 
         if (service.size() >= 2 && service[0] == 'V' && service[1] == 'd')
         {
