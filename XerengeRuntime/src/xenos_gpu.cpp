@@ -387,13 +387,14 @@ void XenosGpu::rasterizeDraw(uint8_t* guestBase, uint32_t initiator)
         std::array<float, 4> vertexColor{1.0f, 1.0f, 1.0f, 1.0f};
         for (uint32_t component = 0; component < 4; ++component)
         {
-            // The 8-dword pointer VS fetches a per-vertex float4 at words
-            // 4..7.  The 4-dword bootstrap VS exports c2 as interpolator 1,
-            // so reading past the vertex here mixed the following vertex into
-            // the pixel color and produced the visible geometry artifacts.
-            const uint32_t raw = strideWords >= 8u
-                ? loadGuestBE(guestBase, address + (4 + component) * 4)
-                : gpuRegisters_[0x4008u + component];
+            // The immediate pass-through pair exports its float4 at words
+            // 3..6. The pointer texture pair uses words 4..7 for an 8-dword
+            // vertex and c2 for the compact 4-dword layout.
+            const uint32_t raw = activePixelShaderHash_ == 0x2E372EA28CC404B7ull
+                ? loadGuestBE(guestBase, address + (3 + component) * 4)
+                : strideWords >= 8u
+                    ? loadGuestBE(guestBase, address + (4 + component) * 4)
+                    : gpuRegisters_[0x4008u + component];
             std::memcpy(&vertexColor[component], &raw, sizeof(float));
             if (!std::isfinite(vertexColor[component]))
                 vertexColor[component] = 1.0f;
@@ -470,12 +471,21 @@ void XenosGpu::rasterizeDraw(uint8_t* guestBase, uint32_t initiator)
                       << " size=" << std::dec << textureWidth << 'x' << textureHeight
                       << " pitch=" << ((texture0 >> 22) & 0x1FFu) << '\n';
         bool alphaTest = false;
+        bool pixelShaderPassesInterpolator = false;
         float alphaThreshold = 0.0f;
         if (const auto* microcode = xerengeShaderCache().findMicrocode(
                 activePixelShaderHash_))
         {
             if (const auto* shader = xerengeShaderCache().find(microcode->shaderHash))
+            {
                 alphaTest = (shader->specConstantsMask & (1u << 1)) != 0u;
+                // This bootstrap PS has no texture operation in its generated
+                // SPIR-V; it forwards location 0 after the Xenos max opcode.
+                // Treating any stale tf0 as an implicit sample replaced clear
+                // and solid-colour rectangles with unrelated texture data.
+                pixelShaderPassesInterpolator =
+                    microcode->shaderHash == 0xBF9D261289F75F76ull;
+            }
         }
         if (alphaTest)
         {
@@ -610,17 +620,21 @@ void XenosGpu::rasterizeDraw(uint8_t* guestBase, uint32_t initiator)
                         const float u = w0 * va.uv[0] + w1 * vb.uv[0] + w2 * vc.uv[0];
                         const float v = w0 * va.uv[1] + w1 * vb.uv[1] + w2 * vc.uv[1];
                         const auto color = sampleTexture(u, v);
-                        const bool hasSampledTexture = hasDxt3Texture || hasRgba8Texture;
+                        const bool hasSampledTexture = !pixelShaderPassesInterpolator &&
+                            (hasDxt3Texture || hasRgba8Texture);
                         std::array<uint8_t, 4> output = hasSampledTexture
                             ? color : drawColor;
-                        if (hasSampledTexture)
+                        if (hasSampledTexture || pixelShaderPassesInterpolator)
                         {
                             for (uint32_t component = 0; component < 4; ++component)
                             {
                                 const float factor = w0 * va.color[component] +
                                     w1 * vb.color[component] + w2 * vc.color[component];
-                                output[component] = static_cast<uint8_t>(std::clamp(
-                                    (output[component] / 255.0f) * factor, 0.0f, 1.0f) * 255.0f);
+                                const float value = hasSampledTexture
+                                    ? (output[component] / 255.0f) * factor
+                                    : factor;
+                                output[component] = static_cast<uint8_t>(
+                                    std::clamp(value, 0.0f, 1.0f) * 255.0f);
                             }
                         }
                         if (alphaTest && output[3] / 255.0f < alphaThreshold)
@@ -849,9 +863,20 @@ void XenosGpu::processBuffer(uint8_t* guestBase, uint32_t guestAddress,
                     const size_t byteSize = size_t(codeDwords) * sizeof(uint32_t);
                     const uint64_t hash = XXH3_64bits(
                         guestBase + guestAddress + (offset + 3) * 4, byteSize);
+                    if (shaderType == 0u)
+                    {
+                        activeVertexShaderHash_ = hash;
+                        activeVertexShaderDwords_ = codeDwords;
+                    }
+                    else if (shaderType == 1u)
+                    {
+                        activePixelShaderHash_ = hash;
+                        activePixelShaderDwords_ = codeDwords;
+                    }
                     const auto cache = xerengeShaderCache();
                     const auto* match = cache.findMicrocode(hash);
                     if (std::getenv("XERENGE_XENOS_SHADER_TRACE") != nullptr)
+                    {
                         std::cerr << "Xenos shader cache "
                                   << (match != nullptr ? "hit" : "miss")
                                   << " hash=0x" << std::hex << hash
@@ -860,6 +885,7 @@ void XenosGpu::processBuffer(uint8_t* guestBase, uint32_t guestAddress,
                         if (match != nullptr)
                             std::cerr << " compiled=0x" << std::hex << match->shaderHash;
                         std::cerr << std::dec << '\n';
+                    }
                 }
             }
             if (opcode == 0x27u && length >= 3 && offset + 2 < dwordCount)
@@ -1185,6 +1211,10 @@ void XenosGpu::processRing(uint8_t* guestBase)
                               << " source=" << ((initiator >> 6) & 0x3u)
                               << " indices=" << (initiator >> 16)
                               << " program=0x" << gpuRegisters_[0x2180]
+                              << " vsShader=0x" << activeVertexShaderHash_
+                              << "/" << activeVertexShaderDwords_
+                              << " psShader=0x" << activePixelShaderHash_
+                              << "/" << activePixelShaderDwords_
                               << " vsConst=0x" << gpuRegisters_[0x2307]
                               << " psConst=0x" << gpuRegisters_[0x2308]
                               << " copyBase=0x" << gpuRegisters_[0x2319]
