@@ -1,0 +1,13 @@
+# Local game and extraction data
+*.iso
+*.xex
+extract/
+work/
+
+# Local builds and generated shader outputs
+build/
+build-debug/
+*_shader_cache*.cpp
+*.hlsl
+*.dxil
+*.spv
