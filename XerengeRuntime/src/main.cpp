@@ -686,7 +686,7 @@ public:
             // The graphics worker uses a kernel event to drain the command
             // queue. A bounded timeout keeps the guest cooperative while
             // allowing it to poll an event that has no host object yet.
-            std::this_thread::sleep_for(std::chrono::milliseconds(1));
+            std::this_thread::sleep_for(std::chrono::microseconds(100));
             if (std::getenv("XERENGE_PPC_TRACE") != nullptr)
             {
                 static std::atomic<uint32_t> waitTraceCount = 0;
@@ -824,13 +824,47 @@ public:
             // These calls are used by the title's timer worker. Returning
             // immediately makes the worker consume the entire host core and
             // starves the guest thread that advances the game state.
-            std::this_thread::sleep_for(std::chrono::milliseconds(1));
+            std::this_thread::sleep_for(std::chrono::microseconds(100));
             ctx.r3.u32 = 0;
             return;
         }
         if (service == "RtlNtStatusToDosError")
         {
             ctx.r3.u32 = ctx.r3.u32 == 0 ? 0u : 1u;
+            return;
+        }
+        if (service == "XexCheckExecutablePrivilege")
+        {
+            // The retail image requests the same privilege that its loader
+            // already grants to the title. Returning failure sends the XEX
+            // bootstrap directly to KeBugCheck before game initialization.
+            ctx.r3.u32 = 1;
+            return;
+        }
+        if (service == "KeQueryPerformanceFrequency")
+        {
+            if (ctx.r3.u32 != 0)
+            {
+                storeU32(base, ctx.r3.u32 + 0, 0);
+                storeU32(base, ctx.r3.u32 + 4, 10000000u);
+            }
+            ctx.r3.u32 = 0;
+            return;
+        }
+        if (service == "KeQuerySystemTime")
+        {
+            if (ctx.r3.u32 != 0)
+            {
+                const uint64_t ticks = PPCGuestClock();
+                storeU32(base, ctx.r3.u32 + 0, static_cast<uint32_t>(ticks >> 32));
+                storeU32(base, ctx.r3.u32 + 4, static_cast<uint32_t>(ticks));
+            }
+            ctx.r3.u32 = 0;
+            return;
+        }
+        if (service == "KeEnableFpuExceptions" || service == "NtDuplicateObject")
+        {
+            ctx.r3.u32 = 0;
             return;
         }
         if (service == "MmAllocatePhysicalMemoryEx")
