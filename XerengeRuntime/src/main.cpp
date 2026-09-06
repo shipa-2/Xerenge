@@ -282,6 +282,41 @@ extern "C" void PPCTraceFunction(uint32_t address, PPCContext& ctx, uint8_t* bas
     if (!gPpcTraceEnabled.load(std::memory_order_relaxed))
         return;
 
+    if (address == 0x8238D6B8u || address == 0x8238D488u)
+    {
+        static std::atomic<uint32_t> renderQueueTraceCount = 0;
+        if (renderQueueTraceCount.fetch_add(1, std::memory_order_relaxed) < 32)
+        {
+            auto guestWord = [base](uint32_t guestAddress) {
+                uint32_t value = 0;
+                std::memcpy(&value, base + guestAddress, sizeof(value));
+                return __builtin_bswap32(value);
+            };
+            std::cerr << "render queue function=0x" << std::hex << address
+                      << " r3=0x" << ctx.r3.u32;
+            if (address == 0x8238D6B8u)
+                std::cerr << " head=0x" << guestWord(ctx.r3.u32)
+                          << " producer=0x" << guestWord(ctx.r3.u32 + 4)
+                          << " event=0x" << (ctx.r3.u32 + 32);
+            std::cerr << "\n" << std::dec;
+        }
+    }
+    if (address == 0x82104DD0u)
+    {
+        static std::atomic<uint32_t> stateTraceCount = 0;
+        if (stateTraceCount.fetch_add(1, std::memory_order_relaxed) < 32)
+        {
+            uint32_t state = 0;
+            std::memcpy(&state, base + ctx.r3.u32 + 48, sizeof(state));
+            state = __builtin_bswap32(state);
+            uint32_t ioStatus = 0;
+            std::memcpy(&ioStatus, base + ctx.r3.u32 + 22488, sizeof(ioStatus));
+            ioStatus = __builtin_bswap32(ioStatus);
+            std::cerr << "resource state object=0x" << std::hex << ctx.r3.u32
+                      << " state=" << std::dec << state << " ioStatus=" << ioStatus << '\n';
+        }
+    }
+
     static std::atomic<uint32_t> waitTraceCount = 0;
     if (address == 0x825AC688 && waitTraceCount.fetch_add(1, std::memory_order_relaxed) < 8)
         std::cerr << "wait wrapper entry r3=0x" << std::hex << ctx.r3.u32
