@@ -170,6 +170,7 @@ private:
 
 #ifdef XERENGE_HAS_PPC
 uint64_t gPpcServiceCalls = 0;
+uint64_t gPpcUnknownIndirectCalls = 0;
 
 extern "C" void PPCImportedServiceTrap(const char* service, PPCContext& ctx, uint8_t*)
 {
@@ -179,15 +180,20 @@ extern "C" void PPCImportedServiceTrap(const char* service, PPCContext& ctx, uin
     ++gPpcServiceCalls;
     if (gPpcServiceCalls <= 20)
         std::cerr << "unimplemented Xbox service invoked: " << service << '\n';
-    ctx.r3.u64 = 0xC0000001u;
+    ctx.r3.u64 = 0;
 }
 
 extern "C" void PPCUnknownIndirectTrap(uint32_t address, PPCContext& ctx, uint8_t*)
 {
-    ++gPpcServiceCalls;
-    if (gPpcServiceCalls <= 20)
-        std::cerr << "unresolved PPC indirect target: 0x" << std::hex << address << std::dec << '\n';
-    ctx.r3.u64 = 0xC0000001u;
+    ++gPpcUnknownIndirectCalls;
+    if (gPpcUnknownIndirectCalls <= 40)
+    {
+        std::cerr << "unresolved PPC indirect target: 0x" << std::hex << address
+                  << " from lr=0x" << ctx.lr << " r1=0x" << ctx.r1.u64
+                  << " r11=0x" << ctx.r11.u64 << " r30=0x" << ctx.r30.u64
+                  << " r31=0x" << ctx.r31.u64 << std::dec << '\n';
+    }
+    ctx.r3.u64 = 0;
 }
 #endif
 
@@ -617,7 +623,6 @@ std::optional<MappedImage> mapPeImage(const std::vector<uint8_t>& image, const X
         const uint32_t virtualSize = readLE32(section + 8);
         const uint32_t virtualAddress = readLE32(section + 12);
         const uint32_t rawSize = readLE32(section + 16);
-        const uint32_t rawOffset = readLE32(section + 20);
         const uint32_t characteristics = readLE32(section + 36);
         const uint32_t mappedSize = std::max(virtualSize, rawSize);
         if (virtualAddress > imageSize || mappedSize > imageSize - virtualAddress)
@@ -625,12 +630,25 @@ std::optional<MappedImage> mapPeImage(const std::vector<uint8_t>& image, const X
             std::cerr << "PE section exceeds guest image: " << i << '\n';
             return std::nullopt;
         }
-        if (rawOffset > image.size() || rawSize > image.size() - rawOffset)
+        // XEX decompression produces an image laid out by virtual address;
+        // the PE raw offsets describe the original file packaging and do not
+        // identify the source bytes in this decoded buffer.
+        const uint32_t sourceOffset = virtualAddress;
+        if (sourceOffset >= image.size())
         {
-            std::cerr << "PE section raw data exceeds decoded image: " << i << '\n';
+            // XEX may omit PE bookkeeping sections such as relocations from
+            // the decoded load image. They are not needed for a preferred-base
+            // guest mapping.
+            continue;
+        }
+        const uint32_t availableSize = static_cast<uint32_t>(image.size() - sourceOffset);
+        const uint32_t copySize = std::min(rawSize, availableSize);
+        if (copySize == 0)
+        {
+            std::cerr << "PE section data exceeds decoded image: " << i << '\n';
             return std::nullopt;
         }
-        std::copy_n(image.begin() + rawOffset, rawSize, mapped.memory.begin() + virtualAddress);
+        std::copy_n(image.begin() + sourceOffset, copySize, mapped.memory.begin() + virtualAddress);
         size_t nameLength = 0;
         while (nameLength < 8 && section[nameLength] != '\0')
             ++nameLength;
@@ -766,6 +784,23 @@ bool initializeVulkan(VkInstance& instance, VkPhysicalDevice& physicalDevice)
     return true;
 }
 }
+
+// This guest helper registers a cleanup record. The generated implementation
+// is weak; keep the loader ABI while the host owns that lifecycle.
+#ifdef XERENGE_HAS_PPC
+void sub_8259D4B0(PPCContext& ctx, uint8_t*)
+{
+    ctx.r3.u64 = ctx.r3.u64;
+}
+
+// The title's early loader pass walks an Xbox-owned import descriptor. The
+// descriptor is not part of the mapped XEX image yet, so keep this pass
+// side-effect free until the service layer supplies it.
+void sub_82359D48(PPCContext& ctx, uint8_t*)
+{
+    ctx.r3.u64 = 0;
+}
+#endif
 
 int main(int argc, char** argv)
 {
