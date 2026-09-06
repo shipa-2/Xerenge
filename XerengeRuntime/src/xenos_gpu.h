@@ -41,6 +41,10 @@ private:
     void processRing(uint8_t* guestBase);
 
     std::array<uint32_t, 0x2000> registers_{};
+    // Xenos Type-0 packets address the 3D register file by dword index.
+    // Keeping it separate from the MMIO register window lets draw handling
+    // inspect the state accumulated through indirect command buffers.
+    std::array<uint32_t, 0x8000> gpuRegisters_{};
     mutable std::recursive_mutex mutex_;
     std::vector<uint8_t> framebuffer_;
     uint32_t writePointer_ = 0;

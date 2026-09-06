@@ -118,6 +118,15 @@ void XenosGpu::processBuffer(uint8_t* guestBase, uint32_t guestAddress,
         {
             ++type0Count_;
             length = ((packet >> 16) & 0x3FFFu) + 2;
+            const uint32_t baseRegister = packet & 0x7FFFu;
+            const bool writeOne = (packet & 0x8000u) != 0;
+            for (uint32_t i = 0; i + 1 < length; ++i)
+            {
+                const uint32_t index = writeOne ? baseRegister : baseRegister + i;
+                if (index < gpuRegisters_.size())
+                    gpuRegisters_[index] = loadGuestBE(
+                        guestBase, guestAddress + (offset + 1 + i) * 4);
+            }
         }
         else if (type == 3)
         {
@@ -158,7 +167,22 @@ void XenosGpu::processBuffer(uint8_t* guestBase, uint32_t guestAddress,
             // useful for command streams produced by different compilers.
             if (opcode == 0x22u || opcode == 0x23u || opcode == 0x2Du ||
                 opcode == 0x2Eu || opcode == 0x36u)
+            {
                 ++drawPacketCount_;
+                if (std::getenv("XERENGE_XENOS_DRAW_TRACE") != nullptr)
+                {
+                    std::cerr << "Xenos draw state surface=0x" << std::hex
+                              << gpuRegisters_[0x2000]
+                              << " color=0x" << gpuRegisters_[0x2001]
+                              << " mask=0x" << gpuRegisters_[0x2104]
+                              << " initiator=0x" << gpuRegisters_[0x21FC]
+                              << " program=0x" << gpuRegisters_[0x2180]
+                              << " vsConst=0x" << gpuRegisters_[0x2307]
+                              << " psConst=0x" << gpuRegisters_[0x2308]
+                              << " copyBase=0x" << gpuRegisters_[0x2319]
+                              << std::dec << '\n';
+                }
+            }
             if (opcode == 0x64u)
             {
                 ++swapPacketCount_;
@@ -240,6 +264,15 @@ void XenosGpu::processRing(uint8_t* guestBase)
         {
             ++type0Count_;
             length = ((packet >> 16) & 0x3FFFu) + 2;
+            const uint32_t baseRegister = packet & 0x7FFFu;
+            const bool writeOne = (packet & 0x8000u) != 0;
+            for (uint32_t i = 0; i + 1 < length; ++i)
+            {
+                const uint32_t index = writeOne ? baseRegister : baseRegister + i;
+                if (index < gpuRegisters_.size())
+                    gpuRegisters_[index] = loadGuestBE(
+                        guestBase, ringBase_ + (readPointer_ + 1 + i) * 4);
+            }
         }
         else if (type == 3)
         {
@@ -259,7 +292,22 @@ void XenosGpu::processRing(uint8_t* guestBase)
             }
             if (opcode == 0x22u || opcode == 0x23u || opcode == 0x2Du ||
                 opcode == 0x2Eu || opcode == 0x36u)
+            {
                 ++drawPacketCount_;
+                if (std::getenv("XERENGE_XENOS_DRAW_TRACE") != nullptr)
+                {
+                    std::cerr << "Xenos draw state surface=0x" << std::hex
+                              << gpuRegisters_[0x2000]
+                              << " color=0x" << gpuRegisters_[0x2001]
+                              << " mask=0x" << gpuRegisters_[0x2104]
+                              << " initiator=0x" << gpuRegisters_[0x21FC]
+                              << " program=0x" << gpuRegisters_[0x2180]
+                              << " vsConst=0x" << gpuRegisters_[0x2307]
+                              << " psConst=0x" << gpuRegisters_[0x2308]
+                              << " copyBase=0x" << gpuRegisters_[0x2319]
+                              << std::dec << '\n';
+                }
+            }
             if (opcode == 0x64u)
             {
                 ++swapPacketCount_;
