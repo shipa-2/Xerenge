@@ -23,7 +23,10 @@ cmake --build build-runtime
 ctest --test-dir build-runtime --output-on-failure
 ./build-runtime/xerenge-runtime path/to/game.xex
 ./build-runtime/xerenge-runtime --inspect path/to/game.xex
+./build-runtime/xerenge-runtime --extract-image path/to/plain.xex image.bin
 ```
 
 `--inspect` currently reads the XEX2 header and security metadata. It does not
-decrypt or execute the image yet; those are the next loader stages.
+decrypt or execute the image yet. `--extract-image` handles only images whose
+XEX metadata reports no encryption and no compression; retail images still need
+the decrypt/decompression backend.

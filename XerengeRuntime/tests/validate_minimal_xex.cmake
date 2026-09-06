@@ -2,7 +2,7 @@ set(FIXTURE "${CMAKE_CURRENT_BINARY_DIR}/minimal.xex")
 find_package(Python3 COMPONENTS Interpreter REQUIRED)
 execute_process(
     COMMAND "${Python3_EXECUTABLE}" -c
-        "import struct,sys; b=bytearray(0x130); struct.pack_into('>6I',b,0,0x58455832,1,0x18,0,0x18,1); struct.pack_into('>4I',b,0x18,0x120,0x1000,0,0); open(sys.argv[1],'wb').write(b)"
+        "import struct,sys; b=bytearray(0x140); struct.pack_into('>6I',b,0,0x58455832,1,0x20,0,0x20,1); struct.pack_into('>2I',b,0x20,0x120,0x1000); open(sys.argv[1],'wb').write(b)"
         "${FIXTURE}"
     RESULT_VARIABLE CREATE_RESULT
 )
