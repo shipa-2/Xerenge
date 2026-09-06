@@ -1,6 +1,7 @@
 #include "xenos_gpu.h"
 
 #include <algorithm>
+#include <atomic>
 #include <cstdlib>
 #include <cstring>
 #include <iostream>
@@ -116,7 +117,7 @@ void XenosGpu::processBuffer(uint8_t* guestBase, uint32_t guestAddress,
         if (type == 0)
         {
             ++type0Count_;
-            length = ((packet >> 16) & 0x3FFFu) + 1;
+            length = ((packet >> 16) & 0x3FFFu) + 2;
         }
         else if (type == 3)
         {
@@ -124,6 +125,21 @@ void XenosGpu::processBuffer(uint8_t* guestBase, uint32_t guestAddress,
             length = ((packet >> 16) & 0x3FFFu) + 2;
             const uint32_t opcode = (packet >> 8) & 0xFFu;
             ++opcodeCounts_[opcode];
+            if (std::getenv("XERENGE_XENOS_PACKET_TRACE") != nullptr)
+            {
+                static std::atomic<uint32_t> traceCount = 0;
+                if (traceCount.fetch_add(1, std::memory_order_relaxed) < 256)
+                {
+                    std::cerr << "Xenos PM4 depth=" << recursionDepth
+                              << " address=0x" << std::hex << guestAddress + offset * 4
+                              << " opcode=0x" << opcode << std::dec
+                              << " dwords=" << length;
+                    for (uint32_t i = 1; i < std::min<uint32_t>(length, 9); ++i)
+                        std::cerr << " " << std::hex
+                                  << loadGuestBE(guestBase, guestAddress + (offset + i) * 4);
+                    std::cerr << std::dec << '\n';
+                }
+            }
             if (opcode == 0x3Fu && length >= 3 && offset + 2 < dwordCount)
             {
                 // CP_INDIRECT_BUFFER stores a 29-bit physical address.  The
@@ -223,7 +239,7 @@ void XenosGpu::processRing(uint8_t* guestBase)
         if (type == 0)
         {
             ++type0Count_;
-            length = ((packet >> 16) & 0x3FFFu) + 1;
+            length = ((packet >> 16) & 0x3FFFu) + 2;
         }
         else if (type == 3)
         {
