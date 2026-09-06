@@ -52,6 +52,9 @@ private:
         uint32_t shaderType, uint32_t startSize);
     bool ensureShaderModule(uint64_t shaderHash);
     bool ensureGraphicsPipeline();
+    bool initializeDrawResources();
+    bool drawVulkanRectangle(const float* vertices, uint32_t vertexCount);
+    uint32_t findMemoryType(uint32_t typeBits, VkMemoryPropertyFlags properties) const;
 
     std::array<uint32_t, 0x2000> registers_{};
     // Xenos Type-0 packets address the 3D register file by dword index.
@@ -100,4 +103,29 @@ private:
     VkPipelineLayout vulkanPipelineLayout_ = VK_NULL_HANDLE;
     VkRenderPass vulkanRenderPass_ = VK_NULL_HANDLE;
     std::unordered_map<uint64_t, VkPipeline> vulkanPipelines_;
+    VkImage vulkanColorImage_ = VK_NULL_HANDLE;
+    VkDeviceMemory vulkanColorMemory_ = VK_NULL_HANDLE;
+    VkImageView vulkanColorView_ = VK_NULL_HANDLE;
+    VkFramebuffer vulkanFramebuffer_ = VK_NULL_HANDLE;
+    VkImage vulkanWhiteImage_ = VK_NULL_HANDLE;
+    VkDeviceMemory vulkanWhiteMemory_ = VK_NULL_HANDLE;
+    VkImageView vulkanWhiteView_ = VK_NULL_HANDLE;
+    VkSampler vulkanSampler_ = VK_NULL_HANDLE;
+    VkBuffer vulkanVertexBuffer_ = VK_NULL_HANDLE;
+    VkDeviceMemory vulkanVertexMemory_ = VK_NULL_HANDLE;
+    void* vulkanVertexMapped_ = nullptr;
+    VkBuffer vulkanConstantsBuffer_ = VK_NULL_HANDLE;
+    VkDeviceMemory vulkanConstantsMemory_ = VK_NULL_HANDLE;
+    void* vulkanConstantsMapped_ = nullptr;
+    VkDeviceAddress vulkanConstantsAddress_ = 0;
+    VkBuffer vulkanReadbackBuffer_ = VK_NULL_HANDLE;
+    VkDeviceMemory vulkanReadbackMemory_ = VK_NULL_HANDLE;
+    void* vulkanReadbackMapped_ = nullptr;
+    VkDescriptorPool vulkanDescriptorPool_ = VK_NULL_HANDLE;
+    std::array<VkDescriptorSet, 4> vulkanDescriptorSets_{};
+    VkCommandPool vulkanCommandPool_ = VK_NULL_HANDLE;
+    VkCommandBuffer vulkanCommandBuffer_ = VK_NULL_HANDLE;
+    VkFence vulkanFence_ = VK_NULL_HANDLE;
+    bool vulkanImagesInitialized_ = false;
+    uint64_t vulkanDrawCount_ = 0;
 };
