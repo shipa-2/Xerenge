@@ -42,13 +42,19 @@ if(XERENGE_PPC_DIRECTORY)
 
     file(GLOB XERENGE_PPC_SOURCES CONFIGURE_DEPENDS
         "${XERENGE_PPC_DIRECTORY}/ppc_recomp.*.cpp"
-        "${XERENGE_PPC_DIRECTORY}/ppc_func_mapping.cpp")
+        "${XERENGE_PPC_DIRECTORY}/ppc_func_mapping.cpp"
+        "${XERENGE_PPC_DIRECTORY}/ppc_import_stubs.cpp")
     add_library(xerenge-ppc STATIC ${XERENGE_PPC_SOURCES})
     target_compile_features(xerenge-ppc PRIVATE cxx_std_20)
     target_include_directories(xerenge-ppc PRIVATE
         "${XERENGE_PPC_DIRECTORY}"
         "${CMAKE_CURRENT_SOURCE_DIR}/../XenonRecomp/thirdparty/simde")
     add_library(Xerenge::Ppc ALIAS xerenge-ppc)
+    target_link_libraries(xerenge-runtime PRIVATE Xerenge::Ppc)
+    target_include_directories(xerenge-runtime PRIVATE
+        "${XERENGE_PPC_DIRECTORY}"
+        "${CMAKE_CURRENT_SOURCE_DIR}/../XenonRecomp/thirdparty/simde")
+    target_compile_definitions(xerenge-runtime PRIVATE XERENGE_HAS_PPC=1)
     message(STATUS "Building generated PPC module from ${XERENGE_PPC_DIRECTORY}")
 endif()
 

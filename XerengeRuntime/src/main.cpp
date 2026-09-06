@@ -6,6 +6,7 @@
 #include <algorithm>
 #include <array>
 #include <chrono>
+#include <cstring>
 #include <cstdint>
 #include <fstream>
 #include <iomanip>
@@ -13,6 +14,12 @@
 #include <optional>
 #include <string>
 #include <vector>
+
+#ifdef XERENGE_HAS_PPC
+#include <sys/mman.h>
+
+#include "ppc_recomp_shared.h"
+#endif
 
 namespace
 {
@@ -61,6 +68,92 @@ struct MappedImage
     std::vector<uint8_t> memory;
     std::vector<PeSection> sections;
 };
+
+#ifdef XERENGE_HAS_PPC
+class PpcGuestMemory
+{
+public:
+    PpcGuestMemory() = default;
+
+    ~PpcGuestMemory()
+    {
+        if (base_ != nullptr)
+            munmap(base_, kGuestAddressSpaceSize);
+    }
+
+    PpcGuestMemory(const PpcGuestMemory&) = delete;
+    PpcGuestMemory& operator=(const PpcGuestMemory&) = delete;
+
+    bool initialize(const MappedImage& image)
+    {
+        const uint64_t imageBase = image.base;
+        if (imageBase > kGuestAddressSpaceSize || image.memory.size() > kGuestAddressSpaceSize - imageBase)
+        {
+            std::cerr << "guest PE image does not fit the PPC address space\n";
+            return false;
+        }
+
+        base_ = static_cast<uint8_t*>(mmap(nullptr, kGuestAddressSpaceSize, PROT_READ | PROT_WRITE,
+            MAP_PRIVATE | MAP_ANONYMOUS | MAP_NORESERVE, -1, 0));
+        if (base_ == MAP_FAILED)
+        {
+            base_ = nullptr;
+            std::cerr << "could not reserve the 4 GiB PPC guest address space\n";
+            return false;
+        }
+        std::memcpy(base_ + image.base, image.memory.data(), image.memory.size());
+
+        for (PPCFuncMapping* mapping = PPCFuncMappings; mapping->host != nullptr; ++mapping)
+        {
+            if (mapping->guest < PPC_CODE_BASE)
+            {
+                std::cerr << "PPC function mapping precedes the game code: 0x" << std::hex
+                          << mapping->guest << std::dec << '\n';
+                return false;
+            }
+            const uint64_t tableOffset = PPC_IMAGE_BASE + PPC_IMAGE_SIZE +
+                (static_cast<uint64_t>(static_cast<uint32_t>(mapping->guest) - PPC_CODE_BASE) * 2);
+            if (tableOffset > kGuestAddressSpaceSize - sizeof(mapping->host))
+            {
+                std::cerr << "PPC function table exceeds guest address space\n";
+                return false;
+            }
+            std::memcpy(base_ + tableOffset, &mapping->host, sizeof(mapping->host));
+            ++functionCount_;
+            if (mapping->guest == image.entryPoint)
+                entryPoint_ = mapping->host;
+        }
+
+        if (entryPoint_ == nullptr)
+        {
+            std::cerr << "no recompiled PPC function for entry point 0x" << std::hex
+                      << image.entryPoint << std::dec << '\n';
+            return false;
+        }
+        return true;
+    }
+
+    size_t functionCount() const { return functionCount_; }
+    bool hasEntryPoint() const { return entryPoint_ != nullptr; }
+
+private:
+    static constexpr size_t kGuestAddressSpaceSize = size_t{1} << 32;
+    uint8_t* base_ = nullptr;
+    PPCFunc* entryPoint_ = nullptr;
+    size_t functionCount_ = 0;
+};
+#endif
+
+#ifdef XERENGE_HAS_PPC
+extern "C" void PPCImportedServiceTrap(const char* service, PPCContext& ctx, uint8_t*)
+{
+    // The generated import wrappers arrive here until a service is implemented.
+    // Returning STATUS_NOT_IMPLEMENTED keeps the ABI explicit and gives the
+    // launcher a deterministic failure instead of an unresolved host symbol.
+    std::cerr << "unimplemented Xbox service invoked: " << service << '\n';
+    ctx.r3.u64 = 0xC0000001u;
+}
+#endif
 
 constexpr std::array<uint8_t, 16> kRetailKey{
     0x20, 0xB1, 0x85, 0xA5, 0x9D, 0x28, 0xFD, 0xC3,
@@ -666,6 +759,33 @@ int main(int argc, char** argv)
         }
         const auto info = inspectXex(argv[2]);
         return info && mapAndPrintImage(argv[2], *info) ? 0 : 1;
+    }
+
+    if (argc > 1 && std::string(argv[1]) == "--ppc-prepare")
+    {
+        if (argc != 3)
+        {
+            std::cerr << "usage: xerenge-runtime --ppc-prepare <file.xex>\n";
+            return 2;
+        }
+#ifdef XERENGE_HAS_PPC
+        const auto info = inspectXex(argv[2]);
+        std::vector<uint8_t> image;
+        if (!info || !decodeImage(argv[2], *info, image))
+            return 1;
+        const auto mapped = mapPeImage(image, *info);
+        if (!mapped)
+            return 1;
+        PpcGuestMemory guest;
+        if (!guest.initialize(*mapped))
+            return 1;
+        std::cout << "prepared PPC guest memory: 4 GiB reservation, "
+                  << guest.functionCount() << " function mappings, entry point resolved\n";
+        return 0;
+#else
+        std::cerr << "PPC module was not enabled; configure with -DXERENGE_PPC_DIRECTORY=<generated PPC directory>\n";
+        return 1;
+#endif
     }
 
     if (argc > 1 && std::string(argv[1]) == "--imports")
