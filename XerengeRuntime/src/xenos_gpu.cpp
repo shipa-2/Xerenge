@@ -363,9 +363,15 @@ void XenosGpu::rasterizeDraw(uint8_t* guestBase, uint32_t initiator)
         const uint32_t texture0 = gpuRegisters_[0x4800u];
         const uint32_t texture1 = gpuRegisters_[0x4801u];
         const uint32_t texture2 = gpuRegisters_[0x4802u];
-        const bool hasDxt3Texture = (texture0 & 0x3u) == 2u &&
-            (texture1 & 0x3Fu) == 19u;
-        if (!hasDxt3Texture && !havePixelConstant)
+        const uint32_t textureFormat = texture1 & 0x3Fu;
+        const bool textureIsValid = (texture0 & 0x3u) == 2u;
+        const bool hasDxt3Texture = textureIsValid && textureFormat == 19u;
+        const bool hasRgba8Texture = textureIsValid && textureFormat == 6u;
+        if (std::getenv("XERENGE_XENOS_TEXTURE_TRACE_ALL") != nullptr)
+            std::cerr << "Xenos tf0 raw=0x" << std::hex << texture0 << ' ' << texture1
+                      << ' ' << texture2 << " ps=0x" << activePixelShaderHash_
+                      << std::dec << '\n';
+        if (!hasDxt3Texture && !hasRgba8Texture && !havePixelConstant)
         {
             if (std::getenv("XERENGE_XENOS_DRAW_TRACE") != nullptr)
                 std::cerr << "Xenos rectangle skipped: unsupported pixel resource\n";
@@ -373,7 +379,8 @@ void XenosGpu::rasterizeDraw(uint8_t* guestBase, uint32_t initiator)
         }
         const uint32_t textureWidth = (texture2 & 0x1FFFu) + 1u;
         const uint32_t textureHeight = ((texture2 >> 13) & 0x1FFFu) + 1u;
-        if (hasDxt3Texture && std::getenv("XERENGE_XENOS_TEXTURE_TRACE") != nullptr)
+        if ((hasDxt3Texture || hasRgba8Texture) &&
+            std::getenv("XERENGE_XENOS_TEXTURE_TRACE") != nullptr)
             std::cerr << "Xenos texture tf0 base=0x" << std::hex
                       << ((texture1 >> 12) & 0xFFFFFu)
                       << " format=" << (texture1 & 0x3Fu)
@@ -402,15 +409,16 @@ void XenosGpu::rasterizeDraw(uint8_t* guestBase, uint32_t initiator)
             ((textureWidth + 3u) / 4u + 31u) & ~31u);
         const uint32_t textureBase = gpuPhysicalToGuest(
             ((texture1 >> 12) & 0xFFFFFu) << 12);
-        auto textureAddress = [&](uint32_t blockX, uint32_t blockY)
+        auto textureAddress = [&](uint32_t x, uint32_t y,
+            uint32_t pitchAligned, uint32_t bytesPerBlockLog2)
         {
             const uint32_t outerBlocks =
-                ((blockY >> 5) * (texturePitchBlocks >> 5) + (blockX >> 5)) << 6;
-            const uint32_t innerBlocks = (((blockY >> 1) & 7u) << 3) | (blockX & 7u);
-            const uint32_t outerInnerBytes = (outerBlocks | innerBlocks) << 4;
-            const uint32_t bank = (blockY >> 4) & 1u;
-            const uint32_t pipe = ((blockX >> 3) & 3u) ^ (((blockY >> 3) & 1u) << 1);
-            return (textureBase + ((blockY & 1u) << 4) + (pipe << 6) +
+                ((y >> 5) * (pitchAligned >> 5) + (x >> 5)) << 6;
+            const uint32_t innerBlocks = (((y >> 1) & 7u) << 3) | (x & 7u);
+            const uint32_t outerInnerBytes = (outerBlocks | innerBlocks) << bytesPerBlockLog2;
+            const uint32_t bank = (y >> 4) & 1u;
+            const uint32_t pipe = ((x >> 3) & 3u) ^ (((y >> 3) & 1u) << 1);
+            return (textureBase + ((y & 1u) << 4) + (pipe << 6) +
                 (bank << 11) + (outerInnerBytes & 0xFu) +
                 (((outerInnerBytes >> 4) & 1u) << 5) +
                 (((outerInnerBytes >> 5) & 7u) << 8) +
@@ -419,7 +427,7 @@ void XenosGpu::rasterizeDraw(uint8_t* guestBase, uint32_t initiator)
         auto sampleTexture = [&](float u, float v)
         {
             std::array<uint8_t, 4> result{255, 255, 255, 255};
-            if (!hasDxt3Texture || textureWidth == 0 || textureHeight == 0)
+            if ((!hasDxt3Texture && !hasRgba8Texture) || textureWidth == 0 || textureHeight == 0)
                 return result;
             u = std::clamp(u, 0.0f, 1.0f);
             v = std::clamp(v, 0.0f, 1.0f);
@@ -427,9 +435,21 @@ void XenosGpu::rasterizeDraw(uint8_t* guestBase, uint32_t initiator)
                 static_cast<uint32_t>(u * textureWidth));
             const uint32_t y = std::min(textureHeight - 1,
                 static_cast<uint32_t>(v * textureHeight));
-            const uint32_t blockX = x / 4u;
-            const uint32_t blockY = y / 4u;
-            const uint32_t address = textureAddress(blockX, blockY);
+            const uint32_t blockX = hasDxt3Texture ? x / 4u : x;
+            const uint32_t blockY = hasDxt3Texture ? y / 4u : y;
+            const uint32_t address = textureAddress(blockX, blockY,
+                hasDxt3Texture ? texturePitchBlocks : textureWidth,
+                hasDxt3Texture ? 4u : 2u);
+            if (hasRgba8Texture)
+            {
+                // k_8_8_8_8 with k8in32 texture endianness stores the four
+                // channels in a byte-swapped 32-bit texel.
+                result[0] = guestBase[address + 3];
+                result[1] = guestBase[address + 2];
+                result[2] = guestBase[address + 1];
+                result[3] = guestBase[address + 0];
+                return result;
+            }
             uint8_t block[16]{};
             for (uint32_t i = 0; i < 16; ++i)
                 block[i] = guestBase[address + i];
@@ -480,9 +500,10 @@ void XenosGpu::rasterizeDraw(uint8_t* guestBase, uint32_t initiator)
                         const float u = w0 * va.uv[0] + w1 * vb.uv[0] + w2 * vc.uv[0];
                         const float v = w0 * va.uv[1] + w1 * vb.uv[1] + w2 * vc.uv[1];
                         const auto color = sampleTexture(u, v);
-                        std::array<uint8_t, 4> output = hasDxt3Texture
+                        const bool hasSampledTexture = hasDxt3Texture || hasRgba8Texture;
+                        std::array<uint8_t, 4> output = hasSampledTexture
                             ? color : drawColor;
-                        if (hasDxt3Texture)
+                        if (hasSampledTexture)
                         {
                             for (uint32_t component = 0; component < 4; ++component)
                             {
