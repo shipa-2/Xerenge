@@ -427,10 +427,20 @@ void XenosGpu::rasterizeDraw(uint8_t* guestBase, uint32_t initiator)
 
         if (primitive == 8u && drawVertices == 3u)
     {
-        const float minX = std::min({triangle[0].position[0], triangle[1].position[0], triangle[2].position[0]});
-        const float maxX = std::max({triangle[0].position[0], triangle[1].position[0], triangle[2].position[0]});
-        const float minY = std::min({triangle[0].position[1], triangle[1].position[1], triangle[2].position[1]});
-        const float maxY = std::max({triangle[0].position[1], triangle[1].position[1], triangle[2].position[1]});
+        // RectangleList vertices arrive as one corner and its two adjacent
+        // corners. Include the inferred opposite corner in the raster bounds.
+        const float fourthX = triangle[1].position[0] + triangle[2].position[0] -
+            triangle[0].position[0];
+        const float fourthY = triangle[1].position[1] + triangle[2].position[1] -
+            triangle[0].position[1];
+        const float minX = std::min({triangle[0].position[0], triangle[1].position[0],
+            triangle[2].position[0], fourthX});
+        const float maxX = std::max({triangle[0].position[0], triangle[1].position[0],
+            triangle[2].position[0], fourthX});
+        const float minY = std::min({triangle[0].position[1], triangle[1].position[1],
+            triangle[2].position[1], fourthY});
+        const float maxY = std::max({triangle[0].position[1], triangle[1].position[1],
+            triangle[2].position[1], fourthY});
         const int left = std::max(0, static_cast<int>((minX * 0.5f + 0.5f) * width));
         const int right = std::min(static_cast<int>(width) - 1,
             static_cast<int>((maxX * 0.5f + 0.5f) * width));
@@ -648,15 +658,15 @@ void XenosGpu::rasterizeDraw(uint8_t* guestBase, uint32_t initiator)
         fillTriangle(v0, v1, v2);
         // Xenos RectangleList supplies three corners; infer the fourth corner
         // from the parallelogram relation before filling the second triangle.
-        RasterVertex v3 = v0;
-        v3.position[0] = v0.position[0] + v2.position[0] - v1.position[0];
-        v3.position[1] = v0.position[1] + v2.position[1] - v1.position[1];
-        v3.uv[0] = v0.uv[0] + v2.uv[0] - v1.uv[0];
-        v3.uv[1] = v0.uv[1] + v2.uv[1] - v1.uv[1];
+        RasterVertex v3 = v1;
+        v3.position[0] = v1.position[0] + v2.position[0] - v0.position[0];
+        v3.position[1] = v1.position[1] + v2.position[1] - v0.position[1];
+        v3.uv[0] = v1.uv[0] + v2.uv[0] - v0.uv[0];
+        v3.uv[1] = v1.uv[1] + v2.uv[1] - v0.uv[1];
         for (uint32_t component = 0; component < 4; ++component)
-            v3.color[component] = v0.color[component] + v2.color[component] -
-                v1.color[component];
-        fillTriangle(v0, v2, v3);
+            v3.color[component] = v1.color[component] + v2.color[component] -
+                v0.color[component];
+        fillTriangle(v1, v3, v2);
         if (std::getenv("XERENGE_XENOS_DRAW_TRACE") != nullptr)
             std::cerr << "Xenos triangle rasterized v0=" << triangle[0].position[0] << ','
                       << triangle[0].position[1] << " v1=" << triangle[1].position[0] << ','
