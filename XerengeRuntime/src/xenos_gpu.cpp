@@ -391,6 +391,7 @@ void XenosGpu::rasterizeDraw(uint8_t* guestBase, uint32_t initiator)
         const uint32_t texture1 = gpuRegisters_[0x4801u];
         const uint32_t texture2 = gpuRegisters_[0x4802u];
         const uint32_t textureFormat = texture1 & 0x3Fu;
+        const uint32_t textureEndian = (texture1 >> 6) & 0x3u;
         const bool textureIsValid = (texture0 & 0x3u) == 2u;
         const bool hasDxt3Texture = textureIsValid && textureFormat == 19u;
         const bool hasRgba8Texture = textureIsValid && textureFormat == 6u;
@@ -469,17 +470,35 @@ void XenosGpu::rasterizeDraw(uint8_t* guestBase, uint32_t initiator)
                 hasDxt3Texture ? 4u : 2u);
             if (hasRgba8Texture)
             {
-                // k_8_8_8_8 with k8in32 texture endianness stores the four
-                // channels in a byte-swapped 32-bit texel.
-                result[0] = guestBase[address + 3];
-                result[1] = guestBase[address + 2];
-                result[2] = guestBase[address + 1];
-                result[3] = guestBase[address + 0];
+                uint8_t texel[4] = {guestBase[address + 0], guestBase[address + 1],
+                    guestBase[address + 2], guestBase[address + 3]};
+                if (textureEndian == 1u)
+                    std::swap(texel[0], texel[1]);
+                else if (textureEndian == 2u)
+                    std::swap(texel[0], texel[3]), std::swap(texel[1], texel[2]);
+                else if (textureEndian == 3u)
+                    std::swap(texel[0], texel[2]), std::swap(texel[1], texel[3]);
+                std::copy(std::begin(texel), std::end(texel), result.begin());
                 return result;
             }
             uint8_t block[16]{};
             for (uint32_t i = 0; i < 16; ++i)
                 block[i] = guestBase[address + i];
+            if (textureEndian == 1u)
+            {
+                for (uint32_t i = 0; i < 16; i += 2)
+                    std::swap(block[i], block[i + 1]);
+            }
+            else if (textureEndian == 2u)
+            {
+                for (uint32_t i = 0; i < 16; i += 4)
+                    std::swap(block[i], block[i + 3]), std::swap(block[i + 1], block[i + 2]);
+            }
+            else if (textureEndian == 3u)
+            {
+                for (uint32_t i = 0; i < 16; i += 4)
+                    std::swap(block[i], block[i + 2]), std::swap(block[i + 1], block[i + 3]);
+            }
             const uint32_t local = (y & 3u) * 4u + (x & 3u);
             const uint8_t alphaByte = block[local >> 1];
             result[3] = static_cast<uint8_t>(((local & 1u) ? alphaByte >> 4 : alphaByte & 0xFu) * 17u);
