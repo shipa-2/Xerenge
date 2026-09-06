@@ -163,13 +163,20 @@ void XenosGpu::rasterizeDraw(uint8_t* guestBase, uint32_t initiator)
         const uint32_t y = std::min(height - 1,
             static_cast<uint32_t>((1.0f - (yNdc * 0.5f + 0.5f)) * height));
         const size_t pixel = (size_t(y) * width + x) * 4;
-        // Preserve the real geometry coverage while the pixel-shader export
-        // path is being brought up. This is intentionally a white opaque
-        // fragment, never a full-frame fallback or synthetic clear.
-        edram_[pixel + 0] = 0xFF;
-        edram_[pixel + 1] = 0xFF;
-        edram_[pixel + 2] = 0xFF;
-        edram_[pixel + 3] = 0xFF;
+        // The bootstrap vertex program's second fetch is a float4
+        // interpolator at words 3..6. The matching cached pixel program
+        // forwards that interpolator to color 0, so preserve those actual
+        // guest values instead of using a diagnostic white fragment.
+        uint8_t color[4]{};
+        for (uint32_t component = 0; component < 4; ++component)
+        {
+            const uint32_t raw = loadGuestBE(guestBase, address + (3 + component) * 4);
+            float value = 0.0f;
+            std::memcpy(&value, &raw, sizeof(value));
+            if (std::isfinite(value))
+                color[component] = static_cast<uint8_t>(std::clamp(value, 0.0f, 1.0f) * 255.0f);
+        }
+        std::memcpy(edram_.data() + pixel, color, sizeof(color));
     }
 }
 
@@ -199,8 +206,14 @@ void XenosGpu::resolveToGuest(uint8_t* guestBase)
     std::memcpy(guestBase + destination, edram_.data(), copyCount);
     ++resolveCount_;
     if (std::getenv("XERENGE_XENOS_RESOLVE_TRACE") != nullptr)
+    {
+        size_t nonzeroPixels = 0;
+        for (size_t i = 0; i + 3 < copyCount; i += 4)
+            nonzeroPixels += (edram_[i] | edram_[i + 1] | edram_[i + 2]) != 0;
         std::cerr << "Xenos resolve destination=0x" << std::hex << destination
-                  << " bytes=" << std::dec << copyCount << '\n';
+                  << " bytes=" << std::dec << copyCount
+                  << " nonzeroRgbPixels=" << nonzeroPixels << '\n';
+    }
 }
 
 void XenosGpu::processSubmittedBuffer(uint8_t* guestBase, uint32_t guestAddress, uint32_t dwordCount)
