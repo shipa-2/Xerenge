@@ -23,6 +23,7 @@ pkg_check_modules(GLFW3 REQUIRED IMPORTED_TARGET glfw3)
 
 add_executable(xerenge-runtime
     src/main.cpp
+    src/xenos_gpu.cpp
 )
 
 target_link_libraries(xerenge-runtime PRIVATE Vulkan::Vulkan OpenGL::GL Xerenge::Crypto PkgConfig::GLFW3)

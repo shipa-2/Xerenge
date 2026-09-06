@@ -20,8 +20,12 @@
 
 #ifdef XERENGE_HAS_PPC
 #include <sys/mman.h>
+#include <execinfo.h>
+#include <signal.h>
+#include <unistd.h>
 
 #include "ppc_recomp_shared.h"
+#include "xenos_gpu.h"
 #endif
 
 namespace
@@ -179,24 +183,188 @@ std::atomic<uint64_t> gPpcFunctionTransitions = 0;
 std::atomic<uint64_t> gPpcFunctionCalls = 0;
 std::atomic<bool> gPpcTraceEnabled = false;
 
-extern "C" void PPCTraceFunction(uint32_t address, PPCContext& ctx, uint8_t*)
+void ppcWatchdogSignal(int)
+{
+    const char message[] = "PPC watchdog native backtrace:\n";
+    ::write(STDERR_FILENO, message, sizeof(message) - 1);
+    void* frames[32]{};
+    const int count = ::backtrace(frames, 32);
+    ::backtrace_symbols_fd(frames, count, STDERR_FILENO);
+}
+
+extern "C" void PPCTraceStore(uint32_t address, uint32_t value, uint64_t lr)
+{
+    if (std::getenv("XERENGE_PPC_TRACE") != nullptr)
+        std::cerr << "guest global store address=0x" << std::hex << address
+                  << " value=0x" << value << " lr=0x" << lr << std::dec << '\n';
+}
+
+extern "C" void PPCTraceFunction(uint32_t address, PPCContext& ctx, uint8_t* base)
 {
     const uint64_t callCount = gPpcFunctionCalls.fetch_add(1, std::memory_order_relaxed) + 1;
-    if (gPpcTraceEnabled.load(std::memory_order_relaxed) && (callCount % 100000) == 0)
+    if (gPpcTraceEnabled.load(std::memory_order_relaxed) && (callCount % 10000) == 0)
+    {
         std::cerr << "guest function calls=" << callCount << " current=0x"
                   << std::hex << address << std::dec << '\n';
+        if (address == 0x8259B0FC)
+        {
+            uint32_t savedLr = 0;
+            std::memcpy(&savedLr, base + ctx.r1.u32 - 8, sizeof(savedLr));
+            std::cerr << "  restore helper r1=0x" << std::hex << ctx.r1.u32
+                      << " saved_lr=0x" << __builtin_bswap32(savedLr)
+                      << " ctx_lr=0x" << static_cast<uint32_t>(ctx.lr) << std::dec << '\n';
+        }
+    }
     if (!gPpcTraceEnabled.load(std::memory_order_relaxed))
         return;
+
     static std::atomic<uint32_t> waitTraceCount = 0;
     if (address == 0x825AC688 && waitTraceCount.fetch_add(1, std::memory_order_relaxed) < 8)
         std::cerr << "wait wrapper entry r3=0x" << std::hex << ctx.r3.u32
                   << " r7=0x" << ctx.r7.u32 << " r8=0x" << ctx.r8.u32
                   << " r28=0x" << ctx.r28.u32 << std::dec << '\n';
+    if (address == 0x82381C60)
+    {
+        static std::atomic<uint32_t> queueTraceCount = 0;
+        if (queueTraceCount.fetch_add(1, std::memory_order_relaxed) < 8)
+        {
+            uint32_t output = 0;
+            if (ctx.r4.u32 != 0)
+            {
+                std::memcpy(&output, base + ctx.r4.u32, sizeof(output));
+                output = __builtin_bswap32(output);
+            }
+            std::cerr << "queue wait r3=0x" << std::hex << ctx.r3.u32
+                      << " r4=0x" << ctx.r4.u32 << " *r4=0x" << output
+                      << " r5=0x" << ctx.r5.u32 << std::dec << '\n';
+        }
+    }
+    if (address == 0x82382250)
+    {
+        static std::atomic<uint32_t> allocatorQueueTraceCount = 0;
+        if (allocatorQueueTraceCount.fetch_add(1, std::memory_order_relaxed) < 8)
+        {
+            auto guestWord = [base](uint32_t guestAddress) {
+                uint32_t value = 0;
+                std::memcpy(&value, base + guestAddress, sizeof(value));
+                return __builtin_bswap32(value);
+            };
+            std::cerr << "allocator queue r3=0x" << std::hex << ctx.r3.u32
+                      << " +0=0x" << guestWord(ctx.r3.u32)
+                      << " +8=0x" << guestWord(ctx.r3.u32 + 8)
+                      << " +13536=0x" << guestWord(ctx.r3.u32 + 13536)
+                      << " +14028=0x" << guestWord(ctx.r3.u32 + 14028)
+                      << std::dec << '\n';
+        }
+    }
+    if (address == 0x82382390)
+    {
+        static std::atomic<uint32_t> allocatorSetupTraceCount = 0;
+        if (allocatorSetupTraceCount.fetch_add(1, std::memory_order_relaxed) < 16)
+        {
+            auto guestWord = [base](uint32_t guestAddress) {
+                uint32_t value = 0;
+                std::memcpy(&value, base + guestAddress, sizeof(value));
+                return __builtin_bswap32(value);
+            };
+            std::cerr << "allocator setup r3=0x" << std::hex << ctx.r3.u32
+                      << " +10396=0x" << guestWord(ctx.r3.u32 + 10396)
+                      << " +10432=0x" << guestWord(ctx.r3.u32 + 10432)
+                      << " +10433=0x" << guestWord(ctx.r3.u32 + 10433)
+                      << " +13536=0x" << guestWord(ctx.r3.u32 + 13536)
+                      << " +14028=0x" << guestWord(ctx.r3.u32 + 14028)
+                      << " +14032=0x" << guestWord(ctx.r3.u32 + 14032)
+                      << " +14036=0x" << guestWord(ctx.r3.u32 + 14036)
+                      << std::dec << '\n';
+        }
+    }
+    if (address == 0x82566CE0 || address == 0x8256EC30 || address == 0x8256F540)
+    {
+        static std::atomic<uint32_t> callbackTraceCount = 0;
+        if (callbackTraceCount.fetch_add(1, std::memory_order_relaxed) < 12)
+        {
+            auto guestWord = [base](uint32_t guestAddress) {
+                uint32_t value = 0;
+                std::memcpy(&value, base + guestAddress, sizeof(value));
+                return __builtin_bswap32(value);
+            };
+            std::cerr << "callback path 0x" << std::hex << address
+                      << " r3=0x" << ctx.r3.u32
+                      << " r4=0x" << ctx.r4.u32
+                      << " r5=0x" << ctx.r5.u32
+                      << " r6=0x" << ctx.r6.u32
+                      << " r11=0x" << ctx.r11.u32;
+            if (ctx.r3.u32 < 0x100000u)
+                std::cerr << " [r3]=0x" << guestWord(ctx.r3.u32);
+            std::cerr << std::dec << '\n';
+        }
+    }
     static std::atomic<uint32_t> initTraceCount = 0;
     if ((address == 0x820A3AF0 || address == 0x8211A958 || address == 0x8211B0D0) &&
         initTraceCount.fetch_add(1, std::memory_order_relaxed) < 12)
         std::cerr << "init function entry 0x" << std::hex << address
                   << " r3=0x" << ctx.r3.u32 << std::dec << '\n';
+    static std::atomic<uint32_t> allocatorTraceCount = 0;
+    if ((address == 0x820D59E0 || address == 0x820BF280 || address == 0x822D5000 || address == 0x82350708 || address == 0x82101820 || address == 0x82365F30) &&
+        allocatorTraceCount.fetch_add(1, std::memory_order_relaxed) < 12)
+        std::cerr << "allocator path entry 0x" << std::hex << address
+                  << " r3=0x" << ctx.r3.u32 << " r4=0x" << ctx.r4.u32
+                  << " r5=0x" << ctx.r5.u32 << " r6=0x" << ctx.r6.u32
+                  << " r7=0x" << ctx.r7.u32 << " r8=0x" << ctx.r8.u32
+                  << " r9=0x" << ctx.r9.u32 << " r10=0x" << ctx.r10.u32
+                  << " manager=0x" << [&] {
+                      uint32_t value = 0;
+                      std::memcpy(&value, base + 0x82d14ec0u, sizeof(value));
+                      return __builtin_bswap32(value);
+                  }()
+                  << std::dec << '\n';
+    static std::atomic<uint32_t> mathInitTraceCount = 0;
+    if (address == 0x8226B940 && mathInitTraceCount.fetch_add(1, std::memory_order_relaxed) < 4)
+    {
+        auto guestWord = [base](uint32_t address) {
+            uint32_t value = 0;
+            std::memcpy(&value, base + address, sizeof(value));
+            return __builtin_bswap32(value);
+        };
+        std::cerr << "math init entry r3=0x" << std::hex << ctx.r3.u32
+                  << " +0=0x" << guestWord(ctx.r3.u32)
+                  << " +800=0x" << guestWord(ctx.r3.u32 + 800)
+                  << " +808=0x" << guestWord(ctx.r3.u32 + 808)
+                  << " +816=0x" << guestWord(ctx.r3.u32 + 816)
+                  << std::dec << '\n';
+    }
+    static std::atomic<uint32_t> slotTraceCount = 0;
+    if (address == 0x823500F0 && slotTraceCount.fetch_add(1, std::memory_order_relaxed) < 4)
+    {
+        auto guestWord = [base](uint32_t address) {
+            uint32_t value = 0;
+            std::memcpy(&value, base + address, sizeof(value));
+            return __builtin_bswap32(value);
+        };
+        auto guestByte = [base](uint32_t address) { return base[address]; };
+        const uint32_t table = guestWord(ctx.r3.u32 + 12);
+        const uint32_t index = guestWord(ctx.r3.u32 + 4);
+        std::cerr << "slot allocator entry r3=0x" << std::hex << ctx.r3.u32
+                  << " index=" << index << " count=" << guestWord(ctx.r3.u32 + 16)
+                  << " table=0x" << table << " first30=0x" << static_cast<uint32_t>(guestByte(table + 30))
+                  << " second30=0x" << static_cast<uint32_t>(guestByte(table + 62))
+                  << " manager=0x" << guestWord(0x82d14ec0)
+                  << std::dec << '\n';
+    }
+    if (address == 0x820DDB88 || address == 0x820B5B28 ||
+        address == 0x82355688 || address == 0x82355880)
+    {
+        auto guestWord = [base](uint32_t guestAddress) {
+            uint32_t value = 0;
+            std::memcpy(&value, base + guestAddress, sizeof(value));
+            return __builtin_bswap32(value);
+        };
+        std::cerr << "object init entry 0x" << std::hex << address
+                  << " r3=0x" << ctx.r3.u32
+                  << " global826971c4=0x" << guestWord(0x826971c4)
+                  << " global82697264=0x" << guestWord(0x82697264)
+                  << std::dec << '\n';
+    }
     const uint32_t previous = gPpcLastFunction.exchange(address, std::memory_order_relaxed);
     if (previous != address && gPpcFunctionTransitions.fetch_add(1, std::memory_order_relaxed) < 5000)
     {
@@ -205,6 +373,58 @@ extern "C" void PPCTraceFunction(uint32_t address, PPCContext& ctx, uint8_t*)
             std::cerr << " r3=0x" << ctx.r3.u32 << " r8=0x" << ctx.r8.u32
                       << " r10=0x" << ctx.r10.u32 << " r11=0x" << ctx.r11.u32;
         std::cerr << std::dec << '\n';
+    }
+}
+
+extern "C" uint32_t PPCGuestClock()
+{
+    static std::atomic<uint32_t> guestClock = 0;
+    return guestClock.fetch_add(1000000, std::memory_order_relaxed) + 1000000;
+}
+
+extern "C" void PPCGuestMmioStore(uint8_t* base, uint32_t address, uint64_t value, uint32_t width)
+{
+    static XenosGpu xenosGpu;
+    static std::atomic<uint32_t> storeCount = 0;
+    const uint32_t sequence = storeCount.fetch_add(1, std::memory_order_relaxed);
+    if (std::getenv("XERENGE_PPC_MMIO_TRACE") != nullptr &&
+        (sequence < 32 || (sequence % 10000) == 0))
+    {
+        std::cerr << "guest MMIO store #" << sequence << " address=0x" << std::hex
+                  << address << " value=0x" << value << " width=" << std::dec << width << '\n';
+    }
+
+    xenosGpu.write(base, address, value, width);
+
+    // Keep the guest-visible big-endian backing bytes until the command
+    // processor is connected.  The hook makes MMIO traffic observable while
+    // preserving the old memory behavior for code that reads the register
+    // shadow back immediately.
+    switch (width)
+    {
+    case 1:
+        base[address] = static_cast<uint8_t>(value);
+        break;
+    case 2:
+    {
+        const uint16_t encoded = __builtin_bswap16(static_cast<uint16_t>(value));
+        std::memcpy(base + address, &encoded, sizeof(encoded));
+        break;
+    }
+    case 4:
+    {
+        const uint32_t encoded = __builtin_bswap32(static_cast<uint32_t>(value));
+        std::memcpy(base + address, &encoded, sizeof(encoded));
+        break;
+    }
+    case 8:
+    {
+        const uint64_t encoded = __builtin_bswap64(value);
+        std::memcpy(base + address, &encoded, sizeof(encoded));
+        break;
+    }
+    default:
+        break;
     }
 }
 
@@ -315,7 +535,7 @@ public:
 
     bool invokeCallback(uint32_t address, PPCContext& ctx)
     {
-        if (address < kVtableBase || address >= kVtableBase + 3 * 4)
+        if (address < kVtableBase || address >= kVtableBase + 0x220)
             return false;
 
         const uint32_t method = (address - kVtableBase) / 4;
@@ -338,7 +558,10 @@ public:
         }
         else
         {
-            ctx.r3.u32 = 0x80004002u; // E_NOINTERFACE
+            // Most methods used during early title bring-up are notification
+            // and configuration calls.  They return success while preserving
+            // the object in r3 for the following guest call.
+            ctx.r3.u32 = 0;
         }
         return true;
     }
@@ -357,7 +580,33 @@ public:
         return object;
     }
 
+    uint32_t materializeGlobalObject(uint32_t slot, uint8_t* base)
+    {
+        const uint32_t existing = loadU32(base, slot);
+        if (existing != 0)
+            return existing;
+        const uint32_t object = createObject(base);
+        if (object != 0)
+            storeU32(base, slot, object);
+        return object;
+    }
+
     static constexpr uint32_t vtableBase() { return kVtableBase; }
+
+    uint32_t allocateGuest(uint32_t size, uint8_t* base)
+    {
+        return allocate(std::max<uint32_t>(size, 0x1000u), base);
+    }
+
+    static void writeGuestU32(uint8_t* base, uint32_t address, uint32_t value)
+    {
+        storeU32(base, address, value);
+    }
+
+    static uint32_t readGuestU32(const uint8_t* base, uint32_t address)
+    {
+        return loadU32(base, address);
+    }
 
 private:
     uint32_t allocate(uint32_t size, uint8_t* base)
@@ -381,15 +630,29 @@ private:
 
     uint32_t createObject(uint8_t* base)
     {
+        constexpr uint32_t kVtableSize = 0x220;
         const uint32_t object = allocate(0x20, base);
         if (object == 0)
             return 0;
         storeU32(base, object, kVtableBase);
-        storeU32(base, kVtableBase + 0, kVtableBase + 0);
-        storeU32(base, kVtableBase + 4, kVtableBase + 4);
-        storeU32(base, kVtableBase + 8, kVtableBase + 8);
+        allocateVtable(base, kVtableSize);
+        for (uint32_t offset = 0; offset < kVtableSize; offset += 4)
+            storeU32(base, kVtableBase + offset, kVtableBase + offset);
         objects_.emplace(object, 1);
         return object;
+    }
+
+    void allocateVtable(uint8_t* base, uint32_t size)
+    {
+        // The synthetic vtable lives in the fixed guest callback window.  Its
+        // backing bytes are already inside the sparse guest address space;
+        // reserve the range from the service heap so object creation cannot
+        // overlap it.
+        if (!vtableAllocated_)
+        {
+            std::memset(base + kVtableBase, 0, size);
+            vtableAllocated_ = true;
+        }
     }
 
     void releaseObject(uint32_t object)
@@ -424,11 +687,17 @@ private:
     static constexpr uint32_t kVtableBase = 0x81000000u;
     std::unordered_map<uint32_t, uint32_t> allocations_;
     std::unordered_map<uint32_t, uint32_t> objects_;
+    bool vtableAllocated_ = false;
     std::array<uint32_t, 64> tlsSlots_{};
     std::array<bool, 64> tlsUsed_{};
 };
 
 XboxServiceLayer gXboxServices;
+
+extern "C" uint32_t PPCMaterializeObject(PPCContext& ctx, uint8_t* base)
+{
+    return gXboxServices.materializeNullObject(ctx, base);
+}
 
 extern "C" void PPCImportedServiceTrap(const char* service, PPCContext& ctx, uint8_t* base)
 {
@@ -439,6 +708,42 @@ extern "C" void PPCUnknownIndirectTrap(uint32_t address, PPCContext& ctx, uint8_
 {
     if (gXboxServices.invokeCallback(address, ctx))
         return;
+    if (ctx.lr == 0x82382180u)
+    {
+        // Growable title allocators pass the output byte count in r6 and the
+        // minimum element count in r7.  Returning a COM placeholder here
+        // leaves the ring capacity unchanged and causes an endless grow loop.
+        const uint32_t size = std::max<uint32_t>(ctx.r7.u32 * 0x80u, 0x1000u);
+        ctx.r3.u32 = gXboxServices.allocateGuest(size, base);
+        if (ctx.r6.u32 != 0)
+            XboxServiceLayer::writeGuestU32(base, ctx.r6.u32, size);
+        return;
+    }
+    if (ctx.lr == 0x823816D8u)
+    {
+        // sub_82381688 dispatches its backing allocator through an object
+        // callback at this LR.  r6 points at the stack temporary containing
+        // the requested byte count; the callback returns the allocation in
+        // r3 and writes the actual size back through r6.
+        const uint32_t requested = ctx.r6.u32 != 0
+            ? XboxServiceLayer::readGuestU32(base, ctx.r6.u32)
+            : 0;
+        const uint32_t size = std::max<uint32_t>(requested, 0x1000u);
+        ctx.r3.u32 = gXboxServices.allocateGuest(size, base);
+        if (ctx.r6.u32 != 0)
+            XboxServiceLayer::writeGuestU32(base, ctx.r6.u32, size);
+        return;
+    }
+    if (ctx.lr >= 0x82355700u && ctx.lr <= 0x82355818u)
+    {
+        // 0x826971c4 is the title's static service object.  Its constructor
+        // is reached before the platform object backing it is supplied on the
+        // retail boot path.  Materialize the Xbox-compatible object at the
+        // first virtual call and let subsequent calls use its synthetic vtable.
+        const uint32_t object = gXboxServices.materializeGlobalObject(0x826971c4u, base);
+        ctx.r3.u32 = object;
+        return;
+    }
     if (address == 0)
     {
         const uint32_t object = gXboxServices.materializeNullObject(ctx, base);
@@ -1126,6 +1431,11 @@ int main(int argc, char** argv)
         }
 #ifdef XERENGE_HAS_PPC
         gPpcTraceEnabled.store(std::getenv("XERENGE_PPC_TRACE") != nullptr, std::memory_order_relaxed);
+        if (std::getenv("XERENGE_PPC_BACKTRACE") != nullptr)
+        {
+            ::signal(SIGALRM, ppcWatchdogSignal);
+            ::alarm(3);
+        }
         const auto info = inspectXex(argv[2]);
         std::vector<uint8_t> image;
         if (!info || !decodeImage(argv[2], *info, image))
