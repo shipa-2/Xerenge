@@ -243,6 +243,14 @@ void XenosGpu::processBuffer(uint8_t* guestBase, uint32_t guestAddress,
                     0x60000000u | (physicalAddress & 0x1FFFFFFFu);
                 processBuffer(guestBase, indirectAddress, indirectCount, recursionDepth + 1);
             }
+            if (opcode == 0x36u && length >= 2 && offset + 1 < dwordCount)
+            {
+                // DRAW_INDX_2 carries VGT_DRAW_INITIATOR as its only payload.
+                // Keep it in the register file so later rasterization sees the
+                // same state as a SET_CONSTANT/Type-0 packet would provide.
+                gpuRegisters_[0x21FC] = loadGuestBE(
+                    guestBase, guestAddress + (offset + 1) * 4);
+            }
             // Xenos PM4 draw packets.  The low seven bits are used by the
             // hardware opcode field; accepting both forms keeps this parser
             // useful for command streams produced by different compilers.
@@ -408,6 +416,11 @@ void XenosGpu::processRing(uint8_t* guestBase)
                 const uint32_t indirectAddress =
                     0x60000000u | (physicalAddress & 0x1FFFFFFFu);
                 processBuffer(guestBase, indirectAddress, indirectCount, 1);
+            }
+            if (opcode == 0x36u && length >= 2 && readPointer_ + 1 < target)
+            {
+                gpuRegisters_[0x21FC] = loadGuestBE(
+                    guestBase, ringBase_ + (readPointer_ + 1) * 4);
             }
             if (opcode == 0x22u || opcode == 0x23u || opcode == 0x2Du ||
                 opcode == 0x2Eu || opcode == 0x36u)
