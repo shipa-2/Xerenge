@@ -83,8 +83,6 @@ bool XenosGpu::presentFromGuest(uint8_t* guestBase, uint32_t guestAddress,
                   << " nonzeroRgbPixels=" << nonzeroRgbPixels
                   << " checksum=0x" << std::hex << checksum << std::dec << '\n';
     }
-    for (size_t i = 0; i < framebuffer_.size(); i += 4)
-        framebuffer_[i + 3] = 255;
     lastFrameWidth_ = width;
     lastFrameHeight_ = height;
     return true;
@@ -479,6 +477,15 @@ void XenosGpu::rasterizeDraw(uint8_t* guestBase, uint32_t initiator)
             {
                 uint8_t texel[4] = {guestBase[address + 0], guestBase[address + 1],
                     guestBase[address + 2], guestBase[address + 3]};
+                static bool loggedRgba8Sample = false;
+                if (!loggedRgba8Sample && std::getenv("XERENGE_XENOS_TEXTURE_BYTES") != nullptr)
+                {
+                    loggedRgba8Sample = true;
+                    std::cerr << "Xenos RGBA8 sample guest=0x" << std::hex << address
+                              << " raw=" << unsigned(texel[0]) << ' ' << unsigned(texel[1])
+                              << ' ' << unsigned(texel[2]) << ' ' << unsigned(texel[3])
+                              << " endian=" << textureEndian << std::dec << '\n';
+                }
                 if (textureEndian == 1u)
                     std::swap(texel[0], texel[1]);
                 else if (textureEndian == 2u)
