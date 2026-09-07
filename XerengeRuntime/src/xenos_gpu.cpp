@@ -492,10 +492,10 @@ bool XenosGpu::ensureGraphicsPipeline()
     VkPipelineInputAssemblyStateCreateInfo assembly{
         VK_STRUCTURE_TYPE_PIPELINE_INPUT_ASSEMBLY_STATE_CREATE_INFO};
     assembly.topology = VK_PRIMITIVE_TOPOLOGY_TRIANGLE_LIST;
-    // Xenos follows the Direct3D framebuffer convention.  A negative Vulkan
-    // viewport height preserves its Y direction without modifying recompiled
-    // vertex shader outputs.
-    VkViewport viewport{0, 720, 1280, -720, 0, 1};
+    // XenosRecomp passes -fvk-invert-y to DXC for vertex shaders, so their
+    // SPIR-V output already accounts for the Direct3D/Vulkan Y convention.
+    // A second inversion in the viewport would mirror native draws again.
+    VkViewport viewport{0, 0, 1280, 720, 0, 1};
     VkRect2D scissor{{0, 0}, {1280, 720}};
     VkPipelineViewportStateCreateInfo viewportState{
         VK_STRUCTURE_TYPE_PIPELINE_VIEWPORT_STATE_CREATE_INFO};
@@ -1269,7 +1269,8 @@ void XenosGpu::rasterizeDraw(uint8_t* guestBase, uint32_t initiator)
         for (uint32_t component = 0; component < 2; ++component)
             bits[component] = loadGuestBE(guestBase, address + component * 4);
 
-        if (primitive == 8u && std::getenv("XERENGE_XENOS_VERTEX_TRACE") != nullptr && i < 3)
+        if ((primitive == 8u || primitive == 6u) &&
+            std::getenv("XERENGE_XENOS_VERTEX_TRACE") != nullptr && i < 3)
         {
             std::cerr << "Xenos vertex i=" << i << " guest=0x" << std::hex << address
                       << " words=";
