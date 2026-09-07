@@ -1655,8 +1655,21 @@ public:
         {
             // The frontend uses this asynchronous XAM dialog while creating
             // its profile/device state. There is no host dialog in the
-            // runtime, so complete the selection immediately and let the
-            // title continue with the primary local device.
+            // runtime, so complete the selection immediately and return the
+            // primary local device through the title's output structure.
+            if (ctx.r7.u32 >= 0x50000000u && ctx.r7.u32 < 0x90000000u)
+                storeU32(base, ctx.r7.u32, 0);
+            if (ctx.r8.u32 >= 0x50000000u && ctx.r8.u32 < 0x90000000u)
+            {
+                storeU32(base, ctx.r8.u32 + 0x00, 0);
+                storeU32(base, ctx.r8.u32 + 0x04, 0);
+                const uint32_t event = loadU32(base, ctx.r8.u32 + 0x0c);
+                if (event != 0)
+                {
+                    events_[event] = true;
+                    eventCondition_.notify_all();
+                }
+            }
             ctx.r3.u32 = 0;
             return;
         }
