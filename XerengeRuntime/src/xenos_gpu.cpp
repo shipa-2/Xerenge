@@ -488,7 +488,10 @@ bool XenosGpu::ensureGraphicsPipeline()
     VkPipelineInputAssemblyStateCreateInfo assembly{
         VK_STRUCTURE_TYPE_PIPELINE_INPUT_ASSEMBLY_STATE_CREATE_INFO};
     assembly.topology = VK_PRIMITIVE_TOPOLOGY_TRIANGLE_LIST;
-    VkViewport viewport{0, 0, 1280, 720, 0, 1};
+    // Xenos follows the Direct3D framebuffer convention.  A negative Vulkan
+    // viewport height preserves its Y direction without modifying recompiled
+    // vertex shader outputs.
+    VkViewport viewport{0, 720, 1280, -720, 0, 1};
     VkRect2D scissor{{0, 0}, {1280, 720}};
     VkPipelineViewportStateCreateInfo viewportState{
         VK_STRUCTURE_TYPE_PIPELINE_VIEWPORT_STATE_CREATE_INFO};
@@ -1586,12 +1589,19 @@ void XenosGpu::resolveToGuest(uint8_t* guestBase)
         size_t nonzeroAlphaPixels = 0;
         size_t rgbWithZeroAlphaPixels = 0;
         size_t whiteRgbPixels = 0;
+        size_t topHalfRgbPixels = 0;
+        size_t bottomHalfRgbPixels = 0;
         uint32_t firstNonzeroPixel = 0;
         uint32_t firstPixel = 0;
         uint32_t differentPixels = 0;
         for (size_t i = 0; i + 3 < copyCount; i += 4)
         {
             nonzeroPixels += (edram_[i] | edram_[i + 1] | edram_[i + 2]) != 0;
+            if ((edram_[i] | edram_[i + 1] | edram_[i + 2]) != 0)
+            {
+                const size_t y = (i / 4) / width;
+                (y < height / 2 ? topHalfRgbPixels : bottomHalfRgbPixels)++;
+            }
             nonzeroAlphaPixels += edram_[i + 3] != 0;
             rgbWithZeroAlphaPixels +=
                 (edram_[i] | edram_[i + 1] | edram_[i + 2]) != 0 && edram_[i + 3] == 0;
@@ -1611,6 +1621,8 @@ void XenosGpu::resolveToGuest(uint8_t* guestBase)
                   << " nonzeroAlphaPixels=" << nonzeroAlphaPixels
                   << " rgbWithZeroAlphaPixels=" << rgbWithZeroAlphaPixels
                   << " whiteRgbPixels=" << whiteRgbPixels
+                  << " topHalfRgbPixels=" << topHalfRgbPixels
+                  << " bottomHalfRgbPixels=" << bottomHalfRgbPixels
                   << " firstNonzeroPixel=0x" << std::hex << firstNonzeroPixel << std::dec
                   << " differentFromFirst=" << differentPixels
                   << " firstPixel=0x" << std::hex << firstPixel << std::dec << '\n';
@@ -1751,6 +1763,21 @@ void XenosGpu::processBuffer(uint8_t* guestBase, uint32_t guestAddress,
                     const size_t byteSize = size_t(codeDwords) * sizeof(uint32_t);
                     const uint64_t hash = XXH3_64bits(
                         guestBase + guestAddress + (offset + 3) * 4, byteSize);
+                    if (const char* captureDirectory =
+                            std::getenv("XERENGE_XENOS_SHADER_CAPTURE_DIR"))
+                    {
+                        std::error_code error;
+                        std::filesystem::create_directories(captureDirectory, error);
+                        const auto path = std::filesystem::path(captureDirectory) /
+                            (std::to_string(hash) +
+                                (shaderType == 0u ? ".vs.bin" : ".ps.bin"));
+                        if (!error && !std::filesystem::exists(path))
+                        {
+                            std::ofstream stream(path, std::ios::binary);
+                            stream.write(reinterpret_cast<const char*>(guestBase +
+                                guestAddress + (offset + 3) * 4), byteSize);
+                        }
+                    }
                     if (shaderType == 0u)
                     {
                         activeVertexShaderHash_ = hash;
