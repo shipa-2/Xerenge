@@ -21,6 +21,7 @@
 #include <thread>
 #include <unordered_map>
 #include <unordered_set>
+#include <unordered_set>
 #include <vector>
 
 #ifdef XERENGE_HAS_PPC
@@ -207,10 +208,15 @@ thread_local uint32_t gPpcLastDataRoutine = 0;
 XenosGpu gXenosGpu;
 std::atomic<uint32_t> gGraphicsInterruptCallback = 0;
 std::atomic<uint32_t> gGraphicsInterruptContext = 0;
+std::atomic<uint32_t> gGraphicsWaitEvent = 0;
+std::atomic<bool> gGraphicsWaitEventSignaled = false;
 thread_local bool gInGraphicsInterruptCallback = false;
 
 void dispatchGraphicsInterrupt(uint8_t* base)
 {
+    const uint32_t waitEvent = gGraphicsWaitEvent.load(std::memory_order_acquire);
+    if (waitEvent != 0)
+        gGraphicsWaitEventSignaled.store(true, std::memory_order_release);
     const uint32_t callback = gGraphicsInterruptCallback.load(std::memory_order_acquire);
     const uint32_t context = gGraphicsInterruptContext.load(std::memory_order_acquire);
     if (callback == 0 || gInGraphicsInterruptCallback)
@@ -901,6 +907,15 @@ public:
         {
             const uint32_t outputHandle = ctx.r3.u32;
             const uint32_t handle = createObject(base);
+            if (handle != 0)
+            {
+                // Timer handles are waitable dispatcher objects.  Keep them
+                // in the same event table so NtSetTimerEx can wake the guest
+                // waiter instead of making it spin on synthetic timeouts.
+                timers_.insert(handle);
+                events_[handle] = false;
+                manualResetEvents_[handle] = false;
+            }
             if (outputHandle != 0)
                 storeU32(base, outputHandle, handle);
             ctx.r3.u32 = handle != 0 ? 0u : 0xC0000017u;
@@ -962,6 +977,8 @@ public:
             const uint32_t object = ctx.r3.u32;
             const auto ready = [&]
             {
+                if (object == gGraphicsWaitEvent.load(std::memory_order_acquire))
+                    return gGraphicsWaitEventSignaled.load(std::memory_order_acquire);
                 const auto event = events_.find(object);
                 if (event != events_.end() && event->second)
                     return true;
@@ -996,6 +1013,8 @@ public:
             service == "NtSetEvent")
         {
             const bool set = service != "KeResetEvent";
+            if (ctx.r3.u32 == gGraphicsWaitEvent.load(std::memory_order_acquire))
+                gGraphicsWaitEventSignaled.store(set, std::memory_order_release);
             const bool previous = events_[ctx.r3.u32];
             events_[ctx.r3.u32] = set;
             if (service == "NtSetEvent" && ctx.r4.u32 != 0)
@@ -1141,6 +1160,7 @@ public:
         {
             events_.erase(ctx.r3.u32);
             manualResetEvents_.erase(ctx.r3.u32);
+            timers_.erase(ctx.r3.u32);
             semaphores_.erase(ctx.r3.u32);
             semaphoreLimits_.erase(ctx.r3.u32);
             gXboxMedia.closeFile(ctx.r3.u32);
@@ -1149,9 +1169,14 @@ public:
         }
         if (service == "NtSetTimerEx" || service == "KeDelayExecutionThread")
         {
-            // These calls are used by the title's timer worker. Returning
-            // immediately makes the worker consume the entire host core and
-            // starves the guest thread that advances the game state.
+            if (service == "NtSetTimerEx" && timers_.find(ctx.r3.u32) != timers_.end())
+            {
+                events_[ctx.r3.u32] = true;
+                eventCondition_.notify_all();
+            }
+            // These calls are used by the title's timer worker. A short host
+            // delay preserves pacing while the signalled timer event lets the
+            // matching wait return STATUS_SUCCESS.
             lock.unlock();
             std::this_thread::sleep_for(std::chrono::milliseconds(1));
             ctx.r3.u32 = 0;
@@ -1998,6 +2023,13 @@ private:
     void launchGuestThread(uint8_t* base, uint32_t startupAddress, uint32_t startAddress,
         uint32_t startContext, uint32_t threadId)
     {
+        if (startAddress == 0x8238D6B8u)
+        {
+            // Vd's notification worker waits on the dispatcher event embedded
+            // at +0x20 in its context; it is not an NtCreateEvent handle.
+            gGraphicsWaitEvent.store(startContext + 32u, std::memory_order_release);
+            gGraphicsWaitEventSignaled.store(false, std::memory_order_release);
+        }
         std::thread([base, startupAddress, startAddress, startContext, threadId]
         {
             PPCContext threadContext{};
@@ -2119,6 +2151,7 @@ private:
     std::unordered_map<uint32_t, uint32_t> objects_;
     std::unordered_map<uint32_t, bool> events_;
     std::unordered_map<uint32_t, bool> manualResetEvents_;
+    std::unordered_set<uint32_t> timers_;
     std::unordered_map<uint32_t, int32_t> semaphores_;
     std::unordered_map<uint32_t, int32_t> semaphoreLimits_;
     std::condition_variable_any eventCondition_;
