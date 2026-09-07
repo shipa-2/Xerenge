@@ -388,9 +388,13 @@ bool XenosGpu::ensureGraphicsPipeline()
         !ensureShaderModule(pixelMicrocode->shaderHash))
         return false;
 
-    const uint64_t key = activeVertexShaderHash_ ^
+    const uint32_t blendControl = gpuRegisters_[0x2201u];
+    const uint32_t colorMask = gpuRegisters_[0x2104u] & 0xFu;
+    uint64_t key = activeVertexShaderHash_ ^
         (activePixelShaderHash_ + 0x9E3779B97F4A7C15ull +
             (activeVertexShaderHash_ << 6) + (activeVertexShaderHash_ >> 2));
+    key ^= uint64_t(blendControl) * 0xD6E8FEB86659FD93ull;
+    key ^= uint64_t(colorMask) * 0xA0761D6478BD642Full;
     if (vulkanPipelines_.find(key) != vulkanPipelines_.end())
         return true;
 
@@ -509,8 +513,58 @@ bool XenosGpu::ensureGraphicsPipeline()
         VK_STRUCTURE_TYPE_PIPELINE_MULTISAMPLE_STATE_CREATE_INFO};
     multisample.rasterizationSamples = VK_SAMPLE_COUNT_1_BIT;
     VkPipelineColorBlendAttachmentState blendAttachment{};
-    blendAttachment.colorWriteMask = VK_COLOR_COMPONENT_R_BIT | VK_COLOR_COMPONENT_G_BIT |
-        VK_COLOR_COMPONENT_B_BIT | VK_COLOR_COMPONENT_A_BIT;
+    if (colorMask & 0x1u) blendAttachment.colorWriteMask |= VK_COLOR_COMPONENT_R_BIT;
+    if (colorMask & 0x2u) blendAttachment.colorWriteMask |= VK_COLOR_COMPONENT_G_BIT;
+    if (colorMask & 0x4u) blendAttachment.colorWriteMask |= VK_COLOR_COMPONENT_B_BIT;
+    if (colorMask & 0x8u) blendAttachment.colorWriteMask |= VK_COLOR_COMPONENT_A_BIT;
+    auto blendFactor = [](uint32_t factor)
+    {
+        switch (factor)
+        {
+        case 0: return VK_BLEND_FACTOR_ZERO;
+        case 1: return VK_BLEND_FACTOR_ONE;
+        case 4: return VK_BLEND_FACTOR_SRC_COLOR;
+        case 5: return VK_BLEND_FACTOR_ONE_MINUS_SRC_COLOR;
+        case 6: return VK_BLEND_FACTOR_SRC_ALPHA;
+        case 7: return VK_BLEND_FACTOR_ONE_MINUS_SRC_ALPHA;
+        case 8: return VK_BLEND_FACTOR_DST_COLOR;
+        case 9: return VK_BLEND_FACTOR_ONE_MINUS_DST_COLOR;
+        case 10: return VK_BLEND_FACTOR_DST_ALPHA;
+        case 11: return VK_BLEND_FACTOR_ONE_MINUS_DST_ALPHA;
+        case 12: return VK_BLEND_FACTOR_CONSTANT_COLOR;
+        case 13: return VK_BLEND_FACTOR_ONE_MINUS_CONSTANT_COLOR;
+        case 14: return VK_BLEND_FACTOR_CONSTANT_ALPHA;
+        case 15: return VK_BLEND_FACTOR_ONE_MINUS_CONSTANT_ALPHA;
+        case 16: return VK_BLEND_FACTOR_SRC_ALPHA_SATURATE;
+        default: return VK_BLEND_FACTOR_ONE;
+        }
+    };
+    auto blendOp = [](uint32_t operation)
+    {
+        switch (operation)
+        {
+        case 1: return VK_BLEND_OP_SUBTRACT;
+        case 2: return VK_BLEND_OP_MIN;
+        case 3: return VK_BLEND_OP_MAX;
+        case 4: return VK_BLEND_OP_REVERSE_SUBTRACT;
+        default: return VK_BLEND_OP_ADD;
+        }
+    };
+    const uint32_t colorSource = blendControl & 0x1Fu;
+    const uint32_t colorOperation = (blendControl >> 5) & 0x7u;
+    const uint32_t colorDestination = (blendControl >> 8) & 0x1Fu;
+    const uint32_t alphaSource = (blendControl >> 16) & 0x1Fu;
+    const uint32_t alphaOperation = (blendControl >> 21) & 0x7u;
+    const uint32_t alphaDestination = (blendControl >> 24) & 0x1Fu;
+    blendAttachment.blendEnable =
+        colorSource != 1u || colorDestination != 0u || colorOperation != 0u ||
+        alphaSource != 1u || alphaDestination != 0u || alphaOperation != 0u;
+    blendAttachment.srcColorBlendFactor = blendFactor(colorSource);
+    blendAttachment.dstColorBlendFactor = blendFactor(colorDestination);
+    blendAttachment.colorBlendOp = blendOp(colorOperation);
+    blendAttachment.srcAlphaBlendFactor = blendFactor(alphaSource);
+    blendAttachment.dstAlphaBlendFactor = blendFactor(alphaDestination);
+    blendAttachment.alphaBlendOp = blendOp(alphaOperation);
     VkPipelineColorBlendStateCreateInfo blend{
         VK_STRUCTURE_TYPE_PIPELINE_COLOR_BLEND_STATE_CREATE_INFO};
     blend.attachmentCount = 1;
@@ -553,9 +607,13 @@ bool XenosGpu::drawVulkanTriangles(const float* vertices, uint32_t vertexCount,
     if (vertexCount < 3 || vertexCount % 3 != 0 || vertexCount > vertexCapacity ||
         !ensureGraphicsPipeline() || !initializeDrawResources())
         return false;
-    const uint64_t key = activeVertexShaderHash_ ^
+    const uint32_t blendControl = gpuRegisters_[0x2201u];
+    const uint32_t colorMask = gpuRegisters_[0x2104u] & 0xFu;
+    uint64_t key = activeVertexShaderHash_ ^
         (activePixelShaderHash_ + 0x9E3779B97F4A7C15ull +
             (activeVertexShaderHash_ << 6) + (activeVertexShaderHash_ >> 2));
+    key ^= uint64_t(blendControl) * 0xD6E8FEB86659FD93ull;
+    key ^= uint64_t(colorMask) * 0xA0761D6478BD642Full;
     const auto pipeline = vulkanPipelines_.find(key);
     if (pipeline == vulkanPipelines_.end())
         return false;
@@ -1532,6 +1590,36 @@ void XenosGpu::rasterizeDraw(uint8_t* guestBase, uint32_t initiator)
             nativeTextureKey ^= uint64_t(textureHeight);
             if (nativeTextureKey == 0)
                 nativeTextureKey = 1;
+            if (nativeTextureKey != vulkanTextureKey_ &&
+                std::getenv("XERENGE_XENOS_TEXTURE_STATS") != nullptr)
+            {
+                static std::atomic<uint32_t> textureStatsCount = 0;
+                if (textureStatsCount.fetch_add(1, std::memory_order_relaxed) < 32)
+                {
+                    size_t transparent = 0, opaque = 0, partial = 0;
+                    for (size_t texel = 0; texel < nativeTexture.size(); texel += 4)
+                    {
+                        transparent += nativeTexture[texel + 3] == 0;
+                        opaque += nativeTexture[texel + 3] == 255;
+                        partial += nativeTexture[texel + 3] != 0 &&
+                            nativeTexture[texel + 3] != 255;
+                    }
+                    float minU = nativeVertices[4], maxU = nativeVertices[4];
+                    float minV = nativeVertices[5], maxV = nativeVertices[5];
+                    for (size_t vertex = 1; vertex < nativeOrder.size(); ++vertex)
+                    {
+                        minU = std::min(minU, nativeVertices[vertex * 12 + 4]);
+                        maxU = std::max(maxU, nativeVertices[vertex * 12 + 4]);
+                        minV = std::min(minV, nativeVertices[vertex * 12 + 5]);
+                        maxV = std::max(maxV, nativeVertices[vertex * 12 + 5]);
+                    }
+                    std::cerr << "Xenos texture stats size=" << textureWidth << 'x'
+                              << textureHeight << " format=" << textureFormat
+                              << " alpha=" << transparent << '/' << partial << '/'
+                              << opaque << " uv=" << minU << ',' << minV << ".."
+                              << maxU << ',' << maxV << '\n';
+                }
+            }
             if (drawVulkanTriangles(nativeVertices.data(), nativeOrder.size(),
                     nativeTextureKey == vulkanTextureKey_
                         ? nullptr : nativeTexture.data(),
@@ -1887,6 +1975,7 @@ void XenosGpu::processBuffer(uint8_t* guestBase, uint32_t guestAddress,
                               << " color=0x" << gpuRegisters_[0x2001]
                               << " mask=0x" << gpuRegisters_[0x2104]
                               << " mode=0x" << gpuRegisters_[0x2208]
+                              << " blend=0x" << gpuRegisters_[0x2201]
                               << " depth=0x" << gpuRegisters_[0x2200]
                               << " initiator=0x" << initiator
                               << " prim=" << (initiator & 0x3Fu)
@@ -2140,6 +2229,7 @@ void XenosGpu::processRing(uint8_t* guestBase)
                               << " color=0x" << gpuRegisters_[0x2001]
                               << " mask=0x" << gpuRegisters_[0x2104]
                               << " mode=0x" << gpuRegisters_[0x2208]
+                              << " blend=0x" << gpuRegisters_[0x2201]
                               << " depth=0x" << gpuRegisters_[0x2200]
                               << " initiator=0x" << initiator
                               << " prim=" << (initiator & 0x3Fu)
