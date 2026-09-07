@@ -1059,6 +1059,18 @@ public:
             ctx.r3.u32 = 0;
             return;
         }
+        if (service == "NtClearEvent")
+        {
+            // NtClearEvent is the kernel side of the title's ResetEvent
+            // wrapper.  Resource IO uses this event as a completion latch;
+            // leaving it signalled makes the file state machine repeatedly
+            // re-enter UpdateIO instead of waiting for the next request.
+            if (ctx.r3.u32 == gGraphicsWaitEvent.load(std::memory_order_acquire))
+                gGraphicsWaitEventSignaled.store(false, std::memory_order_release);
+            events_[ctx.r3.u32] = false;
+            ctx.r3.u32 = 0;
+            return;
+        }
         if (service == "KeReleaseSemaphore" || service == "NtReleaseSemaphore")
         {
             const uint32_t adjustment = service == "KeReleaseSemaphore"
