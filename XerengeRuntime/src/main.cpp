@@ -250,9 +250,10 @@ extern "C" void PPCTraceStore(uint32_t address, uint32_t value, uint64_t lr)
 
 extern "C" void PPCTraceFunction(uint32_t address, PPCContext& ctx, uint8_t* base)
 {
+    static const bool entryTraceEnabled = std::getenv("XERENGE_ENTRY_TRACE") != nullptr;
     gPpcCurrentFunction = address;
     gPpcCurrentCaller = static_cast<uint32_t>(ctx.lr);
-    if (gPpcIsEntryThread)
+    if (gPpcIsEntryThread && entryTraceEnabled)
     {
         gPpcEntryFunction.store(address, std::memory_order_relaxed);
         gPpcEntryCaller.store(static_cast<uint32_t>(ctx.lr), std::memory_order_relaxed);
@@ -280,7 +281,9 @@ extern "C" void PPCTraceFunction(uint32_t address, PPCContext& ctx, uint8_t* bas
                   << " emitter+64=0x" << (ctx.r4.u32 != 0 ? loadGuest(ctx.r4.u32 + 64) : 0)
                   << std::dec << '\n';
     }
-    const uint64_t callCount = gPpcFunctionCalls.fetch_add(1, std::memory_order_relaxed) + 1;
+    const bool traceEnabled = gPpcTraceEnabled.load(std::memory_order_relaxed);
+    const uint64_t callCount = traceEnabled
+        ? gPpcFunctionCalls.fetch_add(1, std::memory_order_relaxed) + 1 : 0;
     if (address == 0x82355500u && ctx.r3.u32 != 0)
     {
         // CGtResourceManager::Update derives a bucket descriptor from the
@@ -311,7 +314,7 @@ extern "C" void PPCTraceFunction(uint32_t address, PPCContext& ctx, uint8_t* bas
             }
         }
     }
-    if (gPpcTraceEnabled.load(std::memory_order_relaxed) && (callCount % 10000) == 0)
+    if (traceEnabled && (callCount % 10000) == 0)
     {
         std::cerr << "guest function calls=" << callCount << " current=0x"
                   << std::hex << address << std::dec << '\n';
@@ -324,7 +327,7 @@ extern "C" void PPCTraceFunction(uint32_t address, PPCContext& ctx, uint8_t* bas
                       << " ctx_lr=0x" << static_cast<uint32_t>(ctx.lr) << std::dec << '\n';
         }
     }
-    if (!gPpcTraceEnabled.load(std::memory_order_relaxed))
+    if (!traceEnabled)
         return;
 
     if (address == 0x825AE708u)
