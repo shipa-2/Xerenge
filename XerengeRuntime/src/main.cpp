@@ -1604,8 +1604,44 @@ public:
             if (ctx.r9.u32 != 0)
                 storeU32(base, ctx.r9.u32, entrySize * count);
             if (ctx.r10.u32 != 0)
-                storeU32(base, ctx.r10.u32, createObject(base));
+            {
+                const uint32_t enumerator = createObject(base);
+                storeU32(base, ctx.r10.u32, enumerator);
+                achievementEnumerators_.emplace(enumerator, 0);
+            }
             ctx.r3.u32 = 0;
+            return;
+        }
+        if (service == "XamEnumerate")
+        {
+            // The frontend asks for the first achievement page while building
+            // the local profile screen.  XamEnumerate receives the output
+            // buffer in r5, its size in r6, and the returned item count in
+            // r7 after the title's small argument-shuffling wrapper.
+            const uint32_t handle = ctx.r3.u32;
+            const auto enumerator = achievementEnumerators_.find(handle);
+            if (enumerator != achievementEnumerators_.end() &&
+                ctx.r5.u32 >= 0x60000000u && ctx.r5.u32 < 0x80000000u &&
+                ctx.r6.u32 <= 0x1000000u)
+            {
+                if (enumerator->second == 0)
+                {
+                    if (ctx.r6.u32 != 0)
+                        std::memset(base + ctx.r5.u32, 0, ctx.r6.u32);
+                    if (ctx.r7.u32 >= 0x60000000u && ctx.r7.u32 < 0x80000000u)
+                        storeU32(base, ctx.r7.u32, 1);
+                    enumerator->second = 1;
+                    ctx.r3.u32 = 0;
+                }
+                else
+                {
+                    if (ctx.r7.u32 >= 0x60000000u && ctx.r7.u32 < 0x80000000u)
+                        storeU32(base, ctx.r7.u32, 0);
+                    ctx.r3.u32 = 259; // ERROR_NO_MORE_FILES.
+                }
+                return;
+            }
+            ctx.r3.u32 = 0xC000000Du; // STATUS_INVALID_PARAMETER.
             return;
         }
         if (service == "XamNotifyCreateListener")
@@ -2304,6 +2340,7 @@ private:
     std::unordered_map<uint32_t, uint32_t> threadSuspendCounts_;
     std::unordered_map<uint32_t, std::shared_ptr<std::recursive_mutex>> criticalSections_;
     std::unordered_map<uint32_t, std::deque<std::pair<uint32_t, uint32_t>>> notificationQueues_;
+    std::unordered_map<uint32_t, uint32_t> achievementEnumerators_;
     bool vtableAllocated_ = false;
     std::array<bool, 64> tlsUsed_{};
     std::atomic<uint32_t> nextThreadId_{1};
