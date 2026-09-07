@@ -2,9 +2,13 @@
 
 #include <alsa/asoundlib.h>
 #include <array>
+#include <condition_variable>
 #include <cstdlib>
 #include <cstring>
+#include <deque>
 #include <iostream>
+#include <mutex>
+#include <thread>
 
 namespace
 {
@@ -25,12 +29,24 @@ float guestFloat(const uint8_t* base, uint32_t address)
 struct XAudioBackend::State
 {
     snd_pcm_t* pcm = nullptr;
+    std::mutex mutex;
+    std::condition_variable condition;
+    std::deque<std::array<float, kFrames * 2>> queue;
+    bool stop = false;
+    std::thread writer;
 };
 
 XAudioBackend::XAudioBackend() : state_(std::make_unique<State>()) {}
 
 XAudioBackend::~XAudioBackend()
 {
+    {
+        std::lock_guard lock(state_->mutex);
+        state_->stop = true;
+    }
+    state_->condition.notify_all();
+    if (state_->writer.joinable())
+        state_->writer.join();
     if (state_->pcm != nullptr)
     {
         snd_pcm_drain(state_->pcm);
@@ -71,6 +87,46 @@ void XAudioBackend::start()
     }
     snd_pcm_prepare(state_->pcm);
     active_ = true;
+    state_->writer = std::thread([this]
+    {
+        for (;;)
+        {
+            std::array<float, kFrames * 2> frame{};
+            {
+                std::unique_lock lock(state_->mutex);
+                state_->condition.wait(lock, [this]
+                {
+                    return state_->stop || !state_->queue.empty();
+                });
+                if (state_->queue.empty() && state_->stop)
+                    return;
+                frame = std::move(state_->queue.front());
+                state_->queue.pop_front();
+            }
+
+            size_t writtenFrames = 0;
+            while (writtenFrames < kFrames)
+            {
+                const auto* samples = frame.data() + writtenFrames * 2;
+                const snd_pcm_sframes_t written = snd_pcm_writei(
+                    state_->pcm, samples, kFrames - writtenFrames);
+                if (written > 0)
+                {
+                    writtenFrames += static_cast<size_t>(written);
+                    continue;
+                }
+                if (written == -EAGAIN)
+                {
+                    snd_pcm_wait(state_->pcm, 20);
+                    continue;
+                }
+                const int recovered = snd_pcm_recover(
+                    state_->pcm, static_cast<int>(written), 1);
+                if (recovered < 0)
+                    break;
+            }
+        }
+    });
     std::cerr << "XAudio ALSA sink ready device=" << device
               << " rate=48000 channels=2\n";
 }
@@ -91,9 +147,12 @@ void XAudioBackend::submitGuestFrame(const uint8_t* guestBase, uint32_t guestAdd
         stereo[2 * frame] = left + 0.70710678f * (center + backLeft);
         stereo[2 * frame + 1] = right + 0.70710678f * (center + backRight);
     }
-    const snd_pcm_sframes_t written = snd_pcm_writei(state_->pcm, stereo.data(), kFrames);
-    if (written == -EPIPE || written == -ESTRPIPE)
-        snd_pcm_prepare(state_->pcm);
-    else if (written < 0 && written != -EAGAIN)
-        snd_pcm_recover(state_->pcm, static_cast<int>(written), 1);
+    {
+        std::lock_guard lock(state_->mutex);
+        constexpr size_t kMaxQueuedFrames = 32;
+        if (state_->queue.size() >= kMaxQueuedFrames)
+            state_->queue.pop_front();
+        state_->queue.push_back(std::move(stereo));
+    }
+    state_->condition.notify_one();
 }
