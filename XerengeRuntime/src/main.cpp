@@ -264,6 +264,22 @@ extern "C" void PPCTraceFunction(uint32_t address, PPCContext& ctx, uint8_t* bas
         gPpcLastDataRoutineArgs = {
             ctx.r3.u32, ctx.r4.u32, ctx.r5.u32, ctx.r6.u32, ctx.r7.u32};
     }
+    if (address == 0x825857A8u && std::getenv("XERENGE_AUDIO_TRACE") != nullptr)
+    {
+        auto loadGuest = [base](uint32_t address)
+        {
+            uint32_t value = 0;
+            std::memcpy(&value, base + address, sizeof(value));
+            return __builtin_bswap32(value);
+        };
+        std::cerr << "X3DAudioCalculate entry r3=0x" << std::hex << ctx.r3.u32
+                  << " r4=0x" << ctx.r4.u32 << " r5=0x" << ctx.r5.u32
+                  << " r6=0x" << ctx.r6.u32
+                  << " emitter+52=0x" << (ctx.r4.u32 != 0 ? loadGuest(ctx.r4.u32 + 52) : 0)
+                  << " emitter+60=0x" << (ctx.r4.u32 != 0 ? loadGuest(ctx.r4.u32 + 60) : 0)
+                  << " emitter+64=0x" << (ctx.r4.u32 != 0 ? loadGuest(ctx.r4.u32 + 64) : 0)
+                  << std::dec << '\n';
+    }
     const uint64_t callCount = gPpcFunctionCalls.fetch_add(1, std::memory_order_relaxed) + 1;
     if (address == 0x82355500u && ctx.r3.u32 != 0)
     {
@@ -1513,6 +1529,9 @@ public:
             if (std::getenv("XERENGE_AUTO_START") != nullptr &&
                 packet % 300u >= 20u && packet % 300u < 24u)
                 buttons |= 0x0010u;
+            if (std::getenv("XERENGE_AUTO_A") != nullptr &&
+                packet % 300u >= 20u && packet % 300u < 24u)
+                buttons |= 0x1000u;
             storeU16(base, state + 4, buttons);
             ctx.r3.u32 = 0; // ERROR_SUCCESS.
             return;
@@ -2078,6 +2097,40 @@ extern "C" void sub_825C614C(PPCContext& ctx, uint8_t* base)
     gXboxServices.invoke("XNotifyGetNext", ctx, base);
 }
 
+extern "C" void __real___imp__sub_825857A8(PPCContext& ctx, uint8_t* base);
+
+extern "C" void __wrap___imp__sub_825857A8(PPCContext& ctx, uint8_t* base)
+{
+    // X3DAudioCalculate is title code, but early Burnout emitters can carry
+    // stale optional distance-curve pointers.  The caller initializes its
+    // DSP output record to zero before invoking us; skip only this malformed
+    // audio source and keep valid emitters on the translated implementation.
+    const auto isGuestPointer = [](uint32_t address)
+    {
+        return address == 0 ||
+            (address >= 0x60000000u && address < 0x80000000u) ||
+            (address >= 0x82000000u && address < 0x90000000u);
+    };
+    auto loadGuest = [base](uint32_t address)
+    {
+        uint32_t value = 0;
+        std::memcpy(&value, base + address, sizeof(value));
+        return __builtin_bswap32(value);
+    };
+    const uint32_t emitter = ctx.r4.u32;
+    const bool validEmitter = isGuestPointer(emitter) && emitter != 0 &&
+        isGuestPointer(loadGuest(emitter + 60)) &&
+        isGuestPointer(loadGuest(emitter + 64));
+    if (!validEmitter)
+    {
+        if (std::getenv("XERENGE_AUDIO_TRACE") != nullptr)
+            std::cerr << "X3DAudioCalculate skipped malformed emitter=0x"
+                      << std::hex << emitter << std::dec << '\n';
+        return;
+    }
+    __real___imp__sub_825857A8(ctx, base);
+}
+
 extern "C" void PPCUnknownIndirectTrap(uint32_t address, PPCContext& ctx, uint8_t* base)
 {
     if (ctx.lr == 0x82095B04u)
@@ -2128,6 +2181,19 @@ extern "C" void PPCUnknownIndirectTrap(uint32_t address, PPCContext& ctx, uint8_
         ctx.r3.u32 = 0;
         return;
     }
+    if (ctx.lr == 0x824236B0u &&
+        (address < PPC_IMAGE_BASE || address >= PPC_CODE_BASE))
+    {
+        // TimerThreadProc walks a fixed eight-entry callback array.  During
+        // early frontend startup the tail can contain stale words rather
+        // than executable PPC addresses.  Return from this slot and advance
+        // the cursor to the final entry so the worker can finish its pass;
+        // genuine callbacks are dispatched by PPCDispatchIndirect before
+        // reaching this path.
+        ctx.r31.u32 = ctx.r30.u32 + 28u;
+        ctx.r3.u32 = 0;
+        return;
+    }
     if (ctx.lr == 0x8234796Cu &&
         ctx.r31.u32 >= 0x82000000u && ctx.r31.u32 < 0x90000000u)
     {
@@ -2138,6 +2204,23 @@ extern "C" void PPCUnknownIndirectTrap(uint32_t address, PPCContext& ctx, uint8_
         // The current runtime has no audio listener backend, so terminate the
         // list after the first invalid entry and let the graphics path run.
         XboxServiceLayer::writeGuestU32(base, ctx.r31.u32 + 8u, 0u);
+        ctx.r3.u32 = 0;
+        return;
+    }
+    if (ctx.lr == 0x82348B20u)
+    {
+        // CGtSoundGtfsFile::Read reaches an optional platform sound-file
+        // backend through the object at +8.  The retail frontend can issue
+        // this request before the XAudio service has created that backend;
+        // the null object's first words then look like an indirect target
+        // (currently 0x630).  Complete the read as an empty audio block so
+        // the sound manager can advance its state and the title can keep
+        // loading graphics.
+        if (ctx.r4.u32 >= 0x60000000u && ctx.r4.u32 < 0x80000000u &&
+            ctx.r5.u32 <= 0x1000000u)
+        {
+            std::memset(base + ctx.r4.u32, 0, ctx.r5.u32);
+        }
         ctx.r3.u32 = 0;
         return;
     }

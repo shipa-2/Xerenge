@@ -84,6 +84,12 @@ if(XERENGE_PPC_DIRECTORY)
         -include "${CMAKE_CURRENT_SOURCE_DIR}/src/ppc_hooks.h")
     add_library(Xerenge::Ppc ALIAS xerenge-ppc)
     target_link_libraries(xerenge-runtime PRIVATE Xerenge::Ppc)
+    # Keep malformed title-side X3DAudio emitters from reaching the generated
+    # distance-curve helper.  The generated PPC wrapper calls the imported
+    # symbol directly, so an ordinary C++ overload is not an interposition
+    # point; use the linker wrap facility instead.
+    target_link_options(xerenge-runtime PRIVATE
+        "LINKER:--wrap=__imp__sub_825857A8")
     target_include_directories(xerenge-runtime PRIVATE
         "${XERENGE_PPC_DIRECTORY}"
         "${CMAKE_CURRENT_SOURCE_DIR}/../XenonRecomp/thirdparty/simde")

@@ -1472,7 +1472,7 @@ void XenosGpu::rasterizeDraw(uint8_t* guestBase, uint32_t initiator)
                 colors[2][c] = static_cast<uint8_t>((2u * colors[0][c] + colors[1][c]) / 3u);
             for (uint32_t c = 0; c < 3; ++c)
                 colors[3][c] = static_cast<uint8_t>((colors[0][c] + 2u * colors[1][c]) / 3u);
-            const uint32_t colorIndex = (uint32_t(block[12 + ((local >> 2) * 2)]) >>
+            const uint32_t colorIndex = (uint32_t(block[12 + (local >> 2)]) >>
                 ((local & 3u) * 2u)) & 3u;
             for (uint32_t c = 0; c < 3; ++c)
                 result[c] = colors[colorIndex][c];
