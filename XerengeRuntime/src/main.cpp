@@ -19,6 +19,7 @@
 #include <string>
 #include <thread>
 #include <unordered_map>
+#include <unordered_set>
 #include <vector>
 
 #ifdef XERENGE_HAS_PPC
@@ -184,7 +185,7 @@ private:
 #endif
 
 #ifdef XERENGE_HAS_PPC
-uint64_t gPpcServiceCalls = 0;
+std::atomic<uint64_t> gPpcServiceCalls = 0;
 uint64_t gPpcUnknownIndirectCalls = 0;
 std::atomic<uint32_t> gPpcLastFunction = 0;
 std::atomic<uint64_t> gPpcFunctionTransitions = 0;
@@ -601,6 +602,23 @@ extern "C" uint32_t PPCGuestClock()
     return guestClock.fetch_add(1000000, std::memory_order_relaxed) + 1000000;
 }
 
+uint64_t hostTimeBaseFrequency()
+{
+    static const uint64_t frequency = []
+    {
+        const auto startTime = std::chrono::steady_clock::now();
+        const uint64_t startTicks = __rdtsc();
+        std::this_thread::sleep_for(std::chrono::milliseconds(20));
+        const uint64_t elapsedTicks = __rdtsc() - startTicks;
+        const auto elapsedNanoseconds = std::chrono::duration_cast<std::chrono::nanoseconds>(
+            std::chrono::steady_clock::now() - startTime).count();
+        return elapsedNanoseconds > 0
+            ? elapsedTicks * 1000000000ull / static_cast<uint64_t>(elapsedNanoseconds)
+            : 50000000ull;
+    }();
+    return frequency;
+}
+
 extern "C" void PPCGuestStoreU32(uint8_t* base, uint32_t address, uint32_t value)
 {
     const uint32_t watchedResourceState =
@@ -700,6 +718,19 @@ public:
         ++gPpcServiceCalls;
         if (service.compare(0, 7, "__imp__") == 0)
             service.remove_prefix(7);
+
+        if (std::getenv("XERENGE_SERVICE_TRACE_UNIQUE") != nullptr)
+        {
+            static std::unordered_set<std::string> seenCalls;
+            const std::string key = std::string(service) + '@' + std::to_string(ctx.lr);
+            if (seenCalls.emplace(key).second)
+                std::cerr << "Xbox service first call " << service
+                          << " caller=0x" << std::hex << ctx.lr
+                          << " r3=0x" << ctx.r3.u32 << " r4=0x" << ctx.r4.u32
+                          << " r5=0x" << ctx.r5.u32 << " r6=0x" << ctx.r6.u32
+                          << " r7=0x" << ctx.r7.u32 << " r8=0x" << ctx.r8.u32
+                          << " r9=0x" << ctx.r9.u32 << std::dec << '\n';
+        }
 
         // Keep service discovery useful without turning a boot trace into an
         // unbounded log. A successful stub return can otherwise hide the
@@ -913,14 +944,16 @@ public:
                     storeU32(base, ctx.r6.u32 + 0, 0);
                     storeU32(base, ctx.r6.u32 + 4, 1);
                 }
-                if (std::getenv("XERENGE_PPC_TRACE") != nullptr)
+                if (std::getenv("XERENGE_PPC_TRACE") != nullptr ||
+                    std::getenv("XERENGE_MEDIA_TRACE") != nullptr)
                     std::cerr << "opened media file '" << path << "' handle=0x"
                               << std::hex << handle << " size=0x" << size << std::dec << '\n';
                 ctx.r3.u32 = 0;
             }
             else
             {
-                if (std::getenv("XERENGE_PPC_TRACE") != nullptr)
+                if (std::getenv("XERENGE_PPC_TRACE") != nullptr ||
+                    std::getenv("XERENGE_MEDIA_TRACE") != nullptr)
                     std::cerr << "media file not found: '" << path << "'\n";
                 ctx.r3.u32 = 0xC0000034u;
             }
@@ -1023,12 +1056,10 @@ public:
         }
         if (service == "KeQueryPerformanceFrequency")
         {
-            if (ctx.r3.u32 != 0)
-            {
-                storeU32(base, ctx.r3.u32 + 0, 0);
-                storeU32(base, ctx.r3.u32 + 4, 10000000u);
-            }
-            ctx.r3.u32 = 0;
+            // The kernel export returns a 64-bit LARGE_INTEGER in r3. The
+            // generated PPC currently lowers mftb to the host TSC, so report
+            // the matching calibrated frequency as well.
+            ctx.r3.u64 = hostTimeBaseFrequency();
             return;
         }
         if (service == "KeQuerySystemTime")
@@ -1336,7 +1367,7 @@ public:
             storeU32(base, state, packet);
             uint16_t buttons = gInputButtons.load(std::memory_order_relaxed);
             if (std::getenv("XERENGE_AUTO_START") != nullptr &&
-                packet >= 20u && packet < 24u)
+                packet % 300u >= 20u && packet % 300u < 24u)
                 buttons |= 0x0010u;
             storeU16(base, state + 4, buttons);
             ctx.r3.u32 = 0; // ERROR_SUCCESS.
@@ -1378,11 +1409,31 @@ public:
         if (service == "RtlInitializeCriticalSection")
         {
             clear(base, ctx.r3.u32, 0x20);
+            criticalSections_[ctx.r3.u32] = std::make_shared<std::recursive_mutex>();
             ctx.r3.u32 = 0;
             return;
         }
-        if (service == "RtlEnterCriticalSection" || service == "RtlLeaveCriticalSection")
+        if (service == "RtlEnterCriticalSection")
         {
+            const uint32_t address = ctx.r3.u32;
+            auto& entry = criticalSections_[address];
+            if (!entry)
+                entry = std::make_shared<std::recursive_mutex>();
+            const auto criticalSection = entry;
+            lock.unlock();
+            criticalSection->lock();
+            ctx.r3.u32 = 0;
+            return;
+        }
+        if (service == "RtlLeaveCriticalSection")
+        {
+            const auto it = criticalSections_.find(ctx.r3.u32);
+            if (it != criticalSections_.end())
+            {
+                const auto criticalSection = it->second;
+                lock.unlock();
+                criticalSection->unlock();
+            }
             ctx.r3.u32 = 0;
             return;
         }
@@ -1571,7 +1622,7 @@ public:
             return;
         }
 
-        if (gPpcServiceCalls <= 40)
+        if (gPpcServiceCalls.load(std::memory_order_relaxed) <= 40)
             std::cerr << "unimplemented Xbox service: " << service << '\n';
         ctx.r3.u32 = 0xC0000001u; // STATUS_UNSUCCESSFUL
     }
@@ -1811,6 +1862,7 @@ private:
     std::unordered_map<uint32_t, uint32_t> allocations_;
     std::unordered_map<uint32_t, uint32_t> objects_;
     std::unordered_map<uint32_t, bool> events_;
+    std::unordered_map<uint32_t, std::shared_ptr<std::recursive_mutex>> criticalSections_;
     bool vtableAllocated_ = false;
     std::array<uint32_t, 64> tlsSlots_{};
     std::array<bool, 64> tlsUsed_{};
@@ -1871,14 +1923,16 @@ extern "C" void PPCUnknownIndirectTrap(uint32_t address, PPCContext& ctx, uint8_
         ctx.r3.u32 = 0;
         return;
     }
-    if (ctx.lr == 0x8256424Cu && ctx.r3.u32 == 0x49242492u)
+    if (ctx.lr == 0x8256424Cu)
     {
-        // The early resource manager contains an uninitialized platform
-        // object marker in this slot. Supply a real synthetic Xbox object so
-        // the method call returns through the normal vtable service path.
-        PPCContext objectContext = ctx;
-        objectContext.r3.u32 = 0;
-        ctx.r3.u32 = gXboxServices.materializeNullObject(objectContext, base);
+        // This wrapper invokes the platform input object's GetState method.
+        // Several early FE owners leave their optional input-device field
+        // uninitialized, so the virtual call resolves through random data.
+        // Report an idle device and initialize the byte consumed by both
+        // callers instead of allowing stack garbage to steer the FE state.
+        if (ctx.r4.u32 >= 0x60000000u && ctx.r4.u32 < 0x80000000u)
+            base[ctx.r4.u32] = 0;
+        ctx.r3.u32 = 0;
         return;
     }
     if (ctx.lr == 0x825B3AA0u && ctx.r30.u32 == 0x826AFCD4u)
@@ -2713,7 +2767,8 @@ int main(int argc, char** argv)
             if (!glfwInit())
             {
                 guestThread.join();
-                std::cout << "PPC entry point returned after " << gPpcServiceCalls
+                std::cout << "PPC entry point returned after "
+                          << gPpcServiceCalls.load(std::memory_order_relaxed)
                           << " service calls\n";
                 return 0;
             }
@@ -2729,8 +2784,16 @@ int main(int argc, char** argv)
             glfwSwapInterval(1);
             glPixelStorei(GL_UNPACK_ALIGNMENT, 1);
             bool readbackReported = false;
+            bool guestReturnReported = false;
             while (!glfwWindowShouldClose(window))
             {
+                if (!guestReturnReported && guestReturned.load(std::memory_order_acquire))
+                {
+                    std::cerr << "PPC entry thread returned after "
+                              << gPpcServiceCalls.load(std::memory_order_relaxed)
+                              << " service calls\n";
+                    guestReturnReported = true;
+                }
                 const auto pixels = gXenosGpu.framebufferCopy();
                 glViewport(0, 0, 1280, 720);
                 glClearColor(0.0f, 0.0f, 0.0f, 1.0f);
