@@ -1904,8 +1904,35 @@ extern "C" void sub_825C614C(PPCContext& ctx, uint8_t* base)
 
 extern "C" void PPCUnknownIndirectTrap(uint32_t address, PPCContext& ctx, uint8_t* base)
 {
+    if (ctx.lr == 0x82095B04u)
+    {
+        // The frontend bootstrap polls its platform resource object with
+        // command 5 until the object signals completion in this byte. The
+        // synthetic service object has no asynchronous backend, so complete
+        // the request when its callback is dispatched.
+        base[0x82D40F09u] = 1;
+        ctx.r3.u32 = 0;
+        return;
+    }
     if (gXboxServices.invokeCallback(address, ctx))
         return;
+    if (address == 0x80000000u && ctx.lr == 0x82095858u)
+    {
+        // Optional platform pre-poll callback. The retail BSS uses the Xenon
+        // sentinel until a platform implementation is installed.
+        ctx.r3.u32 = 0;
+        return;
+    }
+    if (ctx.lr == 0x824236B0u && ctx.r31.u32 >= 0x82D3965Cu &&
+        ctx.r31.u32 < 0x82D3967Cu)
+    {
+        // The timer worker walks eight optional callback slots. Empty slots
+        // may retain their own BSS address after early object setup; that is
+        // a list sentinel, not executable PPC code.
+        XboxServiceLayer::writeGuestU32(base, ctx.r31.u32, 0u);
+        ctx.r3.u32 = 0;
+        return;
+    }
     if (address == 0x80000000u && ctx.lr == 0x82381170u)
     {
         // The title leaves this optional platform handler at the Xenon
@@ -1949,37 +1976,6 @@ extern "C" void PPCUnknownIndirectTrap(uint32_t address, PPCContext& ctx, uint8_
         ctx.r31.u32 = ctx.r30.u32;
         ctx.r3.u32 = 0;
         return;
-    }
-    if (ctx.lr == 0x82095B04u && ctx.r3.u32 == 0)
-    {
-        // sub_82095AEC invokes the title's resource object through the slot
-        // at r24+3852.  On the retail path that slot is populated by an
-        // earlier platform constructor; the first worker can reach the call
-        // before the constructor has supplied its vtable.  The resulting
-        // null vtable read turns bytes at guest address zero into targets
-        // such as 0x2d0. Materialize the object in the actual slot so later
-        // calls use the normal synthetic vtable dispatch.
-        const uint32_t slot = ctx.r24.u32 + 3852u;
-        if (ctx.r24.u32 >= 0x60000000u && slot >= ctx.r24.u32)
-        {
-            PPCContext objectContext = ctx;
-            objectContext.r3.u32 = slot;
-            ctx.r3.u32 = gXboxServices.materializeNullObject(objectContext, base);
-            return;
-        }
-    }
-    if (ctx.lr == 0x82095B04u &&
-        ctx.r3.u32 >= 0x60000000u && ctx.r3.u32 < 0x80000000u)
-    {
-        // The resource bootstrap can receive a guest-heap platform object
-        // before its vtable has been installed.  Its next instructions load
-        // [object+0], then call slot 24; install the synthetic Xbox vtable at
-        // that exact object so the call returns through invokeCallback.
-        if (gXboxServices.materializeGuestObject(ctx.r3.u32, base))
-        {
-            ctx.r3.u32 = 0;
-            return;
-        }
     }
     if (address != 0 && ctx.r3.u32 >= 0x82000000u && ctx.r3.u32 < 0x90000000u)
     {
