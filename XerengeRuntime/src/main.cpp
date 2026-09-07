@@ -191,8 +191,13 @@ std::atomic<uint32_t> gPpcLastFunction = 0;
 std::atomic<uint64_t> gPpcFunctionTransitions = 0;
 std::atomic<uint64_t> gPpcFunctionCalls = 0;
 std::atomic<bool> gPpcTraceEnabled = false;
+std::atomic<uint32_t> gPpcEntryFunction = 0;
+std::atomic<uint32_t> gPpcEntryCaller = 0;
+std::atomic<uint64_t> gPpcEntryFunctionCalls = 0;
 std::atomic<uint32_t> gResourceStateWatchAddress = 0;
 std::atomic<uint16_t> gInputButtons = 0;
+thread_local bool gPpcIsEntryThread = false;
+thread_local std::array<uint32_t, 64> gPpcTlsValues{};
 thread_local uint32_t gPpcCurrentFunction = 0;
 thread_local uint32_t gPpcCurrentCaller = 0;
 thread_local std::array<uint32_t, 5> gPpcLastDataRoutineArgs{};
@@ -245,6 +250,12 @@ extern "C" void PPCTraceFunction(uint32_t address, PPCContext& ctx, uint8_t* bas
 {
     gPpcCurrentFunction = address;
     gPpcCurrentCaller = static_cast<uint32_t>(ctx.lr);
+    if (gPpcIsEntryThread)
+    {
+        gPpcEntryFunction.store(address, std::memory_order_relaxed);
+        gPpcEntryCaller.store(static_cast<uint32_t>(ctx.lr), std::memory_order_relaxed);
+        gPpcEntryFunctionCalls.fetch_add(1, std::memory_order_relaxed);
+    }
     if (address == 0x825847A8u || address == 0x82584E38u)
     {
         gPpcLastDataRoutine = address;
@@ -966,11 +977,6 @@ public:
             // the preserved r8/r9 pair; r7 is its IO request structure.
             const bool ok = gXboxMedia.readFile(ctx.r3.u32, base + ctx.r8.u32,
                 ctx.r9.u32, bytesRead);
-            if (ctx.r6.u32 != 0)
-            {
-                storeU32(base, ctx.r6.u32 + 0, ok ? 0u : 0xC0000008u);
-                storeU32(base, ctx.r6.u32 + 4, bytesRead);
-            }
             if (ctx.r7.u32 != 0)
             {
                 storeU32(base, ctx.r7.u32 + 0, ok ? 0u : 0xC0000008u);
@@ -1439,12 +1445,12 @@ public:
         }
         if (service == "KeTlsAlloc")
         {
-            for (uint32_t index = 0; index < tlsSlots_.size(); ++index)
+            for (uint32_t index = 0; index < tlsUsed_.size(); ++index)
             {
                 if (!tlsUsed_[index])
                 {
                     tlsUsed_[index] = true;
-                    tlsSlots_[index] = 0;
+                    gPpcTlsValues[index] = 0;
                     ctx.r3.u32 = index;
                     return;
                 }
@@ -1454,25 +1460,25 @@ public:
         }
         if (service == "KeTlsFree")
         {
-            if (ctx.r3.u32 < tlsSlots_.size())
+            if (ctx.r3.u32 < tlsUsed_.size())
             {
                 tlsUsed_[ctx.r3.u32] = false;
-                tlsSlots_[ctx.r3.u32] = 0;
+                gPpcTlsValues[ctx.r3.u32] = 0;
             }
             ctx.r3.u32 = 1;
             return;
         }
         if (service == "KeTlsSetValue")
         {
-            if (ctx.r3.u32 < tlsSlots_.size() && tlsUsed_[ctx.r3.u32])
-                tlsSlots_[ctx.r3.u32] = ctx.r4.u32;
+            if (ctx.r3.u32 < gPpcTlsValues.size() && tlsUsed_[ctx.r3.u32])
+                gPpcTlsValues[ctx.r3.u32] = ctx.r4.u32;
             ctx.r3.u32 = 1;
             return;
         }
         if (service == "KeTlsGetValue")
         {
-            ctx.r3.u32 = ctx.r3.u32 < tlsSlots_.size() && tlsUsed_[ctx.r3.u32]
-                ? tlsSlots_[ctx.r3.u32] : 0;
+            ctx.r3.u32 = ctx.r3.u32 < gPpcTlsValues.size() && tlsUsed_[ctx.r3.u32]
+                ? gPpcTlsValues[ctx.r3.u32] : 0;
             return;
         }
         if (service == "KeGetCurrentProcessType")
@@ -1864,7 +1870,6 @@ private:
     std::unordered_map<uint32_t, bool> events_;
     std::unordered_map<uint32_t, std::shared_ptr<std::recursive_mutex>> criticalSections_;
     bool vtableAllocated_ = false;
-    std::array<uint32_t, 64> tlsSlots_{};
     std::array<bool, 64> tlsUsed_{};
     std::atomic<uint32_t> nextThreadId_{1};
     uint32_t inputPacketNumber_ = 1;
@@ -2760,6 +2765,7 @@ int main(int argc, char** argv)
             std::atomic<bool> guestReturned = false;
             std::thread guestThread([guestPtr = guest.get(), &guestReturned]
             {
+                gPpcIsEntryThread = true;
                 guestPtr->invokeEntryPoint();
                 guestReturned.store(true, std::memory_order_release);
             });
@@ -2785,6 +2791,8 @@ int main(int argc, char** argv)
             glPixelStorei(GL_UNPACK_ALIGNMENT, 1);
             bool readbackReported = false;
             bool guestReturnReported = false;
+            uint64_t lastEntryTraceCalls = 0;
+            auto nextEntryTrace = std::chrono::steady_clock::now() + std::chrono::seconds(1);
             while (!glfwWindowShouldClose(window))
             {
                 if (!guestReturnReported && guestReturned.load(std::memory_order_acquire))
@@ -2793,6 +2801,18 @@ int main(int argc, char** argv)
                               << gPpcServiceCalls.load(std::memory_order_relaxed)
                               << " service calls\n";
                     guestReturnReported = true;
+                }
+                if (std::getenv("XERENGE_ENTRY_TRACE") != nullptr &&
+                    std::chrono::steady_clock::now() >= nextEntryTrace)
+                {
+                    const uint64_t calls = gPpcEntryFunctionCalls.load(std::memory_order_relaxed);
+                    std::cerr << "PPC entry sample function=0x" << std::hex
+                              << gPpcEntryFunction.load(std::memory_order_relaxed)
+                              << " caller=0x" << gPpcEntryCaller.load(std::memory_order_relaxed)
+                              << std::dec << " calls=" << calls
+                              << " delta=" << (calls - lastEntryTraceCalls) << '\n';
+                    lastEntryTraceCalls = calls;
+                    nextEntryTrace += std::chrono::seconds(1);
                 }
                 const auto pixels = gXenosGpu.framebufferCopy();
                 glViewport(0, 0, 1280, 720);
