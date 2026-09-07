@@ -1603,8 +1603,8 @@ public:
             // BOOL XNotifyGetNext(listener, filter, id, parameter).  The
             // frontend polls this after the device selector completes.  A
             // permanently empty queue leaves it in the bootstrap screen, so
-            // deliver the local sign-in and UI-dismissed notifications queued
-            // by the host-side XAM dialog stubs.
+            // deliver the UI-open and UI-dismissed notifications queued by
+            // the host-side XAM dialog stub.
             auto notification = pendingNotifications_.end();
             for (auto it = pendingNotifications_.begin();
                  it != pendingNotifications_.end(); ++it)
@@ -1701,9 +1701,8 @@ public:
         }
         if (service == "XamShowSigninUI")
         {
-            // There is no host sign-in dialog.  Treat the primary local
-            // profile as signed in and notify the title exactly once.
-            queueSystemNotifications();
+            // There is no host sign-in dialog.  The local profile is already
+            // reported as signed in by XamUserGetSigninState.
             ctx.r3.u32 = 0;
             return;
         }
@@ -2220,21 +2219,13 @@ private:
 
     void queueSystemNotifications()
     {
-        const auto hasNotification = [this](uint32_t id)
+        if (pendingNotifications_.empty())
         {
-            return std::any_of(pendingNotifications_.begin(),
-                               pendingNotifications_.end(),
-                               [id](const auto& notification)
-                               {
-                                   return notification.first == id;
-                               });
-        };
-        // XAM notification ids used by the title for local sign-in changes
-        // and completion of a modal UI operation.
-        if (!hasNotification(0x0000000Au))
-            pendingNotifications_.emplace_back(0x0000000Au, 1u);
-        if (!hasNotification(0x00000009u))
+            // XamShowDeviceSelectorUI broadcasts notification 9 when the
+            // modal device UI opens and again when it closes.
+            pendingNotifications_.emplace_back(0x00000009u, 1u);
             pendingNotifications_.emplace_back(0x00000009u, 0u);
+        }
     }
 
     static void storeU32(uint8_t* base, uint32_t address, uint32_t value)
