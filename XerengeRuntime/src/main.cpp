@@ -1459,6 +1459,15 @@ public:
             ctx.r3.u32 = ctx.r3.u32 == 0 ? 0u : 1167u;
             return;
         }
+        if (service == "XamShowDeviceSelectorUI")
+        {
+            // The frontend uses this asynchronous XAM dialog while creating
+            // its profile/device state. There is no host dialog in the
+            // runtime, so complete the selection immediately and let the
+            // title continue with the primary local device.
+            ctx.r3.u32 = 0;
+            return;
+        }
         if (service == "XamUserGetSigninState")
         {
             // XUSER_SIGNIN_STATE_SIGNED_IN_LOCALLY for the primary pad.
@@ -1477,6 +1486,13 @@ public:
             }
             const uint64_t xuid = __builtin_bswap64(0xE000000000000001ull);
             std::memcpy(base + output, &xuid, sizeof(xuid));
+            ctx.r3.u32 = 0;
+            return;
+        }
+        if (service == "NtSuspendThread")
+        {
+            if (ctx.r4.u32 != 0)
+                storeU32(base, ctx.r4.u32, 0);
             ctx.r3.u32 = 0;
             return;
         }
