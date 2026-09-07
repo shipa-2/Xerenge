@@ -53,7 +53,9 @@ private:
     bool ensureShaderModule(uint64_t shaderHash);
     bool ensureGraphicsPipeline();
     bool initializeDrawResources();
-    bool drawVulkanRectangle(const float* vertices, uint32_t vertexCount);
+    bool drawVulkanRectangle(const float* vertices, uint32_t vertexCount,
+        const uint8_t* texture, uint32_t textureWidth, uint32_t textureHeight,
+        uint64_t textureKey);
     uint32_t findMemoryType(uint32_t typeBits, VkMemoryPropertyFlags properties) const;
 
     std::array<uint32_t, 0x2000> registers_{};
@@ -121,11 +123,18 @@ private:
     VkBuffer vulkanReadbackBuffer_ = VK_NULL_HANDLE;
     VkDeviceMemory vulkanReadbackMemory_ = VK_NULL_HANDLE;
     void* vulkanReadbackMapped_ = nullptr;
+    VkBuffer vulkanTextureUploadBuffer_ = VK_NULL_HANDLE;
+    VkDeviceMemory vulkanTextureUploadMemory_ = VK_NULL_HANDLE;
+    void* vulkanTextureUploadMapped_ = nullptr;
     VkDescriptorPool vulkanDescriptorPool_ = VK_NULL_HANDLE;
     std::array<VkDescriptorSet, 4> vulkanDescriptorSets_{};
     VkCommandPool vulkanCommandPool_ = VK_NULL_HANDLE;
     VkCommandBuffer vulkanCommandBuffer_ = VK_NULL_HANDLE;
     VkFence vulkanFence_ = VK_NULL_HANDLE;
     bool vulkanImagesInitialized_ = false;
+    bool vulkanTextureInitialized_ = false;
+    uint32_t vulkanTextureWidth_ = 1;
+    uint32_t vulkanTextureHeight_ = 1;
+    uint64_t vulkanTextureKey_ = 0;
     uint64_t vulkanDrawCount_ = 0;
 };

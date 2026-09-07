@@ -24,6 +24,8 @@ XenosGpu::~XenosGpu()
             vkUnmapMemory(vulkanDevice_, vulkanConstantsMemory_);
         if (vulkanReadbackMapped_ != nullptr)
             vkUnmapMemory(vulkanDevice_, vulkanReadbackMemory_);
+        if (vulkanTextureUploadMapped_ != nullptr)
+            vkUnmapMemory(vulkanDevice_, vulkanTextureUploadMemory_);
         if (vulkanFence_ != VK_NULL_HANDLE)
             vkDestroyFence(vulkanDevice_, vulkanFence_, nullptr);
         if (vulkanCommandPool_ != VK_NULL_HANDLE)
@@ -48,6 +50,8 @@ XenosGpu::~XenosGpu()
             vkDestroyBuffer(vulkanDevice_, vulkanConstantsBuffer_, nullptr);
         if (vulkanReadbackBuffer_ != VK_NULL_HANDLE)
             vkDestroyBuffer(vulkanDevice_, vulkanReadbackBuffer_, nullptr);
+        if (vulkanTextureUploadBuffer_ != VK_NULL_HANDLE)
+            vkDestroyBuffer(vulkanDevice_, vulkanTextureUploadBuffer_, nullptr);
         if (vulkanColorMemory_ != VK_NULL_HANDLE)
             vkFreeMemory(vulkanDevice_, vulkanColorMemory_, nullptr);
         if (vulkanWhiteMemory_ != VK_NULL_HANDLE)
@@ -58,6 +62,8 @@ XenosGpu::~XenosGpu()
             vkFreeMemory(vulkanDevice_, vulkanConstantsMemory_, nullptr);
         if (vulkanReadbackMemory_ != VK_NULL_HANDLE)
             vkFreeMemory(vulkanDevice_, vulkanReadbackMemory_, nullptr);
+        if (vulkanTextureUploadMemory_ != VK_NULL_HANDLE)
+            vkFreeMemory(vulkanDevice_, vulkanTextureUploadMemory_, nullptr);
         for (const auto& [_, pipeline] : vulkanPipelines_)
             vkDestroyPipeline(vulkanDevice_, pipeline, nullptr);
         if (vulkanRenderPass_ != VK_NULL_HANDLE)
@@ -287,7 +293,10 @@ bool XenosGpu::initializeDrawResources()
         !createBuffer(8192, VK_BUFFER_USAGE_SHADER_DEVICE_ADDRESS_BIT,
             vulkanConstantsBuffer_, vulkanConstantsMemory_, vulkanConstantsMapped_, true) ||
         !createBuffer(frameBytes, VK_BUFFER_USAGE_TRANSFER_DST_BIT,
-            vulkanReadbackBuffer_, vulkanReadbackMemory_, vulkanReadbackMapped_, false))
+            vulkanReadbackBuffer_, vulkanReadbackMemory_, vulkanReadbackMapped_, false) ||
+        !createBuffer(16u * 1024u * 1024u, VK_BUFFER_USAGE_TRANSFER_SRC_BIT,
+            vulkanTextureUploadBuffer_, vulkanTextureUploadMemory_,
+            vulkanTextureUploadMapped_, false))
         return false;
     VkBufferDeviceAddressInfo addressInfo{VK_STRUCTURE_TYPE_BUFFER_DEVICE_ADDRESS_INFO};
     addressInfo.buffer = vulkanConstantsBuffer_;
@@ -532,7 +541,9 @@ bool XenosGpu::ensureGraphicsPipeline()
     return true;
 }
 
-bool XenosGpu::drawVulkanRectangle(const float* vertices, uint32_t vertexCount)
+bool XenosGpu::drawVulkanRectangle(const float* vertices, uint32_t vertexCount,
+    const uint8_t* texture, uint32_t textureWidth, uint32_t textureHeight,
+    uint64_t textureKey)
 {
     if (vertexCount != 6 || !ensureGraphicsPipeline() || !initializeDrawResources())
         return false;
@@ -542,6 +553,80 @@ bool XenosGpu::drawVulkanRectangle(const float* vertices, uint32_t vertexCount)
     const auto pipeline = vulkanPipelines_.find(key);
     if (pipeline == vulkanPipelines_.end())
         return false;
+
+    constexpr size_t textureUploadCapacity = 16u * 1024u * 1024u;
+    const size_t textureBytes = size_t(textureWidth) * textureHeight * 4;
+    if (texture != nullptr && textureWidth != 0 && textureHeight != 0 &&
+        textureBytes <= textureUploadCapacity && textureKey != vulkanTextureKey_)
+    {
+        vkQueueWaitIdle(vulkanQueue_);
+        if (vulkanWhiteView_ != VK_NULL_HANDLE)
+            vkDestroyImageView(vulkanDevice_, vulkanWhiteView_, nullptr);
+        if (vulkanWhiteImage_ != VK_NULL_HANDLE)
+            vkDestroyImage(vulkanDevice_, vulkanWhiteImage_, nullptr);
+        if (vulkanWhiteMemory_ != VK_NULL_HANDLE)
+            vkFreeMemory(vulkanDevice_, vulkanWhiteMemory_, nullptr);
+        vulkanWhiteView_ = VK_NULL_HANDLE;
+        vulkanWhiteImage_ = VK_NULL_HANDLE;
+        vulkanWhiteMemory_ = VK_NULL_HANDLE;
+        VkImageCreateInfo imageInfo{VK_STRUCTURE_TYPE_IMAGE_CREATE_INFO};
+        imageInfo.imageType = VK_IMAGE_TYPE_2D;
+        imageInfo.format = VK_FORMAT_R8G8B8A8_UNORM;
+        imageInfo.extent = {textureWidth, textureHeight, 1};
+        imageInfo.mipLevels = 1;
+        imageInfo.arrayLayers = 1;
+        imageInfo.samples = VK_SAMPLE_COUNT_1_BIT;
+        imageInfo.tiling = VK_IMAGE_TILING_OPTIMAL;
+        imageInfo.usage = VK_IMAGE_USAGE_SAMPLED_BIT | VK_IMAGE_USAGE_TRANSFER_DST_BIT;
+        imageInfo.initialLayout = VK_IMAGE_LAYOUT_UNDEFINED;
+        if (vkCreateImage(vulkanDevice_, &imageInfo, nullptr, &vulkanWhiteImage_) != VK_SUCCESS)
+            return false;
+        VkMemoryRequirements requirements{};
+        vkGetImageMemoryRequirements(vulkanDevice_, vulkanWhiteImage_, &requirements);
+        const uint32_t memoryType = findMemoryType(requirements.memoryTypeBits,
+            VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT);
+        if (memoryType == UINT32_MAX)
+            return false;
+        VkMemoryAllocateInfo allocation{VK_STRUCTURE_TYPE_MEMORY_ALLOCATE_INFO};
+        allocation.allocationSize = requirements.size;
+        allocation.memoryTypeIndex = memoryType;
+        if (vkAllocateMemory(vulkanDevice_, &allocation, nullptr,
+                &vulkanWhiteMemory_) != VK_SUCCESS ||
+            vkBindImageMemory(vulkanDevice_, vulkanWhiteImage_,
+                vulkanWhiteMemory_, 0) != VK_SUCCESS)
+            return false;
+        VkImageViewCreateInfo viewInfo{VK_STRUCTURE_TYPE_IMAGE_VIEW_CREATE_INFO};
+        viewInfo.image = vulkanWhiteImage_;
+        viewInfo.viewType = VK_IMAGE_VIEW_TYPE_2D;
+        viewInfo.format = VK_FORMAT_R8G8B8A8_UNORM;
+        viewInfo.subresourceRange.aspectMask = VK_IMAGE_ASPECT_COLOR_BIT;
+        viewInfo.subresourceRange.levelCount = 1;
+        viewInfo.subresourceRange.layerCount = 1;
+        if (vkCreateImageView(vulkanDevice_, &viewInfo, nullptr,
+                &vulkanWhiteView_) != VK_SUCCESS)
+            return false;
+        std::memcpy(vulkanTextureUploadMapped_, texture, textureBytes);
+        std::array<VkDescriptorImageInfo, 96> images{};
+        for (auto& image : images)
+        {
+            image.imageView = vulkanWhiteView_;
+            image.imageLayout = VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL;
+        }
+        VkWriteDescriptorSet write{VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET};
+        write.dstSet = vulkanDescriptorSets_[0];
+        write.descriptorType = VK_DESCRIPTOR_TYPE_SAMPLED_IMAGE;
+        write.descriptorCount = images.size();
+        write.pImageInfo = images.data();
+        vkUpdateDescriptorSets(vulkanDevice_, 1, &write, 0, nullptr);
+        vulkanTextureWidth_ = textureWidth;
+        vulkanTextureHeight_ = textureHeight;
+        vulkanTextureKey_ = textureKey;
+        vulkanTextureInitialized_ = false;
+        if (std::getenv("XERENGE_XENOS_VULKAN_TRACE") != nullptr)
+            std::cerr << "Xenos Vulkan texture upload=" << textureWidth << 'x'
+                      << textureHeight << " key=0x" << std::hex << textureKey
+                      << std::dec << '\n';
+    }
 
     std::memcpy(vulkanVertexMapped_, vertices,
         size_t(vertexCount) * 12 * sizeof(float));
@@ -606,12 +691,28 @@ bool XenosGpu::drawVulkanRectangle(const float* vertices, uint32_t vertexCount)
             VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL, VK_ACCESS_TRANSFER_WRITE_BIT,
             VK_ACCESS_COLOR_ATTACHMENT_WRITE_BIT, VK_PIPELINE_STAGE_TRANSFER_BIT,
             VK_PIPELINE_STAGE_COLOR_ATTACHMENT_OUTPUT_BIT);
+    }
+    if (!vulkanTextureInitialized_)
+    {
         imageBarrier(vulkanWhiteImage_, VK_IMAGE_LAYOUT_UNDEFINED,
             VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, 0, VK_ACCESS_TRANSFER_WRITE_BIT,
             VK_PIPELINE_STAGE_TOP_OF_PIPE_BIT, VK_PIPELINE_STAGE_TRANSFER_BIT);
-        const VkClearColorValue white{{1, 1, 1, 1}};
-        vkCmdClearColorImage(vulkanCommandBuffer_, vulkanWhiteImage_,
-            VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, &white, 1, &range);
+        VkImageSubresourceRange range{VK_IMAGE_ASPECT_COLOR_BIT, 0, 1, 0, 1};
+        if (texture != nullptr && textureKey == vulkanTextureKey_)
+        {
+            VkBufferImageCopy textureCopy{};
+            textureCopy.imageSubresource.aspectMask = VK_IMAGE_ASPECT_COLOR_BIT;
+            textureCopy.imageSubresource.layerCount = 1;
+            textureCopy.imageExtent = {vulkanTextureWidth_, vulkanTextureHeight_, 1};
+            vkCmdCopyBufferToImage(vulkanCommandBuffer_, vulkanTextureUploadBuffer_,
+                vulkanWhiteImage_, VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, 1, &textureCopy);
+        }
+        else
+        {
+            const VkClearColorValue white{{1, 1, 1, 1}};
+            vkCmdClearColorImage(vulkanCommandBuffer_, vulkanWhiteImage_,
+                VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, &white, 1, &range);
+        }
         imageBarrier(vulkanWhiteImage_, VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL,
             VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL, VK_ACCESS_TRANSFER_WRITE_BIT,
             VK_ACCESS_SHADER_READ_BIT, VK_PIPELINE_STAGE_TRANSFER_BIT,
@@ -659,6 +760,7 @@ bool XenosGpu::drawVulkanRectangle(const float* vertices, uint32_t vertexCount)
         vkWaitForFences(vulkanDevice_, 1, &vulkanFence_, VK_TRUE, UINT64_MAX) != VK_SUCCESS)
         return false;
     vulkanImagesInitialized_ = true;
+    vulkanTextureInitialized_ = true;
     constexpr size_t frameBytes = size_t(1280) * 720 * 4;
     edram_.resize(frameBytes);
     std::memcpy(edram_.data(), vulkanReadbackMapped_, frameBytes);
@@ -1367,8 +1469,41 @@ void XenosGpu::rasterizeDraw(uint8_t* guestBase, uint32_t initiator)
             for (uint32_t component = 0; component < 4; ++component)
                 destination[8 + component] = nativeOrder[vertex]->color[component];
         }
-        if (drawVulkanRectangle(nativeVertices.data(), std::size(nativeOrder)))
-            return;
+        // Convert the tiled guest resource to tightly packed RGBA8.  Hashing
+        // the decoded contents keeps unchanged images resident while still
+        // detecting guest writes through an unchanged fetch descriptor.
+        constexpr size_t textureUploadCapacity = 16u * 1024u * 1024u;
+        const bool hasNativeTexture = hasDxt3Texture || hasRgba8Texture;
+        const size_t nativeTextureBytes = size_t(textureWidth) * textureHeight * 4;
+        if (hasNativeTexture && textureWidth != 0 && textureHeight != 0 &&
+            nativeTextureBytes <= textureUploadCapacity)
+        {
+            std::vector<uint8_t> nativeTexture(nativeTextureBytes);
+            for (uint32_t y = 0; y < textureHeight; ++y)
+                for (uint32_t x = 0; x < textureWidth; ++x)
+                {
+                    const auto texel = sampleTexture(
+                        (static_cast<float>(x) + 0.5f) / textureWidth,
+                        (static_cast<float>(y) + 0.5f) / textureHeight);
+                    std::copy(texel.begin(), texel.end(),
+                        nativeTexture.begin() +
+                            (size_t(y) * textureWidth + x) * 4);
+                }
+            // Guest code may rewrite a texture without changing its fetch
+            // descriptor.  Key the upload by decoded contents so video and
+            // dynamic UI resources cannot become permanently stale.
+            uint64_t nativeTextureKey = XXH3_64bits(
+                nativeTexture.data(), nativeTexture.size());
+            nativeTextureKey ^= uint64_t(textureWidth) << 32;
+            nativeTextureKey ^= uint64_t(textureHeight);
+            if (nativeTextureKey == 0)
+                nativeTextureKey = 1;
+            if (drawVulkanRectangle(nativeVertices.data(), std::size(nativeOrder),
+                    nativeTextureKey == vulkanTextureKey_
+                        ? nullptr : nativeTexture.data(),
+                    textureWidth, textureHeight, nativeTextureKey))
+                return;
+        }
         fillTriangle(v0, v1, v2);
         fillTriangle(v1, v3, v2);
         if (std::getenv("XERENGE_XENOS_DRAW_TRACE") != nullptr)
