@@ -1403,8 +1403,8 @@ void XenosGpu::rasterizeDraw(uint8_t* guestBase, uint32_t initiator)
                 drawColor[component] = static_cast<uint8_t>(
                     std::clamp(triangle[0].color[component], 0.0f, 1.0f) * 255.0f);
         }
-        if (!hasDxt3Texture && !hasRgba8Texture && !havePixelConstant &&
-            !solidVertexColor)
+        if (primitive != 6u && !hasDxt3Texture && !hasRgba8Texture &&
+            !havePixelConstant && !solidVertexColor)
         {
             if (std::getenv("XERENGE_XENOS_DRAW_TRACE") != nullptr)
                 std::cerr << "Xenos rectangle skipped: unsupported pixel resource\n";
@@ -1556,14 +1556,41 @@ void XenosGpu::rasterizeDraw(uint8_t* guestBase, uint32_t initiator)
         auto fillTriangle = [&](const RasterVertex& va, const RasterVertex& vb,
             const RasterVertex& vc)
         {
-            const float ax = va.position[0], ay = va.position[1];
-            const float bx = vb.position[0], by = vb.position[1];
-            const float cx = vc.position[0], cy = vc.position[1];
+            // The pointer vertex programs receive viewport coordinates for
+            // the UI strip, while the software rasterizer evaluates samples
+            // in NDC. Keep the original values in RasterVertex for the Vulkan
+            // path and normalize only this fallback calculation.
+            const auto toNdc = [](float x, float y)
+            {
+                if (std::abs(x) <= 2.0f && std::abs(y) <= 2.0f)
+                    return std::array<float, 2>{x, y};
+                return std::array<float, 2>{
+                    ((x + 0.5f) / width) * 2.0f - 1.0f,
+                    1.0f - ((y + 0.5f) / height) * 2.0f};
+            };
+            const auto a = toNdc(va.position[0], va.position[1]);
+            const auto b = toNdc(vb.position[0], vb.position[1]);
+            const auto c = toNdc(vc.position[0], vc.position[1]);
+            const float ax = a[0], ay = a[1];
+            const float bx = b[0], by = b[1];
+            const float cx = c[0], cy = c[1];
             const float area = (bx - ax) * (cy - ay) - (by - ay) * (cx - ax);
             if (area == 0.0f)
                 return;
-            for (int y = top; y <= bottom; ++y)
-                for (int x = left; x <= right; ++x)
+            const float localMinX = std::min({ax, bx, cx});
+            const float localMaxX = std::max({ax, bx, cx});
+            const float localMinY = std::min({ay, by, cy});
+            const float localMaxY = std::max({ay, by, cy});
+            const int localLeft = std::max(0,
+                static_cast<int>((localMinX * 0.5f + 0.5f) * width));
+            const int localRight = std::min(static_cast<int>(width) - 1,
+                static_cast<int>((localMaxX * 0.5f + 0.5f) * width));
+            const int localTop = std::max(0,
+                static_cast<int>((1.0f - (localMaxY * 0.5f + 0.5f)) * height));
+            const int localBottom = std::min(static_cast<int>(height) - 1,
+                static_cast<int>((1.0f - (localMinY * 0.5f + 0.5f)) * height));
+            for (int y = localTop; y <= localBottom; ++y)
+                for (int x = localLeft; x <= localRight; ++x)
                 {
                     const float px = (static_cast<float>(x) + 0.5f) / width * 2.0f - 1.0f;
                     const float py = 1.0f - (static_cast<float>(y) + 0.5f) / height * 2.0f;
@@ -1702,9 +1729,22 @@ void XenosGpu::rasterizeDraw(uint8_t* guestBase, uint32_t initiator)
                 return;
         }
         if (primitive == 6u)
-            return;
-        fillTriangle(v0, v1, v2);
-        fillTriangle(v1, v3, v2);
+        {
+            for (size_t vertex = 2; vertex < stripVertices.size(); ++vertex)
+            {
+                const RasterVertex* a = &stripVertices[vertex - 2];
+                const RasterVertex* b = &stripVertices[vertex - 1];
+                const RasterVertex* c = &stripVertices[vertex];
+                if (vertex & 1u)
+                    std::swap(a, b);
+                fillTriangle(*a, *b, *c);
+            }
+        }
+        else
+        {
+            fillTriangle(v0, v1, v2);
+            fillTriangle(v1, v3, v2);
+        }
         if (std::getenv("XERENGE_XENOS_DRAW_TRACE") != nullptr)
             std::cerr << "Xenos triangle rasterized v0=" << triangle[0].position[0] << ','
                       << triangle[0].position[1] << " v1=" << triangle[1].position[0] << ','
