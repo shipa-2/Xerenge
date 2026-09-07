@@ -1507,6 +1507,48 @@ public:
             ctx.r3.u32 = 0;
             return;
         }
+        if (service == "XAudioSetSpeakerConfig")
+        {
+            // The frontend only needs the platform to accept the selected
+            // stereo configuration.  The host sink performs the actual
+            // channel conversion when a render-driver frame arrives.
+            ctx.r3.u32 = 0;
+            return;
+        }
+        if (service == "XAudioGetVoiceCategoryVolumeChangeMask")
+        {
+            // XAudio reports changes through an optional output mask.  A
+            // stable zero mask means that no external mixer changed the
+            // categories while still completing the render-driver setup.
+            if (ctx.r4.u32 >= 0x60000000u && ctx.r4.u32 < 0x80000000u)
+                storeU32(base, ctx.r4.u32, 0);
+            ctx.r3.u32 = 0;
+            return;
+        }
+        if (service == "XAudioGetVoiceCategoryVolume")
+        {
+            // Category volume is a BE float in the caller's output slot.
+            // Use unity gain; XAudioBackend applies the host sink format and
+            // leaves the title's PCM frame untouched.
+            if (ctx.r5.u32 >= 0x60000000u && ctx.r5.u32 < 0x80000000u)
+                storeU32(base, ctx.r5.u32, 0x3F800000u); // 1.0f
+            ctx.r3.u32 = 0;
+            return;
+        }
+        if (service == "XAudioSetVoiceCategoryVolume")
+        {
+            // Accept title mixer updates.  The current host backend receives
+            // already mixed render-driver frames, so no additional state is
+            // needed here to keep the Xbox contract asynchronous and safe.
+            ctx.r3.u32 = 0;
+            return;
+        }
+        if (service == "XAudioRenderDriverLock" ||
+            service == "XAudioSuspendRenderDriverClients")
+        {
+            ctx.r3.u32 = 0;
+            return;
+        }
         if (service == "XAudioRegisterRenderDriverClient")
         {
             if (ctx.r4.u32 != 0)
