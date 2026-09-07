@@ -594,17 +594,6 @@ extern "C" void PPCTraceFunction(uint32_t address, PPCContext& ctx, uint8_t* bas
                   << " r7=0x" << ctx.r7.u32
                   << " r8=0x" << ctx.r8.u32 << std::dec << '\n';
     }
-    if (address == 0x825AEAB0u && std::getenv("XERENGE_MEDIA_TRACE") != nullptr)
-    {
-        static std::atomic<uint32_t> fileWrapperTraceCount = 0;
-        if (fileWrapperTraceCount.fetch_add(1, std::memory_order_relaxed) < 48)
-            std::cerr << "file wrapper entry caller=0x" << std::hex << ctx.lr
-                      << " handle=0x" << ctx.r3.u32
-                      << " buffer=0x" << ctx.r4.u32
-                      << " bytes=0x" << ctx.r5.u32
-                      << " result=0x" << ctx.r6.u32
-                      << " io=0x" << ctx.r7.u32 << std::dec << '\n';
-    }
     static std::atomic<uint32_t> timerTraceCount = 0;
     if ((address == 0x82423640 || address == 0x824236F8 ||
          address == 0x824237D8 || address == 0x824238F0 ||
@@ -1410,6 +1399,11 @@ public:
             for (uint32_t i = 12; i < 64; ++i)
                 storeU32(base, buffer + i * 4, 0x80000000u);
             gXenosGpu.processSubmittedBuffer(base, buffer, 64);
+            // The swap packet resolves the just-rendered EDRAM into the
+            // frontbuffer. Read it after processing that packet so the host
+            // window presents the current frame instead of the prior one.
+            if (!gXenosGpu.presentFromGuest(base, frontbuffer, width, height))
+                gXenosGpu.present(width, height);
             if (std::getenv("XERENGE_PPC_TRACE") != nullptr)
             {
                 static std::atomic<uint32_t> swapTraceCount = 0;
