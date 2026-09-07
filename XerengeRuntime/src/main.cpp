@@ -650,6 +650,23 @@ extern "C" uint32_t PPCGuestClock()
     return guestClock.fetch_add(1000000, std::memory_order_relaxed) + 1000000;
 }
 
+extern "C" void PPCGuestClockMidAsmHook(PPCRegister& r3)
+{
+    r3.u32 = PPCGuestClock();
+}
+
+extern "C" void PPCStubZeroMidAsmHook(PPCRegister& r3)
+{
+    r3.u32 = 0;
+}
+
+extern "C" void PPCStubZeroClearOutputMidAsmHook(PPCRegister& r3, PPCRegister& r4, uint8_t* base)
+{
+    if (base != nullptr && r3.u32 >= 0x60000000u && r3.u32 < 0x80000000u && r4.u32 <= 0x1000000u)
+        std::memset(base + r3.u32, 0, r4.u32);
+    r3.u32 = 0;
+}
+
 uint64_t hostTimeBaseFrequency()
 {
     static const uint64_t frequency = []
@@ -2302,6 +2319,12 @@ private:
 };
 
 XboxServiceLayer gXboxServices;
+
+extern "C" void PPCMaterializeIfZeroMidAsmHook(PPCRegister& r3, PPCContext& ctx, uint8_t* base)
+{
+    if (r3.u32 == 0)
+        r3.u32 = gXboxServices.materializeNullObject(ctx, base);
+}
 
 extern "C" uint32_t PPCMaterializeObject(PPCContext& ctx, uint8_t* base)
 {
