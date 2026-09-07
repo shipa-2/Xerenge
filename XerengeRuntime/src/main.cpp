@@ -2795,6 +2795,18 @@ extern "C" void PPCUnknownIndirectTrap(uint32_t address, PPCContext& ctx, uint8_
         ctx.r3.u32 = 0;
         return;
     }
+    if (ctx.lr == 0x82564D20u)
+    {
+        // XAudio's DPC fan-out contains optional title callbacks. During
+        // frontend startup some slots contain stack/data addresses rather
+        // than PPC entry points. The caller decrements r26 after returning;
+        // setting it to one completes this eight-slot pass instead of
+        // repeatedly dispatching the same invalid callback and starving the
+        // guest render thread. The registered render callback remains active.
+        ctx.r26.u32 = 1;
+        ctx.r3.u32 = 0;
+        return;
+    }
     ++gPpcUnknownIndirectCalls;
     if (gPpcUnknownIndirectCalls <= 40)
     {
