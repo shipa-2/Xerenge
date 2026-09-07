@@ -3706,8 +3706,13 @@ int main(int argc, char** argv)
                 glClear(GL_COLOR_BUFFER_BIT);
                 if (!pixels.empty())
                 {
-                    glRasterPos2f(-1.0f, -1.0f);
-                    glPixelZoom(1.0f, 1.0f);
+                    // Xenos readback stores row zero at the top of the
+                    // display surface, while OpenGL's pixel raster position
+                    // starts at the lower-left. Draw from the upper-left
+                    // with a negative Y zoom so scanout preserves guest
+                    // orientation.
+                    glRasterPos2f(-1.0f, 1.0f);
+                    glPixelZoom(1.0f, -1.0f);
                     glDrawPixels(static_cast<GLsizei>(gXenosGpu.lastFrameWidth()),
                         static_cast<GLsizei>(gXenosGpu.lastFrameHeight()),
                         GL_RGBA, GL_UNSIGNED_BYTE, pixels.data());
