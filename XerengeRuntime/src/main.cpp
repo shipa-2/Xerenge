@@ -594,6 +594,17 @@ extern "C" void PPCTraceFunction(uint32_t address, PPCContext& ctx, uint8_t* bas
                   << " r7=0x" << ctx.r7.u32
                   << " r8=0x" << ctx.r8.u32 << std::dec << '\n';
     }
+    if (address == 0x825AEAB0u && std::getenv("XERENGE_MEDIA_TRACE") != nullptr)
+    {
+        static std::atomic<uint32_t> fileWrapperTraceCount = 0;
+        if (fileWrapperTraceCount.fetch_add(1, std::memory_order_relaxed) < 48)
+            std::cerr << "file wrapper entry caller=0x" << std::hex << ctx.lr
+                      << " handle=0x" << ctx.r3.u32
+                      << " buffer=0x" << ctx.r4.u32
+                      << " bytes=0x" << ctx.r5.u32
+                      << " result=0x" << ctx.r6.u32
+                      << " io=0x" << ctx.r7.u32 << std::dec << '\n';
+    }
     static std::atomic<uint32_t> timerTraceCount = 0;
     if ((address == 0x82423640 || address == 0x824236F8 ||
          address == 0x824237D8 || address == 0x824238F0 ||
@@ -1191,7 +1202,14 @@ public:
                 events_[ctx.r4.u32] = true;
                 eventCondition_.notify_all();
             }
-            ctx.r3.u32 = ok ? 0u : 0xC0000008u;
+            // A successful read at EOF is reported through the byte count,
+            // but a subsequent non-empty read must return END_OF_FILE. The
+            // title's stream wrapper uses this distinction to leave its
+            // loading state; returning STATUS_SUCCESS with zero bytes makes
+            // it restart the same scene forever.
+            ctx.r3.u32 = ok
+                ? (bytesRead == 0 && ctx.r9.u32 != 0 ? 0xC0000011u : 0u)
+                : 0xC0000008u;
             return;
         }
         if (service == "NtQueryInformationFile")
