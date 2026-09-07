@@ -94,13 +94,21 @@ const ShaderMicrocodeEntry* XerengeShaderCacheView::findMicrocode(uint64_t hash)
     // retaining the active microcode hash for pipeline state separation.
     if (hash == 0x1DB45A250C7CEE2Eull)
     {
-        const auto* begin = g_shaderMicrocodeEntries;
-        const auto* end = begin + g_shaderMicrocodeEntryCount;
-        const auto* base = std::lower_bound(begin, end, 0xBCEC88072A5F344Dull,
-            [](const ShaderMicrocodeEntry& entry, uint64_t value) {
-                return entry.microcodeHash < value;
-            });
-        if (base != end && base->microcodeHash == 0xBCEC88072A5F344Dull)
+        const auto findBase = [](const ShaderMicrocodeEntry* begin, size_t count) {
+            constexpr uint64_t baseHash = 0xBCEC88072A5F344Dull;
+            if (count == 0)
+                return static_cast<const ShaderMicrocodeEntry*>(nullptr);
+            const auto* end = begin + count;
+            const auto* it = std::lower_bound(begin, end, baseHash,
+                [](const ShaderMicrocodeEntry& entry, uint64_t value) {
+                    return entry.microcodeHash < value;
+                });
+            return it != end && it->microcodeHash == baseHash ? it : nullptr;
+        };
+        const auto* base = findBase(g_shaderMicrocodeEntries, g_shaderMicrocodeEntryCount);
+        if (base == nullptr && &g_shaderMicrocodeEntryCountExtra != nullptr)
+            base = findBase(g_shaderMicrocodeEntriesExtra, g_shaderMicrocodeEntryCountExtra);
+        if (base != nullptr)
         {
             static thread_local ShaderMicrocodeEntry alias;
             alias = *base;
