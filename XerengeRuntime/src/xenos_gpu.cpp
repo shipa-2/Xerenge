@@ -1395,7 +1395,16 @@ void XenosGpu::rasterizeDraw(uint8_t* guestBase, uint32_t initiator)
             std::cerr << "Xenos tf0 raw=0x" << std::hex << texture0 << ' ' << texture1
                       << ' ' << texture2 << " ps=0x" << activePixelShaderHash_
                       << std::dec << '\n';
-        if (!hasDxt3Texture && !hasRgba8Texture && !havePixelConstant)
+        const bool solidVertexColor = !hasDxt3Texture && !hasRgba8Texture &&
+            !havePixelConstant && activePixelShaderHash_ == 0x2E372EA28CC404B7ull;
+        if (solidVertexColor)
+        {
+            for (uint32_t component = 0; component < 4; ++component)
+                drawColor[component] = static_cast<uint8_t>(
+                    std::clamp(triangle[0].color[component], 0.0f, 1.0f) * 255.0f);
+        }
+        if (!hasDxt3Texture && !hasRgba8Texture && !havePixelConstant &&
+            !solidVertexColor)
         {
             if (std::getenv("XERENGE_XENOS_DRAW_TRACE") != nullptr)
                 std::cerr << "Xenos rectangle skipped: unsupported pixel resource\n";
