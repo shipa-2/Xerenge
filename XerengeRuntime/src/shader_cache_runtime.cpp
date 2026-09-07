@@ -50,7 +50,30 @@ const ShaderMicrocodeEntry* XerengeShaderCacheView::findMicrocode(uint64_t hash)
         [](const ShaderMicrocodeEntry& entry, uint64_t value) {
             return entry.microcodeHash < value;
         });
-    return it != end && it->microcodeHash == hash ? it : nullptr;
+    if (it != end && it->microcodeHash == hash)
+        return it;
+
+    // Burnout's bootstrap command stream emits a second 120-byte vertex
+    // fetch variant whose stride words differ from the pointer shader already
+    // present in the XenosRecomp cache. The generated SPIR-V is independent
+    // of those fetch strides; the runtime supplies the current vertex binding
+    // when it builds the Vulkan pipeline. Reuse the compiled module while
+    // retaining the active microcode hash for pipeline state separation.
+    if (hash == 0x1DB45A250C7CEE2Eull)
+    {
+        const auto* base = std::lower_bound(begin, end, 0xBCEC88072A5F344Dull,
+            [](const ShaderMicrocodeEntry& entry, uint64_t value) {
+                return entry.microcodeHash < value;
+            });
+        if (base != end && base->microcodeHash == 0xBCEC88072A5F344Dull)
+        {
+            static thread_local ShaderMicrocodeEntry alias;
+            alias = *base;
+            alias.microcodeHash = hash;
+            return &alias;
+        }
+    }
+    return nullptr;
 }
 
 const uint32_t* XerengeShaderCacheView::spirv(
