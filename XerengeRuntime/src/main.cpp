@@ -652,7 +652,15 @@ extern "C" uint32_t PPCGuestClock()
 
 extern "C" void PPCGuestClockMidAsmHook(PPCRegister& r3)
 {
-    r3.u32 = PPCGuestClock();
+    // 0x825AEF98 is the title's GetCurrentThreadId import.  NetCrit uses
+    // this value as the owner token, so it must remain stable for the life of
+    // a translated guest thread; using the clock here makes every lock
+    // acquisition look like it came from a different owner and spins in
+    // NetCritEnter forever.
+    static std::atomic<uint32_t> nextGuestThreadId{1};
+    thread_local const uint32_t guestThreadId =
+        nextGuestThreadId.fetch_add(1, std::memory_order_relaxed);
+    r3.u32 = guestThreadId;
 }
 
 extern "C" void PPCStubZeroMidAsmHook(PPCRegister& r3)
@@ -2000,6 +2008,89 @@ public:
             // network is present.  Complete the local XNet lifecycle without
             // creating sockets or advertising a host network interface.
             ctx.r3.u32 = 0;
+            return;
+        }
+        if (service == "NetDll_WSACreateEvent")
+        {
+            // WSA events are waitable, manual-reset guest dispatcher objects.
+            // The title uses them for its optional online worker even when it
+            // runs without a network connection.
+            const uint32_t event = createObject(base);
+            if (event != 0)
+            {
+                events_[event] = false;
+                manualResetEvents_[event] = true;
+            }
+            ctx.r3.u32 = event;
+            return;
+        }
+        if (service == "NetDll_WSACloseEvent")
+        {
+            events_.erase(ctx.r3.u32);
+            manualResetEvents_.erase(ctx.r3.u32);
+            ctx.r3.u32 = 0;
+            return;
+        }
+        if (service == "NetDll_WSASetEvent" || service == "NetDll_WSAResetEvent")
+        {
+            const bool set = service == "NetDll_WSASetEvent";
+            events_[ctx.r3.u32] = set;
+            if (set)
+                eventCondition_.notify_all();
+            ctx.r3.u32 = 1;
+            return;
+        }
+        if (service == "NetDll_WSAWaitForMultipleEvents")
+        {
+            // XNet follows the WinSock ABI: count, guest HANDLE array,
+            // wait-all, timeout in milliseconds, alertable.  Returning the
+            // standard timeout value lets the title keep rendering while the
+            // offline network worker polls its state.
+            const uint32_t count = std::min<uint32_t>(ctx.r3.u32, 64);
+            const uint32_t handles = ctx.r4.u32;
+            const bool waitAll = ctx.r5.u32 != 0;
+            const uint32_t timeout = ctx.r6.u32;
+            std::vector<uint32_t> waitHandles;
+            waitHandles.reserve(count);
+            for (uint32_t i = 0; i < count; ++i)
+                waitHandles.push_back(loadU32(base, handles + i * 4));
+            const auto ready = [&]
+            {
+                uint32_t readyCount = 0;
+                for (const uint32_t handle : waitHandles)
+                {
+                    const auto it = events_.find(handle);
+                    if (it != events_.end() && it->second)
+                    {
+                        ++readyCount;
+                        if (!waitAll)
+                            return true;
+                    }
+                }
+                return waitAll && readyCount == waitHandles.size();
+            };
+            if (!ready())
+            {
+                const auto waitDuration = timeout == 0xFFFFFFFFu
+                    ? std::chrono::milliseconds(2)
+                    : std::chrono::milliseconds(std::min<uint32_t>(timeout, 2));
+                eventCondition_.wait_for(lock, waitDuration, ready);
+            }
+            if (ready())
+            {
+                for (size_t i = 0; i < waitHandles.size(); ++i)
+                {
+                    const auto it = events_.find(waitHandles[i]);
+                    if (it != events_.end() && it->second)
+                    {
+                        if (!manualResetEvents_[waitHandles[i]])
+                            it->second = false;
+                        ctx.r3.u32 = 0x00000000u + static_cast<uint32_t>(i);
+                        return;
+                    }
+                }
+            }
+            ctx.r3.u32 = 258; // WSA_WAIT_TIMEOUT
             return;
         }
         if (service == "XGetVideoMode")
