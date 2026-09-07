@@ -1591,8 +1591,15 @@ public:
             ctx.r3.u32 = 0;
             return;
         }
+        if (service == "XamNotifyCreateListener")
+        {
+            const uint32_t listener = createObject(base);
+            notificationQueues_[listener] = {};
+            ctx.r3.u32 = listener;
+            return;
+        }
         if (service == "XamContentCreate" || service == "XamContentCreateEnumerator" ||
-            service == "XamNotifyCreateListener" || service == "XamSessionCreateHandle" ||
+            service == "XamSessionCreateHandle" ||
             service == "XamVoiceCreate" || service == "XMACreateContext")
         {
             ctx.r3.u32 = createObject(base);
@@ -1605,23 +1612,30 @@ public:
             // permanently empty queue leaves it in the bootstrap screen, so
             // deliver the UI-open and UI-dismissed notifications queued by
             // the host-side XAM dialog stub.
-            auto notification = pendingNotifications_.end();
-            for (auto it = pendingNotifications_.begin();
-                 it != pendingNotifications_.end(); ++it)
+            auto queue = notificationQueues_.find(ctx.r3.u32);
+            auto notification = queue == notificationQueues_.end()
+                ? std::deque<std::pair<uint32_t, uint32_t>>::iterator{}
+                : queue->second.end();
+            if (queue != notificationQueues_.end())
             {
-                if (ctx.r4.u32 == 0 || ctx.r4.u32 == it->first)
+                for (auto it = queue->second.begin();
+                     it != queue->second.end(); ++it)
                 {
-                    notification = it;
-                    break;
+                    if (ctx.r4.u32 == 0 || ctx.r4.u32 == it->first)
+                    {
+                        notification = it;
+                        break;
+                    }
                 }
             }
-            if (notification != pendingNotifications_.end())
+            if (queue != notificationQueues_.end() &&
+                notification != queue->second.end())
             {
                 if (ctx.r5.u32 != 0)
                     storeU32(base, ctx.r5.u32, notification->first);
                 if (ctx.r6.u32 != 0)
                     storeU32(base, ctx.r6.u32, notification->second);
-                pendingNotifications_.erase(notification);
+                queue->second.erase(notification);
                 ctx.r3.u32 = 1;
             }
             else
@@ -2219,12 +2233,14 @@ private:
 
     void queueSystemNotifications()
     {
-        if (pendingNotifications_.empty())
+        for (auto& [listener, notifications] : notificationQueues_)
         {
+            if (!notifications.empty())
+                continue;
             // XamShowDeviceSelectorUI broadcasts notification 9 when the
             // modal device UI opens and again when it closes.
-            pendingNotifications_.emplace_back(0x00000009u, 1u);
-            pendingNotifications_.emplace_back(0x00000009u, 0u);
+            notifications.emplace_back(0x00000009u, 1u);
+            notifications.emplace_back(0x00000009u, 0u);
         }
     }
 
@@ -2270,7 +2286,7 @@ private:
     std::condition_variable_any threadCondition_;
     std::unordered_map<uint32_t, uint32_t> threadSuspendCounts_;
     std::unordered_map<uint32_t, std::shared_ptr<std::recursive_mutex>> criticalSections_;
-    std::deque<std::pair<uint32_t, uint32_t>> pendingNotifications_;
+    std::unordered_map<uint32_t, std::deque<std::pair<uint32_t, uint32_t>>> notificationQueues_;
     bool vtableAllocated_ = false;
     std::array<bool, 64> tlsUsed_{};
     std::atomic<uint32_t> nextThreadId_{1};
