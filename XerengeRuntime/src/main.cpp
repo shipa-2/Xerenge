@@ -2812,6 +2812,17 @@ extern "C" void PPCUnknownIndirectTrap(uint32_t address, PPCContext& ctx, uint8_
         ctx.r3.u32 = 0;
         return;
     }
+    if (ctx.lr == 0x8256544Cu)
+    {
+        // XAudio's completion pass invokes an optional client notification
+        // through the voice object's vtable.  The render-driver client is
+        // real and already submits PCM frames, but the retail title can
+        // leave this secondary notification object without a host-backed
+        // method.  Treat only this invalid notification as completed so it
+        // cannot turn the guest scheduler into a call to a data address.
+        ctx.r3.u32 = 0;
+        return;
+    }
     ++gPpcUnknownIndirectCalls;
     if (gPpcUnknownIndirectCalls <= 40)
     {
