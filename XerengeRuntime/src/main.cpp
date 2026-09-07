@@ -1519,12 +1519,41 @@ public:
             ctx.r3.u32 = 0;
             return;
         }
-        if (service == "XMsgStartIORequest")
+        if (service == "XMsgStartIORequest" || service == "XMsgStartIORequestEx")
         {
-            // XMsgStartIORequest is used by the title's XAM message queues
-            // while the frontend resource worker is being brought online.
-            // The host already completes the underlying media operation, so
-            // the Xbox API must report that the request was accepted.
+            // XAM_OVERLAPPED is passed in r9 by the generated title wrappers:
+            //   0x00 result, 0x04 length, 0x08 context, 0x0c event,
+            //   0x10 completion routine, 0x14 completion context,
+            //   0x18 extended error.
+            // XMsgStartIORequest resets the event before starting a new
+            // request.  The frontend subsequently performs the actual
+            // synchronous work through the host-backed service and signals
+            // this event itself, so leaving the old signalled state here can
+            // make a worker consume a stale completion and stop progressing.
+            const uint32_t overlapped = ctx.r9.u32;
+            const bool validOverlapped =
+                (overlapped >= 0x60000000u && overlapped < 0x80000000u) ||
+                (overlapped >= 0x82000000u && overlapped < 0x83000000u);
+            if (validOverlapped)
+            {
+                const uint32_t event = loadU32(base, overlapped + 0x0c);
+                if (event != 0)
+                {
+                    events_[event] = false;
+                    eventCondition_.notify_all();
+                }
+                storeU32(base, overlapped + 0x00, 0);
+                storeU32(base, overlapped + 0x04, 0);
+                storeU32(base, overlapped + 0x18, 0);
+                if (std::getenv("XERENGE_XMSG_TRACE") != nullptr)
+                {
+                    static std::atomic<uint32_t> xmsgTraceCount = 0;
+                    if (xmsgTraceCount.fetch_add(1, std::memory_order_relaxed) < 32)
+                        std::cerr << "XMsg reset " << service << " overlapped=0x"
+                                  << std::hex << overlapped << " event=0x" << event
+                                  << " message=0x" << ctx.r4.u32 << std::dec << '\n';
+                }
+            }
             ctx.r3.u32 = 0;
             return;
         }
