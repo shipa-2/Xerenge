@@ -53,7 +53,7 @@ private:
     bool ensureShaderModule(uint64_t shaderHash);
     bool ensureGraphicsPipeline();
     bool initializeDrawResources();
-    bool drawVulkanRectangle(const float* vertices, uint32_t vertexCount,
+    bool drawVulkanTriangles(const float* vertices, uint32_t vertexCount,
         const uint8_t* texture, uint32_t textureWidth, uint32_t textureHeight,
         uint64_t textureKey);
     uint32_t findMemoryType(uint32_t typeBits, VkMemoryPropertyFlags properties) const;
@@ -137,4 +137,5 @@ private:
     uint32_t vulkanTextureHeight_ = 1;
     uint64_t vulkanTextureKey_ = 0;
     uint64_t vulkanDrawCount_ = 0;
+    uint32_t vulkanLargestDrawVertexCount_ = 0;
 };

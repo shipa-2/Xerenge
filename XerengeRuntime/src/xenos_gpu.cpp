@@ -288,9 +288,9 @@ bool XenosGpu::initializeDrawResources()
         return false;
 
     constexpr VkDeviceSize frameBytes = VkDeviceSize(1280) * 720 * 4;
-    if (!createBuffer(6 * 12 * sizeof(float), VK_BUFFER_USAGE_VERTEX_BUFFER_BIT,
+    if (!createBuffer(4u * 1024u * 1024u, VK_BUFFER_USAGE_VERTEX_BUFFER_BIT,
             vulkanVertexBuffer_, vulkanVertexMemory_, vulkanVertexMapped_, false) ||
-        !createBuffer(8192, VK_BUFFER_USAGE_SHADER_DEVICE_ADDRESS_BIT,
+        !createBuffer(12u * 1024u, VK_BUFFER_USAGE_SHADER_DEVICE_ADDRESS_BIT,
             vulkanConstantsBuffer_, vulkanConstantsMemory_, vulkanConstantsMapped_, true) ||
         !createBuffer(frameBytes, VK_BUFFER_USAGE_TRANSFER_DST_BIT,
             vulkanReadbackBuffer_, vulkanReadbackMemory_, vulkanReadbackMapped_, false) ||
@@ -541,11 +541,14 @@ bool XenosGpu::ensureGraphicsPipeline()
     return true;
 }
 
-bool XenosGpu::drawVulkanRectangle(const float* vertices, uint32_t vertexCount,
+bool XenosGpu::drawVulkanTriangles(const float* vertices, uint32_t vertexCount,
     const uint8_t* texture, uint32_t textureWidth, uint32_t textureHeight,
     uint64_t textureKey)
 {
-    if (vertexCount != 6 || !ensureGraphicsPipeline() || !initializeDrawResources())
+    constexpr uint32_t vertexCapacity = (4u * 1024u * 1024u) /
+        (12u * sizeof(float));
+    if (vertexCount < 3 || vertexCount % 3 != 0 || vertexCount > vertexCapacity ||
+        !ensureGraphicsPipeline() || !initializeDrawResources())
         return false;
     const uint64_t key = activeVertexShaderHash_ ^
         (activePixelShaderHash_ + 0x9E3779B97F4A7C15ull +
@@ -630,16 +633,13 @@ bool XenosGpu::drawVulkanRectangle(const float* vertices, uint32_t vertexCount,
 
     std::memcpy(vulkanVertexMapped_, vertices,
         size_t(vertexCount) * 12 * sizeof(float));
-    std::memset(vulkanConstantsMapped_, 0, 8192);
-    auto* constants = static_cast<float*>(vulkanConstantsMapped_);
-    // The captured runtime VS performs position.xy * c1.xy + c0.xy.
-    constants[0] = 0.0f;
-    constants[1] = 0.0f;
-    constants[2] = 0.0f;
-    constants[3] = 1.0f;
-    constants[4] = 1.0f;
-    constants[5] = 1.0f;
-    constants[8] = constants[9] = constants[10] = constants[11] = 1.0f;
+    std::memset(vulkanConstantsMapped_, 0, 12u * 1024u);
+    auto* constants = static_cast<uint32_t*>(vulkanConstantsMapped_);
+    // Xenos has 256 float4 constants per stage in adjacent register banks.
+    // Register writes were already byte-swapped while parsing PM4, so copying
+    // their bit patterns produces native IEEE floats for the generated SPIR-V.
+    std::copy_n(gpuRegisters_.data() + 0x4000u, 1024u, constants);
+    std::copy_n(gpuRegisters_.data() + 0x4400u, 1024u, constants + 1024u);
     struct PushConstants
     {
         uint64_t vertex;
@@ -648,7 +648,7 @@ bool XenosGpu::drawVulkanRectangle(const float* vertices, uint32_t vertexCount,
     } push{
         vulkanConstantsAddress_,
         vulkanConstantsAddress_ + 4096,
-        vulkanConstantsAddress_ + 7680,
+        vulkanConstantsAddress_ + 8192,
     };
 
     vkWaitForFences(vulkanDevice_, 1, &vulkanFence_, VK_TRUE, UINT64_MAX);
@@ -765,9 +765,12 @@ bool XenosGpu::drawVulkanRectangle(const float* vertices, uint32_t vertexCount,
     edram_.resize(frameBytes);
     std::memcpy(edram_.data(), vulkanReadbackMapped_, frameBytes);
     ++vulkanDrawCount_;
+    const bool largestDraw = vertexCount > vulkanLargestDrawVertexCount_;
+    vulkanLargestDrawVertexCount_ = std::max(vulkanLargestDrawVertexCount_, vertexCount);
     if (std::getenv("XERENGE_XENOS_VULKAN_TRACE") != nullptr &&
-        (vulkanDrawCount_ <= 8 || (vulkanDrawCount_ % 256) == 0))
+        (vulkanDrawCount_ <= 8 || largestDraw || (vulkanDrawCount_ % 256) == 0))
         std::cerr << "Xenos Vulkan draw=" << vulkanDrawCount_
+                  << " vertices=" << vertexCount
                   << " readback=0x" << std::hex
                   << XXH3_64bits(edram_.data(), edram_.size()) << std::dec << '\n';
     return true;
@@ -1057,7 +1060,8 @@ void XenosGpu::rasterizeDraw(uint8_t* guestBase, uint32_t initiator)
     const uint32_t primitive = initiator & 0x3Fu;
     const uint32_t source = (initiator >> 6) & 0x3u;
     const uint32_t count = initiator >> 16;
-    if ((primitive != 1u && primitive != 8u) || source != 2u || count == 0 ||
+    if ((primitive != 1u && primitive != 6u && primitive != 8u) ||
+        source != 2u || count == 0 ||
         gpuRegisters_[0x2318] != 0 || gpuRegisters_[0x2104] == 0)
         return;
 
@@ -1086,7 +1090,7 @@ void XenosGpu::rasterizeDraw(uint8_t* guestBase, uint32_t initiator)
     uint32_t strideWords = vertexFetchStrideWords_[activeVertexFetchConstantIndex_];
     if (strideWords == 0u)
         strideWords = (fetch1 >> 2) & 0xFFFFFFu;
-    const uint32_t minimumStride = primitive == 8u ? 2u : 3u;
+    const uint32_t minimumStride = primitive == 1u ? 3u : 2u;
     if (strideWords < minimumStride || strideWords > 0x1000)
         return;
 
@@ -1111,6 +1115,9 @@ void XenosGpu::rasterizeDraw(uint8_t* guestBase, uint32_t initiator)
         std::array<float, 4> color{1.0f, 1.0f, 1.0f, 1.0f};
     };
     std::array<RasterVertex, 3> triangle{};
+    std::vector<RasterVertex> stripVertices;
+    if (primitive == 6u)
+        stripVertices.reserve(count);
     std::array<uint8_t, 4> drawColor{255, 255, 255, 255};
     std::array<uint8_t, 4> constantColor{};
     bool havePixelConstant = false;
@@ -1131,8 +1138,8 @@ void XenosGpu::rasterizeDraw(uint8_t* guestBase, uint32_t initiator)
     {
         const uint32_t address = vertexAddress +
             (firstIndex + i) * strideWords * sizeof(uint32_t);
-        uint32_t bits[3]{};
-        for (uint32_t component = 0; component < 3; ++component)
+        uint32_t bits[2]{};
+        for (uint32_t component = 0; component < 2; ++component)
             bits[component] = loadGuestBE(guestBase, address + component * 4);
 
         if (primitive == 8u && std::getenv("XERENGE_XENOS_VERTEX_TRACE") != nullptr && i < 3)
@@ -1144,10 +1151,9 @@ void XenosGpu::rasterizeDraw(uint8_t* guestBase, uint32_t initiator)
             std::cerr << std::dec << '\n';
         }
 
-        float position[3];
+        float position[2];
         std::memcpy(&position[0], &bits[0], sizeof(position));
-        if (!std::isfinite(position[0]) || !std::isfinite(position[1]) ||
-            !std::isfinite(position[2]) || position[2] < -1.0f || position[2] > 1.0f)
+        if (!std::isfinite(position[0]) || !std::isfinite(position[1]))
             continue;
 
         // The first primitive-8 program writes viewport-space coordinates
@@ -1161,7 +1167,8 @@ void XenosGpu::rasterizeDraw(uint8_t* guestBase, uint32_t initiator)
         const float yNdc = screenSpace
             ? 1.0f - ((position[1] + 0.5f) / height) * 2.0f
             : position[1];
-        if (xNdc < -1.0f || xNdc > 1.0f || yNdc < -1.0f || yNdc > 1.0f)
+        if (primitive != 6u &&
+            (xNdc < -1.0f || xNdc > 1.0f || yNdc < -1.0f || yNdc > 1.0f))
             continue;
 
         std::array<float, 2> uv{};
@@ -1190,9 +1197,18 @@ void XenosGpu::rasterizeDraw(uint8_t* guestBase, uint32_t initiator)
                 vertexColor[component] = 1.0f;
         }
         if (primitive == 8u && i < triangle.size())
-            triangle[i] = {{xNdc, yNdc, position[2]}, uv, vertexColor};
+            triangle[i] = {{xNdc, yNdc, 0.0f}, uv, vertexColor};
         if (primitive == 8u)
             continue;
+        if (primitive == 6u)
+        {
+            // The captured pointer shaders fetch float2 position, float2 UV,
+            // and optionally float4 colour. Keep position in guest space;
+            // the recompiled VS applies the title's actual constant matrices.
+            stripVertices.push_back(
+                {{position[0], position[1], 0.0f}, uv, vertexColor});
+            continue;
+        }
 
         const uint32_t x = std::min(width - 1,
             static_cast<uint32_t>((xNdc * 0.5f + 0.5f) * width));
@@ -1215,8 +1231,11 @@ void XenosGpu::rasterizeDraw(uint8_t* guestBase, uint32_t initiator)
         writeColorMasked(pixel, color);
     }
 
-        if (primitive == 8u && drawVertices == 3u)
+    if ((primitive == 8u && drawVertices == 3u) ||
+        (primitive == 6u && stripVertices.size() >= 3u))
     {
+        if (primitive == 6u)
+            std::copy_n(stripVertices.begin(), 3, triangle.begin());
         // RectangleList vertices arrive as one corner and its two adjacent
         // corners. Include the inferred opposite corner in the raster bounds.
         const float fourthX = triangle[1].position[0] + triangle[2].position[0] -
@@ -1455,9 +1474,21 @@ void XenosGpu::rasterizeDraw(uint8_t* guestBase, uint32_t initiator)
         for (uint32_t component = 0; component < 4; ++component)
             v3.color[component] = v1.color[component] + v2.color[component] -
                 v0.color[component];
-        std::array<float, 6 * 12> nativeVertices{};
-        const RasterVertex* nativeOrder[] = {&v0, &v1, &v2, &v1, &v3, &v2};
-        for (uint32_t vertex = 0; vertex < std::size(nativeOrder); ++vertex)
+        std::vector<const RasterVertex*> nativeOrder;
+        if (primitive == 8u)
+            nativeOrder = {&v0, &v1, &v2, &v1, &v3, &v2};
+        else
+            for (size_t vertex = 2; vertex < stripVertices.size(); ++vertex)
+            {
+                const RasterVertex* a = &stripVertices[vertex - 2];
+                const RasterVertex* b = &stripVertices[vertex - 1];
+                const RasterVertex* c = &stripVertices[vertex];
+                if (vertex & 1u)
+                    std::swap(a, b);
+                nativeOrder.insert(nativeOrder.end(), {a, b, c});
+            }
+        std::vector<float> nativeVertices(nativeOrder.size() * 12u);
+        for (uint32_t vertex = 0; vertex < nativeOrder.size(); ++vertex)
         {
             float* destination = nativeVertices.data() + vertex * 12;
             destination[0] = nativeOrder[vertex]->position[0];
@@ -1498,12 +1529,14 @@ void XenosGpu::rasterizeDraw(uint8_t* guestBase, uint32_t initiator)
             nativeTextureKey ^= uint64_t(textureHeight);
             if (nativeTextureKey == 0)
                 nativeTextureKey = 1;
-            if (drawVulkanRectangle(nativeVertices.data(), std::size(nativeOrder),
+            if (drawVulkanTriangles(nativeVertices.data(), nativeOrder.size(),
                     nativeTextureKey == vulkanTextureKey_
                         ? nullptr : nativeTexture.data(),
                     textureWidth, textureHeight, nativeTextureKey))
                 return;
         }
+        if (primitive == 6u)
+            return;
         fillTriangle(v0, v1, v2);
         fillTriangle(v1, v3, v2);
         if (std::getenv("XERENGE_XENOS_DRAW_TRACE") != nullptr)
@@ -1512,6 +1545,13 @@ void XenosGpu::rasterizeDraw(uint8_t* guestBase, uint32_t initiator)
                       << triangle[1].position[1] << " v2=" << triangle[2].position[0] << ','
                       << triangle[2].position[1] << " pixelConstant="
                       << (havePixelConstant ? "yes" : "fallback") << '\n';
+    }
+    else if (primitive == 6u && std::getenv("XERENGE_XENOS_VERTEX_TRACE") != nullptr)
+    {
+        std::cerr << "Xenos triangle strip rejected vertices="
+                  << stripVertices.size() << '/' << count
+                  << " stride=" << strideWords
+                  << " fetchSlot=" << activeVertexFetchConstantIndex_ << '\n';
     }
 }
 
