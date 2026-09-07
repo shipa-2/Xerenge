@@ -628,9 +628,11 @@ bool XenosGpu::drawVulkanTriangles(const float* vertices, uint32_t vertexCount,
         if (textureSizeChanged)
         {
             // The old image may still be referenced by the previous submit.
-            // A size change requires new storage, so retire that submit before
-            // destroying the view and image.
-            vkQueueWaitIdle(vulkanQueue_);
+            // The draw path waits on this fence before returning, so wait for
+            // that submit only instead of stalling the whole queue.
+            if (vkWaitForFences(vulkanDevice_, 1, &vulkanFence_, VK_TRUE,
+                    UINT64_MAX) != VK_SUCCESS)
+                return false;
             if (vulkanWhiteView_ != VK_NULL_HANDLE)
                 vkDestroyImageView(vulkanDevice_, vulkanWhiteView_, nullptr);
             if (vulkanWhiteImage_ != VK_NULL_HANDLE)
