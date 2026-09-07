@@ -1115,16 +1115,37 @@ public:
         if (service == "NtReadFile")
         {
             uint32_t bytesRead = 0;
+            uint64_t byteOffset = 0;
+            bool hasExplicitOffset = false;
+            if (ctx.r10.u32 != 0)
+            {
+                byteOffset = (static_cast<uint64_t>(loadU32(base, ctx.r10.u32)) << 32) |
+                    loadU32(base, ctx.r10.u32 + 4);
+                // FILE_USE_FILE_POINTER_POSITION is -1; in that case the
+                // handle's current position is used by NtReadFile.
+                hasExplicitOffset = byteOffset != UINT64_MAX;
+            }
             if (std::getenv("XERENGE_MEDIA_TRACE") != nullptr)
             {
-                uint64_t byteOffset = 0;
-                if (ctx.r10.u32 != 0)
-                    byteOffset = (static_cast<uint64_t>(loadU32(base, ctx.r10.u32)) << 32) |
-                        loadU32(base, ctx.r10.u32 + 4);
                 std::cerr << "media read handle=0x" << std::hex << ctx.r3.u32
                           << " buffer=0x" << ctx.r8.u32 << " bytes=0x" << ctx.r9.u32
                           << " offsetPtr=0x" << ctx.r10.u32 << " offset=0x" << byteOffset
                           << " caller=0x" << ctx.lr << std::dec << '\n';
+            }
+            if (hasExplicitOffset && byteOffset > INT64_MAX)
+            {
+                ctx.r3.u32 = 0xC000000Du; // STATUS_INVALID_PARAMETER.
+                return;
+            }
+            if (hasExplicitOffset)
+            {
+                uint64_t position = 0;
+                if (!gXboxMedia.seekFile(ctx.r3.u32, static_cast<int64_t>(byteOffset),
+                                         0, position))
+                {
+                    ctx.r3.u32 = 0xC0000008u; // STATUS_INVALID_HANDLE.
+                    return;
+                }
             }
             // The title's wrapper passes the destination and byte count in
             // the preserved r8/r9 pair; r7 is its IO request structure.
