@@ -824,20 +824,6 @@ bool XenosGpu::drawVulkanTriangles(const float* vertices, uint32_t vertexCount,
         sizeof(push), &push);
     vkCmdDraw(vulkanCommandBuffer_, vertexCount, 1, 0, 0);
     vkCmdEndRenderPass(vulkanCommandBuffer_);
-    imageBarrier(vulkanColorImage_, VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL,
-        VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL, VK_ACCESS_COLOR_ATTACHMENT_WRITE_BIT,
-        VK_ACCESS_TRANSFER_READ_BIT, VK_PIPELINE_STAGE_COLOR_ATTACHMENT_OUTPUT_BIT,
-        VK_PIPELINE_STAGE_TRANSFER_BIT);
-    VkBufferImageCopy copy{};
-    copy.imageSubresource.aspectMask = VK_IMAGE_ASPECT_COLOR_BIT;
-    copy.imageSubresource.layerCount = 1;
-    copy.imageExtent = {1280, 720, 1};
-    vkCmdCopyImageToBuffer(vulkanCommandBuffer_, vulkanColorImage_,
-        VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL, vulkanReadbackBuffer_, 1, &copy);
-    imageBarrier(vulkanColorImage_, VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL,
-        VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL, VK_ACCESS_TRANSFER_READ_BIT,
-        VK_ACCESS_COLOR_ATTACHMENT_WRITE_BIT, VK_PIPELINE_STAGE_TRANSFER_BIT,
-        VK_PIPELINE_STAGE_COLOR_ATTACHMENT_OUTPUT_BIT);
     if (vkEndCommandBuffer(vulkanCommandBuffer_) != VK_SUCCESS)
         return false;
     VkSubmitInfo submit{VK_STRUCTURE_TYPE_SUBMIT_INFO};
@@ -849,9 +835,6 @@ bool XenosGpu::drawVulkanTriangles(const float* vertices, uint32_t vertexCount,
     vulkanImagesInitialized_ = true;
     vulkanTextureInitialized_ = true;
     vulkanTextureImageInitialized_ = true;
-    constexpr size_t frameBytes = size_t(1280) * 720 * 4;
-    edram_.resize(frameBytes);
-    std::memcpy(edram_.data(), vulkanReadbackMapped_, frameBytes);
     ++vulkanDrawCount_;
     const bool largestDraw = vertexCount > vulkanLargestDrawVertexCount_;
     vulkanLargestDrawVertexCount_ = std::max(vulkanLargestDrawVertexCount_, vertexCount);
@@ -862,6 +845,62 @@ bool XenosGpu::drawVulkanTriangles(const float* vertices, uint32_t vertexCount,
                   << " readback=0x" << std::hex
                   << XXH3_64bits(edram_.data(), edram_.size()) << std::dec << '\n';
     return true;
+}
+
+void XenosGpu::readbackVulkanFrame()
+{
+    std::lock_guard lock(mutex_);
+    if (vulkanDevice_ == VK_NULL_HANDLE || !vulkanImagesInitialized_ ||
+        vulkanCommandBuffer_ == VK_NULL_HANDLE || vulkanFence_ == VK_NULL_HANDLE)
+        return;
+    if (vkWaitForFences(vulkanDevice_, 1, &vulkanFence_, VK_TRUE,
+            UINT64_MAX) != VK_SUCCESS)
+        return;
+    vkResetFences(vulkanDevice_, 1, &vulkanFence_);
+    vkResetCommandBuffer(vulkanCommandBuffer_, 0);
+    VkCommandBufferBeginInfo begin{VK_STRUCTURE_TYPE_COMMAND_BUFFER_BEGIN_INFO};
+    begin.flags = VK_COMMAND_BUFFER_USAGE_ONE_TIME_SUBMIT_BIT;
+    if (vkBeginCommandBuffer(vulkanCommandBuffer_, &begin) != VK_SUCCESS)
+        return;
+    VkImageMemoryBarrier toTransfer{VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER};
+    toTransfer.srcAccessMask = VK_ACCESS_COLOR_ATTACHMENT_WRITE_BIT;
+    toTransfer.dstAccessMask = VK_ACCESS_TRANSFER_READ_BIT;
+    toTransfer.oldLayout = VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL;
+    toTransfer.newLayout = VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL;
+    toTransfer.srcQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
+    toTransfer.dstQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
+    toTransfer.image = vulkanColorImage_;
+    toTransfer.subresourceRange.aspectMask = VK_IMAGE_ASPECT_COLOR_BIT;
+    toTransfer.subresourceRange.levelCount = 1;
+    toTransfer.subresourceRange.layerCount = 1;
+    vkCmdPipelineBarrier(vulkanCommandBuffer_,
+        VK_PIPELINE_STAGE_COLOR_ATTACHMENT_OUTPUT_BIT,
+        VK_PIPELINE_STAGE_TRANSFER_BIT, 0, 0, nullptr, 0, nullptr, 1, &toTransfer);
+    VkBufferImageCopy copy{};
+    copy.imageSubresource.aspectMask = VK_IMAGE_ASPECT_COLOR_BIT;
+    copy.imageSubresource.layerCount = 1;
+    copy.imageExtent = {1280, 720, 1};
+    vkCmdCopyImageToBuffer(vulkanCommandBuffer_, vulkanColorImage_,
+        VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL, vulkanReadbackBuffer_, 1, &copy);
+    VkImageMemoryBarrier toColor = toTransfer;
+    toColor.srcAccessMask = VK_ACCESS_TRANSFER_READ_BIT;
+    toColor.dstAccessMask = VK_ACCESS_COLOR_ATTACHMENT_WRITE_BIT;
+    toColor.oldLayout = VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL;
+    toColor.newLayout = VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL;
+    vkCmdPipelineBarrier(vulkanCommandBuffer_, VK_PIPELINE_STAGE_TRANSFER_BIT,
+        VK_PIPELINE_STAGE_COLOR_ATTACHMENT_OUTPUT_BIT, 0, 0, nullptr, 0, nullptr, 1,
+        &toColor);
+    if (vkEndCommandBuffer(vulkanCommandBuffer_) != VK_SUCCESS)
+        return;
+    VkSubmitInfo submit{VK_STRUCTURE_TYPE_SUBMIT_INFO};
+    submit.commandBufferCount = 1;
+    submit.pCommandBuffers = &vulkanCommandBuffer_;
+    if (vkQueueSubmit(vulkanQueue_, 1, &submit, vulkanFence_) != VK_SUCCESS ||
+        vkWaitForFences(vulkanDevice_, 1, &vulkanFence_, VK_TRUE, UINT64_MAX) != VK_SUCCESS)
+        return;
+    constexpr size_t frameBytes = size_t(1280) * 720 * 4;
+    edram_.resize(frameBytes);
+    std::memcpy(edram_.data(), vulkanReadbackMapped_, frameBytes);
 }
 
 namespace
@@ -1675,6 +1714,7 @@ void XenosGpu::rasterizeDraw(uint8_t* guestBase, uint32_t initiator)
 
 void XenosGpu::resolveToGuest(uint8_t* guestBase)
 {
+    readbackVulkanFrame();
     const uint32_t physicalDestination = gpuRegisters_[0x2319];
     if (physicalDestination == 0)
         return;

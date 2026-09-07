@@ -24,6 +24,7 @@ public:
     void enableReadPointerWriteBack(uint32_t guestAddress, uint32_t blockSizeLog2);
     void processSubmittedBuffer(uint8_t* guestBase, uint32_t guestAddress, uint32_t dwordCount);
     bool initializeVulkan();
+    void readbackVulkanFrame();
     void present(uint32_t width, uint32_t height);
     bool presentFromGuest(uint8_t* guestBase, uint32_t guestAddress, uint32_t width, uint32_t height);
     std::vector<uint8_t> framebufferCopy() const;
