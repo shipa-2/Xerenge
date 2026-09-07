@@ -33,6 +33,7 @@
 #include "ppc_recomp_shared.h"
 #include "shader_cache_runtime.h"
 #include "xenos_gpu.h"
+#include "xaudio_backend.h"
 #endif
 #include "xbox_media.h"
 
@@ -1411,6 +1412,35 @@ public:
             ctx.r3.u32 = 1;
             return;
         }
+        if (service == "XAudioGetSpeakerConfig")
+        {
+            if (ctx.r3.u32 != 0)
+                storeU32(base, ctx.r3.u32, 0x00000003u);
+            if (ctx.r4.u32 != 0)
+                storeU32(base, ctx.r4.u32, 0x00000003u);
+            ctx.r3.u32 = 0;
+            return;
+        }
+        if (service == "XAudioRegisterRenderDriverClient")
+        {
+            if (ctx.r4.u32 != 0)
+                storeU32(base, ctx.r4.u32, 0x44415544u); // 'DAUD'
+            xaudio_.start();
+            ctx.r3.u32 = 0;
+            return;
+        }
+        if (service == "XAudioUnregisterRenderDriverClient")
+        {
+            ctx.r3.u32 = 0;
+            return;
+        }
+        if (service == "XAudioSubmitRenderDriverFrame")
+        {
+            if (ctx.r3.u32 == 0x44415544u && ctx.r4.u32 != 0)
+                xaudio_.submitGuestFrame(base, ctx.r4.u32);
+            ctx.r3.u32 = 0;
+            return;
+        }
         if (service == "XamContentCreate" || service == "XamContentCreateEnumerator" ||
             service == "XamNotifyCreateListener" || service == "XamSessionCreateHandle" ||
             service == "XamVoiceCreate" || service == "XMACreateContext")
@@ -1968,6 +1998,7 @@ private:
     std::array<bool, 64> tlsUsed_{};
     std::atomic<uint32_t> nextThreadId_{1};
     uint32_t inputPacketNumber_ = 1;
+    XAudioBackend xaudio_;
     std::recursive_mutex stateMutex_;
 };
 
