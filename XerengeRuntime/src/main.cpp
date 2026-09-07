@@ -44,6 +44,7 @@ XboxMedia gXboxMedia;
 namespace
 {
 std::atomic<bool> gHostCloseRequested{false};
+std::atomic<bool> gDeviceSelectorCompleted{false};
 
 struct XexImportLibrary
 {
@@ -1863,6 +1864,17 @@ public:
                 }
             }
             queueSystemNotifications();
+            gDeviceSelectorCompleted.store(true, std::memory_order_release);
+            // The selector is completed synchronously by the host.  Retail
+            // XAM resumes the resource worker when its modal UI is dismissed;
+            // without that UI there is no later user-driven resume call, so
+            // release the thread suspension created by the selector path.
+            for (auto& [thread, suspendCount] : threadSuspendCounts_)
+            {
+                if (suspendCount != 0)
+                    suspendCount = 0;
+            }
+            threadCondition_.notify_all();
             ctx.r3.u32 = 0;
             return;
         }
@@ -1907,11 +1919,21 @@ public:
             // leaves the worker spinning through the PPC dispatcher.
             if (ctx.lr == 0x825AE504u)
             {
+                if (gDeviceSelectorCompleted.exchange(false, std::memory_order_acq_rel))
+                {
+                    // The host completed the selector synchronously, so the
+                    // worker must not park waiting for a UI resume callback.
+                    --threadSuspendCounts_[thread];
+                    threadCondition_.notify_all();
+                }
+                else
+                {
                 threadCondition_.wait(lock, [&]
                 {
                     const auto current = threadSuspendCounts_.find(thread);
                     return current == threadSuspendCounts_.end() || current->second == 0;
                 });
+                }
             }
             ctx.r3.u32 = 0;
             return;
