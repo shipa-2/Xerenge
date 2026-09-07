@@ -2089,6 +2089,28 @@ public:
             ctx.r3.u32 = event;
             return;
         }
+        if (service == "NetDll_socket")
+        {
+            // The frontend creates one UDP socket while probing the local
+            // XNet state.  Keep it as a stable synthetic descriptor; the
+            // offline path only needs bind/ioctl/close to complete.
+            ctx.r3.u32 = 0x100u;
+            return;
+        }
+        if (service == "NetDll_bind" || service == "NetDll_ioctlsocket" ||
+            service == "NetDll_closesocket")
+        {
+            // No network transport is exposed by this runtime yet, but these
+            // setup calls must have normal WinSock success results so the
+            // title can select its offline frontend path.
+            ctx.r3.u32 = 0;
+            return;
+        }
+        if (service == "NetDll_WSAGetLastError")
+        {
+            ctx.r3.u32 = 0;
+            return;
+        }
         if (service == "NetDll_WSACloseEvent")
         {
             events_.erase(ctx.r3.u32);
@@ -2156,6 +2178,16 @@ public:
                 }
             }
             ctx.r3.u32 = 258; // WSA_WAIT_TIMEOUT
+            return;
+        }
+        if (service == "NetDll_XNetGetTitleXnAddr")
+        {
+            // Report an initialized Ethernet link without an online address.
+            // This is the documented offline state and prevents the title
+            // from interpreting a failed service dispatch as a fatal error.
+            if (ctx.r4.u32 >= 0x50000000u && ctx.r4.u32 < 0x90000000u)
+                std::memset(base + ctx.r4.u32, 0, 36);
+            ctx.r3.u32 = 0x2u; // XNET_GET_XNADDR_ETHERNET.
             return;
         }
         if (service == "XGetVideoMode")
