@@ -7,6 +7,7 @@
 #include <array>
 #include <atomic>
 #include <chrono>
+#include <condition_variable>
 #include <cstring>
 #include <cstdint>
 #include <fstream>
@@ -878,6 +879,36 @@ public:
             ctx.r3.u32 = handle != 0 ? 0u : 0xC0000017u;
             return;
         }
+        if (service == "NtCreateEvent")
+        {
+            // NT ABI: handle out, attributes, event type, initial state.
+            const uint32_t outputHandle = ctx.r3.u32;
+            const uint32_t handle = createObject(base);
+            if (handle != 0)
+            {
+                events_[handle] = ctx.r6.u32 != 0;
+                manualResetEvents_[handle] = ctx.r5.u32 == 0; // NotificationEvent.
+            }
+            if (outputHandle != 0)
+                storeU32(base, outputHandle, handle);
+            ctx.r3.u32 = handle != 0 ? 0u : 0xC0000017u;
+            return;
+        }
+        if (service == "NtCreateSemaphore")
+        {
+            const uint32_t outputHandle = ctx.r3.u32;
+            const uint32_t handle = createObject(base);
+            if (handle != 0)
+            {
+                semaphores_[handle] = static_cast<int32_t>(ctx.r5.u32);
+                semaphoreLimits_[handle] = std::max<int32_t>(
+                    static_cast<int32_t>(ctx.r6.u32), 1);
+            }
+            if (outputHandle != 0)
+                storeU32(base, outputHandle, handle);
+            ctx.r3.u32 = handle != 0 ? 0u : 0xC0000017u;
+            return;
+        }
         if (service == "ObReferenceObjectByHandle")
         {
             const uint32_t outputObject = ctx.r6.u32;
@@ -891,23 +922,30 @@ public:
             ctx.r3.u32 = 0;
             return;
         }
-        if (service == "KeWaitForSingleObject")
+        if (service == "KeWaitForSingleObject" || service == "NtWaitForSingleObjectEx")
         {
-            const auto event = events_.find(ctx.r3.u32);
-            if (event != events_.end() && event->second)
+            const uint32_t object = ctx.r3.u32;
+            const auto ready = [&]
             {
-                event->second = false;
+                const auto event = events_.find(object);
+                if (event != events_.end() && event->second)
+                    return true;
+                const auto semaphore = semaphores_.find(object);
+                return semaphore != semaphores_.end() && semaphore->second > 0;
+            };
+            if (!ready())
+                eventCondition_.wait_for(lock, std::chrono::milliseconds(2), ready);
+            if (ready())
+            {
+                const auto event = events_.find(object);
+                if (event != events_.end() && !manualResetEvents_[object])
+                    event->second = false;
+                const auto semaphore = semaphores_.find(object);
+                if (semaphore != semaphores_.end())
+                    --semaphore->second;
                 ctx.r3.u32 = 0;
                 return;
             }
-            // The graphics worker uses a kernel event to drain the command
-            // queue. A bounded timeout keeps the guest cooperative while
-            // allowing it to poll an event that has no host object yet.
-            // Do not hold the service-state mutex while sleeping: the timer
-            // and graphics workers otherwise starve the title's main thread
-            // at the host lock even though the guest wait is only a timeout.
-            lock.unlock();
-            std::this_thread::sleep_for(std::chrono::milliseconds(1));
             if (std::getenv("XERENGE_PPC_TRACE") != nullptr)
             {
                 static std::atomic<uint32_t> waitTraceCount = 0;
@@ -919,10 +957,33 @@ public:
             ctx.r3.u32 = 258; // STATUS_TIMEOUT
             return;
         }
-        if (service == "KeSetEvent" || service == "KeResetEvent")
+        if (service == "KeSetEvent" || service == "KeResetEvent" ||
+            service == "NtSetEvent")
         {
-            events_[ctx.r3.u32] = service == "KeSetEvent";
+            const bool set = service != "KeResetEvent";
+            const bool previous = events_[ctx.r3.u32];
+            events_[ctx.r3.u32] = set;
+            if (service == "NtSetEvent" && ctx.r4.u32 != 0)
+                storeU32(base, ctx.r4.u32, previous ? 1u : 0u);
+            if (set)
+                eventCondition_.notify_all();
             ctx.r3.u32 = 0;
+            return;
+        }
+        if (service == "KeReleaseSemaphore" || service == "NtReleaseSemaphore")
+        {
+            const uint32_t adjustment = service == "KeReleaseSemaphore"
+                ? ctx.r5.u32 : ctx.r4.u32;
+            const int32_t previous = semaphores_[ctx.r3.u32];
+            const auto limitIt = semaphoreLimits_.find(ctx.r3.u32);
+            const int32_t limit = limitIt != semaphoreLimits_.end()
+                ? limitIt->second : INT32_MAX;
+            semaphores_[ctx.r3.u32] = std::min<int32_t>(limit,
+                previous + std::max<int32_t>(static_cast<int32_t>(adjustment), 1));
+            if (service == "NtReleaseSemaphore" && ctx.r5.u32 != 0)
+                storeU32(base, ctx.r5.u32, static_cast<uint32_t>(previous));
+            eventCondition_.notify_all();
+            ctx.r3.u32 = static_cast<uint32_t>(previous);
             return;
         }
         if (service == "KeSetBasePriorityThread" ||
@@ -973,6 +1034,17 @@ public:
         if (service == "NtReadFile")
         {
             uint32_t bytesRead = 0;
+            if (std::getenv("XERENGE_MEDIA_TRACE") != nullptr)
+            {
+                uint64_t byteOffset = 0;
+                if (ctx.r10.u32 != 0)
+                    byteOffset = (static_cast<uint64_t>(loadU32(base, ctx.r10.u32)) << 32) |
+                        loadU32(base, ctx.r10.u32 + 4);
+                std::cerr << "media read handle=0x" << std::hex << ctx.r3.u32
+                          << " buffer=0x" << ctx.r8.u32 << " bytes=0x" << ctx.r9.u32
+                          << " offsetPtr=0x" << ctx.r10.u32 << " offset=0x" << byteOffset
+                          << " caller=0x" << ctx.lr << std::dec << '\n';
+            }
             // The title's wrapper passes the destination and byte count in
             // the preserved r8/r9 pair; r7 is its IO request structure.
             const bool ok = gXboxMedia.readFile(ctx.r3.u32, base + ctx.r8.u32,
@@ -1032,12 +1104,15 @@ public:
         }
         if (service == "NtClose")
         {
+            events_.erase(ctx.r3.u32);
+            manualResetEvents_.erase(ctx.r3.u32);
+            semaphores_.erase(ctx.r3.u32);
+            semaphoreLimits_.erase(ctx.r3.u32);
             gXboxMedia.closeFile(ctx.r3.u32);
             ctx.r3.u32 = 0;
             return;
         }
-        if (service == "NtSetTimerEx" || service == "NtWaitForSingleObjectEx" ||
-            service == "KeDelayExecutionThread")
+        if (service == "NtSetTimerEx" || service == "KeDelayExecutionThread")
         {
             // These calls are used by the title's timer worker. Returning
             // immediately makes the worker consume the entire host core and
@@ -1868,6 +1943,10 @@ private:
     std::unordered_map<uint32_t, uint32_t> allocations_;
     std::unordered_map<uint32_t, uint32_t> objects_;
     std::unordered_map<uint32_t, bool> events_;
+    std::unordered_map<uint32_t, bool> manualResetEvents_;
+    std::unordered_map<uint32_t, int32_t> semaphores_;
+    std::unordered_map<uint32_t, int32_t> semaphoreLimits_;
+    std::condition_variable_any eventCondition_;
     std::unordered_map<uint32_t, std::shared_ptr<std::recursive_mutex>> criticalSections_;
     bool vtableAllocated_ = false;
     std::array<bool, 64> tlsUsed_{};
@@ -1906,6 +1985,16 @@ extern "C" void PPCUnknownIndirectTrap(uint32_t address, PPCContext& ctx, uint8_
 {
     if (ctx.lr == 0x82095B04u)
     {
+        if (std::getenv("XERENGE_PPC_TRACE") != nullptr)
+        {
+            static std::atomic<uint32_t> resourcePollTraceCount = 0;
+            if (resourcePollTraceCount.fetch_add(1, std::memory_order_relaxed) < 8)
+                std::cerr << "frontend resource poll target=0x" << std::hex << address
+                          << " object=0x" << ctx.r3.u32 << " vtable=0x"
+                          << XboxServiceLayer::readGuestU32(base, ctx.r3.u32)
+                          << " command=0x" << ctx.r4.u32 << " ready=0x"
+                          << static_cast<uint32_t>(base[0x82D40F09u]) << std::dec << '\n';
+        }
         // The frontend bootstrap polls its platform resource object with
         // command 5 until the object signals completion in this byte. The
         // synthetic service object has no asynchronous backend, so complete
