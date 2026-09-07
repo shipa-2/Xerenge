@@ -1800,15 +1800,18 @@ void XenosGpu::processBuffer(uint8_t* guestBase, uint32_t guestAddress,
                     guestBase, guestAddress + (offset + 1) * 4);
                 rasterizeDraw(guestBase, gpuRegisters_[0x21FC]);
             }
-            // Xenos PM4 draw packets.  The low seven bits are used by the
-            // hardware opcode field; accepting both forms keeps this parser
-            // useful for command streams produced by different compilers.
-            if (opcode == 0x22u || opcode == 0x23u || opcode == 0x2Du ||
-                opcode == 0x2Eu || opcode == 0x36u)
+            if (opcode == 0x22u && length >= 3 && offset + 2 < dwordCount)
+            {
+                // DRAW_INDX starts with a viz-query token followed by
+                // VGT_DRAW_INITIATOR.  The remaining words describe the DMA
+                // index buffer when the source isn't auto-indexed.
+                gpuRegisters_[0x21FC] = loadGuestBE(
+                    guestBase, guestAddress + (offset + 2) * 4);
+                rasterizeDraw(guestBase, gpuRegisters_[0x21FC]);
+            }
+            if (opcode == 0x22u || opcode == 0x36u)
             {
                 ++drawPacketCount_;
-                if (opcode != 0x36u)
-                    rasterizeDraw(guestBase, gpuRegisters_[0x21FC]);
                 if (std::getenv("XERENGE_XENOS_DRAW_TRACE") != nullptr)
                 {
                     const uint32_t initiator = gpuRegisters_[0x21FC];
@@ -2053,8 +2056,13 @@ void XenosGpu::processRing(uint8_t* guestBase)
                     guestBase, ringBase_ + (readPointer_ + 1) * 4);
                 rasterizeDraw(guestBase, gpuRegisters_[0x21FC]);
             }
-            if (opcode == 0x22u || opcode == 0x23u || opcode == 0x2Du ||
-                opcode == 0x2Eu || opcode == 0x36u)
+            if (opcode == 0x22u && length >= 3 && readPointer_ + 2 < target)
+            {
+                gpuRegisters_[0x21FC] = loadGuestBE(
+                    guestBase, ringBase_ + (readPointer_ + 2) * 4);
+                rasterizeDraw(guestBase, gpuRegisters_[0x21FC]);
+            }
+            if (opcode == 0x22u || opcode == 0x36u)
             {
                 ++drawPacketCount_;
                 if (std::getenv("XERENGE_XENOS_DRAW_TRACE") != nullptr)
