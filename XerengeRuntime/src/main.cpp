@@ -1027,6 +1027,8 @@ public:
                 eventCondition_.wait_for(lock, std::chrono::milliseconds(2), ready);
             if (ready())
             {
+                if (object == gGraphicsWaitEvent.load(std::memory_order_acquire))
+                    gGraphicsWaitEventSignaled.store(false, std::memory_order_release);
                 const auto event = events_.find(object);
                 if (event != events_.end() && !manualResetEvents_[object])
                     event->second = false;
