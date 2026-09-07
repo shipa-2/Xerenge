@@ -920,6 +920,14 @@ public:
         }
         if (service == "NtResumeThread")
         {
+            const uint32_t thread = ctx.r3.u32;
+            const auto it = threadSuspendCounts_.find(thread);
+            if (it != threadSuspendCounts_.end() && it->second != 0)
+                --it->second;
+            if (ctx.r4.u32 != 0)
+                storeU32(base, ctx.r4.u32,
+                    it == threadSuspendCounts_.end() ? 0u : it->second);
+            threadCondition_.notify_all();
             ctx.r3.u32 = 0;
             return;
         }
@@ -1441,6 +1449,31 @@ public:
             ctx.r3.u32 = 0;
             return;
         }
+        if (service == "XMsgStartIORequest")
+        {
+            // XMsgStartIORequest is used by the title's XAM message queues
+            // while the frontend resource worker is being brought online.
+            // The host already completes the underlying media operation, so
+            // the Xbox API must report that the request was accepted.
+            ctx.r3.u32 = 0;
+            return;
+        }
+        if (service == "XMsgInProcessCall")
+        {
+            // Profile/resource messages use 0x7001B to clear a two-word
+            // result record referenced by param1[1] (the third ABI argument).
+            if (ctx.r4.u32 == 0x7001Bu && ctx.r5.u32 != 0)
+            {
+                const uint32_t result = loadU32(base, ctx.r5.u32 + 4);
+                if (result != 0)
+                {
+                    storeU32(base, result, 0);
+                    storeU32(base, result + 4, 0);
+                }
+            }
+            ctx.r3.u32 = 0;
+            return;
+        }
         if (service == "XamContentCreate" || service == "XamContentCreateEnumerator" ||
             service == "XamNotifyCreateListener" || service == "XamSessionCreateHandle" ||
             service == "XamVoiceCreate" || service == "XMACreateContext")
@@ -1521,8 +1554,23 @@ public:
         }
         if (service == "NtSuspendThread")
         {
+            const uint32_t thread = ctx.r3.u32;
+            const uint32_t previous = threadSuspendCounts_[thread];
+            ++threadSuspendCounts_[thread];
             if (ctx.r4.u32 != 0)
-                storeU32(base, ctx.r4.u32, 0);
+                storeU32(base, ctx.r4.u32, previous);
+            // The resource worker suspends itself through this wrapper after
+            // entering its idle state. Block the host thread until the title
+            // resumes the same Xbox thread handle; returning immediately
+            // leaves the worker spinning through the PPC dispatcher.
+            if (ctx.lr == 0x825AE504u)
+            {
+                threadCondition_.wait(lock, [&]
+                {
+                    const auto current = threadSuspendCounts_.find(thread);
+                    return current == threadSuspendCounts_.end() || current->second == 0;
+                });
+            }
             ctx.r3.u32 = 0;
             return;
         }
@@ -1993,6 +2041,8 @@ private:
     std::unordered_map<uint32_t, int32_t> semaphores_;
     std::unordered_map<uint32_t, int32_t> semaphoreLimits_;
     std::condition_variable_any eventCondition_;
+    std::condition_variable_any threadCondition_;
+    std::unordered_map<uint32_t, uint32_t> threadSuspendCounts_;
     std::unordered_map<uint32_t, std::shared_ptr<std::recursive_mutex>> criticalSections_;
     bool vtableAllocated_ = false;
     std::array<bool, 64> tlsUsed_{};
