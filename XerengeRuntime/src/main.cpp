@@ -305,6 +305,15 @@ extern "C" void PPCTraceFunction(uint32_t address, PPCContext& ctx, uint8_t* bas
         };
         const uint32_t list = loadGuest(ctx.r3.u32 + 16384);
         const uint32_t slotCount = loadGuest(ctx.r3.u32 + 16388);
+        if (std::getenv("XERENGE_RESOURCE_TRACE") != nullptr)
+        {
+            static std::atomic<uint32_t> resourceTraceCount = 0;
+            if (resourceTraceCount.fetch_add(1, std::memory_order_relaxed) < 32)
+                std::cerr << "resource update manager=0x" << std::hex << ctx.r3.u32
+                          << " list=0x" << list << " slots=" << std::dec << slotCount
+                          << " caller=0x" << std::hex << static_cast<uint32_t>(ctx.lr)
+                          << std::dec << '\n';
+        }
         if (list != ctx.r3.u32 && slotCount != 0)
         {
             const uint32_t descriptor = ctx.r3.u32 + ((slotCount << 5) & 0xFFFFFFE0u) +
