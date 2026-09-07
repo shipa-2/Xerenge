@@ -1178,6 +1178,16 @@ public:
                 storeU32(base, ctx.r7.u32 + 0, ok ? 0u : 0xC0000008u);
                 storeU32(base, ctx.r7.u32 + 4, bytesRead);
             }
+            // NtReadFile signals the optional event after completing the
+            // request.  The resource worker waits on this dispatcher object
+            // before advancing from its I/O state; returning the status
+            // without setting it leaves a successfully copied resource stuck
+            // in the loading screen.
+            if (ctx.r4.u32 != 0)
+            {
+                events_[ctx.r4.u32] = true;
+                eventCondition_.notify_all();
+            }
             ctx.r3.u32 = ok ? 0u : 0xC0000008u;
             return;
         }
