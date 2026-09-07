@@ -741,6 +741,13 @@ extern "C" void PPCGuestMmioStore(uint8_t* base, uint32_t address, uint64_t valu
 class XboxServiceLayer
 {
 public:
+    ~XboxServiceLayer()
+    {
+        audioThreadStop_.store(true, std::memory_order_release);
+        if (audioThread_.joinable())
+            audioThread_.join();
+    }
+
     void invoke(std::string_view service, PPCContext& ctx, uint8_t* base)
     {
         std::unique_lock lock(stateMutex_);
@@ -1450,6 +1457,7 @@ public:
             if (ctx.r4.u32 != 0)
                 storeU32(base, ctx.r4.u32, 0x44415544u); // 'DAUD'
             xaudio_.start();
+            registerAudioClient(base, ctx.r3.u32);
             ctx.r3.u32 = 0;
             return;
         }
@@ -1461,7 +1469,16 @@ public:
         if (service == "XAudioSubmitRenderDriverFrame")
         {
             if (ctx.r3.u32 == 0x44415544u && ctx.r4.u32 != 0)
+            {
                 xaudio_.submitGuestFrame(base, ctx.r4.u32);
+                if (std::getenv("XERENGE_AUDIO_TRACE") != nullptr)
+                {
+                    static std::atomic<uint32_t> submitTraceCount = 0;
+                    if (submitTraceCount.fetch_add(1, std::memory_order_relaxed) < 8)
+                        std::cerr << "XAudio submitted frame buffer=0x" << std::hex
+                                  << ctx.r4.u32 << std::dec << '\n';
+                }
+            }
             ctx.r3.u32 = 0;
             return;
         }
@@ -1526,13 +1543,23 @@ public:
             const uint32_t packet = inputPacketNumber_++;
             storeU32(base, state, packet);
             uint16_t buttons = gInputButtons.load(std::memory_order_relaxed);
-            if (std::getenv("XERENGE_AUTO_START") != nullptr &&
-                packet % 300u >= 20u && packet % 300u < 24u)
+            const bool holdStart = std::getenv("XERENGE_HOLD_START") != nullptr;
+            const bool holdA = std::getenv("XERENGE_HOLD_A") != nullptr;
+            if (holdStart || (std::getenv("XERENGE_AUTO_START") != nullptr &&
+                packet % 300u >= 20u && packet % 300u < 24u))
                 buttons |= 0x0010u;
-            if (std::getenv("XERENGE_AUTO_A") != nullptr &&
-                packet % 300u >= 20u && packet % 300u < 24u)
+            if (holdA || (std::getenv("XERENGE_AUTO_A") != nullptr &&
+                packet % 300u >= 20u && packet % 300u < 24u))
                 buttons |= 0x1000u;
             storeU16(base, state + 4, buttons);
+            if (std::getenv("XERENGE_INPUT_TRACE") != nullptr)
+            {
+                static std::atomic<uint32_t> inputTraceCount = 0;
+                if (inputTraceCount.fetch_add(1, std::memory_order_relaxed) < 32)
+                    std::cerr << "XamInputGetState packet=" << packet
+                              << " buttons=0x" << std::hex << buttons
+                              << " state=0x" << state << std::dec << '\n';
+            }
             ctx.r3.u32 = 0; // ERROR_SUCCESS.
             return;
         }
@@ -1926,6 +1953,38 @@ public:
     }
 
 private:
+    void registerAudioClient(uint8_t* base, uint32_t callback)
+    {
+        if (callback == 0)
+            return;
+        const uint32_t function = loadU32(base, callback);
+        const uint32_t parameter = loadU32(base, callback + 4);
+        if (std::getenv("XERENGE_AUDIO_TRACE") != nullptr)
+            std::cerr << "XAudio client callback=0x" << std::hex << function
+                      << " parameter=0x" << parameter << std::dec << '\n';
+        if (function < PPC_CODE_BASE || function >= PPC_CODE_BASE + PPC_CODE_SIZE)
+            return;
+        std::lock_guard lock(audioMutex_);
+        if (audioThread_.joinable())
+            return;
+        audioCallbackBase_ = base;
+        audioCallback_ = function;
+        audioCallbackParameter_ = parameter;
+        audioThreadStop_.store(false, std::memory_order_release);
+        audioThread_ = std::thread([this]
+        {
+            constexpr auto interval = std::chrono::microseconds(5333);
+            while (!audioThreadStop_.load(std::memory_order_acquire))
+            {
+                PPCContext context{};
+                context.r1.u32 = 0x6E800000u;
+                context.r3.u32 = audioCallbackParameter_;
+                PPCDispatchIndirect(context, audioCallbackBase_, audioCallback_);
+                std::this_thread::sleep_for(interval);
+            }
+        });
+    }
+
     uint32_t allocatePhysical(uint32_t size, uint8_t* base)
     {
         constexpr uint32_t alignment = 0x1000u;
@@ -2069,6 +2128,12 @@ private:
     uint32_t inputPacketNumber_ = 1;
     XAudioBackend xaudio_;
     std::recursive_mutex stateMutex_;
+    std::mutex audioMutex_;
+    std::thread audioThread_;
+    std::atomic<bool> audioThreadStop_{false};
+    uint8_t* audioCallbackBase_ = nullptr;
+    uint32_t audioCallback_ = 0;
+    uint32_t audioCallbackParameter_ = 0;
 };
 
 XboxServiceLayer gXboxServices;
