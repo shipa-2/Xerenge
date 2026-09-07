@@ -1731,21 +1731,21 @@ public:
             const uint32_t handle = ctx.r3.u32;
             const auto enumerator = achievementEnumerators_.find(handle);
             if (enumerator != achievementEnumerators_.end() &&
-                ctx.r5.u32 >= 0x60000000u && ctx.r5.u32 < 0x80000000u &&
+                ctx.r5.u32 >= 0x50000000u && ctx.r5.u32 < 0x90000000u &&
                 ctx.r6.u32 <= 0x1000000u)
             {
                 if (enumerator->second == 0)
                 {
                     if (ctx.r6.u32 != 0)
                         std::memset(base + ctx.r5.u32, 0, ctx.r6.u32);
-                    if (ctx.r7.u32 >= 0x60000000u && ctx.r7.u32 < 0x80000000u)
+                    if (ctx.r7.u32 >= 0x50000000u && ctx.r7.u32 < 0x90000000u)
                         storeU32(base, ctx.r7.u32, 1);
                     enumerator->second = 1;
                     ctx.r3.u32 = 0;
                 }
                 else
                 {
-                    if (ctx.r7.u32 >= 0x60000000u && ctx.r7.u32 < 0x80000000u)
+                    if (ctx.r7.u32 >= 0x50000000u && ctx.r7.u32 < 0x90000000u)
                         storeU32(base, ctx.r7.u32, 0);
                     ctx.r3.u32 = 259; // ERROR_NO_MORE_FILES.
                 }
