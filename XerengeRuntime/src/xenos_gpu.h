@@ -132,6 +132,7 @@ private:
     VkCommandBuffer vulkanCommandBuffer_ = VK_NULL_HANDLE;
     VkFence vulkanFence_ = VK_NULL_HANDLE;
     bool vulkanImagesInitialized_ = false;
+    bool vulkanTextureImageInitialized_ = false;
     bool vulkanTextureInitialized_ = false;
     uint32_t vulkanTextureWidth_ = 1;
     uint32_t vulkanTextureHeight_ = 1;
