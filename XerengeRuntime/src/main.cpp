@@ -10,6 +10,7 @@
 #include <condition_variable>
 #include <cstring>
 #include <cstdint>
+#include <deque>
 #include <fstream>
 #include <iomanip>
 #include <iostream>
@@ -1599,14 +1600,38 @@ public:
         }
         if (service == "XNotifyGetNext")
         {
-            // BOOL XNotifyGetNext(listener, filter, id, parameter). The
-            // bootstrap runtime has no host notification source yet, so
-            // return an empty queue and initialize both optional outputs.
-            if (ctx.r5.u32 != 0)
-                storeU32(base, ctx.r5.u32, 0);
-            if (ctx.r6.u32 != 0)
-                storeU32(base, ctx.r6.u32, 0);
-            ctx.r3.u32 = 0;
+            // BOOL XNotifyGetNext(listener, filter, id, parameter).  The
+            // frontend polls this after the device selector completes.  A
+            // permanently empty queue leaves it in the bootstrap screen, so
+            // deliver the local sign-in and UI-dismissed notifications queued
+            // by the host-side XAM dialog stubs.
+            auto notification = pendingNotifications_.end();
+            for (auto it = pendingNotifications_.begin();
+                 it != pendingNotifications_.end(); ++it)
+            {
+                if (ctx.r4.u32 == 0 || ctx.r4.u32 == it->first)
+                {
+                    notification = it;
+                    break;
+                }
+            }
+            if (notification != pendingNotifications_.end())
+            {
+                if (ctx.r5.u32 != 0)
+                    storeU32(base, ctx.r5.u32, notification->first);
+                if (ctx.r6.u32 != 0)
+                    storeU32(base, ctx.r6.u32, notification->second);
+                pendingNotifications_.erase(notification);
+                ctx.r3.u32 = 1;
+            }
+            else
+            {
+                if (ctx.r5.u32 != 0)
+                    storeU32(base, ctx.r5.u32, 0);
+                if (ctx.r6.u32 != 0)
+                    storeU32(base, ctx.r6.u32, 0);
+                ctx.r3.u32 = 0;
+            }
             return;
         }
         if (service == "XamInputGetState")
@@ -1670,6 +1695,15 @@ public:
                     eventCondition_.notify_all();
                 }
             }
+            queueSystemNotifications();
+            ctx.r3.u32 = 0;
+            return;
+        }
+        if (service == "XamShowSigninUI")
+        {
+            // There is no host sign-in dialog.  Treat the primary local
+            // profile as signed in and notify the title exactly once.
+            queueSystemNotifications();
             ctx.r3.u32 = 0;
             return;
         }
@@ -2184,6 +2218,25 @@ private:
         }
     }
 
+    void queueSystemNotifications()
+    {
+        const auto hasNotification = [this](uint32_t id)
+        {
+            return std::any_of(pendingNotifications_.begin(),
+                               pendingNotifications_.end(),
+                               [id](const auto& notification)
+                               {
+                                   return notification.first == id;
+                               });
+        };
+        // XAM notification ids used by the title for local sign-in changes
+        // and completion of a modal UI operation.
+        if (!hasNotification(0x0000000Au))
+            pendingNotifications_.emplace_back(0x0000000Au, 1u);
+        if (!hasNotification(0x00000009u))
+            pendingNotifications_.emplace_back(0x00000009u, 0u);
+    }
+
     static void storeU32(uint8_t* base, uint32_t address, uint32_t value)
     {
         const uint32_t bigEndianValue = __builtin_bswap32(value);
@@ -2226,6 +2279,7 @@ private:
     std::condition_variable_any threadCondition_;
     std::unordered_map<uint32_t, uint32_t> threadSuspendCounts_;
     std::unordered_map<uint32_t, std::shared_ptr<std::recursive_mutex>> criticalSections_;
+    std::deque<std::pair<uint32_t, uint32_t>> pendingNotifications_;
     bool vtableAllocated_ = false;
     std::array<bool, 64> tlsUsed_{};
     std::atomic<uint32_t> nextThreadId_{1};
