@@ -1963,6 +1963,24 @@ public:
             ctx.r3.u32 = 0;
             return;
         }
+        if (service == "XamGetSystemVersion")
+        {
+            // XMsg uses this during local profile/bootstrap discovery.  The
+            // runtime has no Xbox Live service, but the title must still see
+            // a valid local system query so the request can complete.
+            if (ctx.r3.u32 >= 0x60000000u && ctx.r3.u32 < 0x80000000u)
+                storeU32(base, ctx.r3.u32, 0x00000000u);
+            ctx.r3.u32 = 0;
+            return;
+        }
+        if (service == "NetDll_XNetStartup" || service == "NetDll_XNetCleanup")
+        {
+            // Burnout initializes its online capable frontend even when no
+            // network is present.  Complete the local XNet lifecycle without
+            // creating sockets or advertising a host network interface.
+            ctx.r3.u32 = 0;
+            return;
+        }
         if (service == "XGetVideoMode")
         {
             // XVIDEO_MODE is returned through r3.  The refresh rate is a BE
