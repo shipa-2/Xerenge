@@ -1923,6 +1923,13 @@ public:
                 {
                     // The host completed the selector synchronously, so the
                     // worker must not park waiting for a UI resume callback.
+                    // The selector state machine normally receives this
+                    // transition from the dismissed XAM dialog; provide the
+                    // same transition before returning to its worker loop.
+                    const uint32_t stateAddress =
+                        gResourceStateWatchAddress.load(std::memory_order_acquire);
+                    if (stateAddress != 0)
+                        storeU32(base, stateAddress, 6u);
                     --threadSuspendCounts_[thread];
                     threadCondition_.notify_all();
                 }
