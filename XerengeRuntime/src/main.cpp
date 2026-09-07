@@ -1573,6 +1573,23 @@ public:
             ctx.r3.u32 = 0;
             return;
         }
+        if (service == "XamUserCreateAchievementEnumerator")
+        {
+            // The title uses this during frontend profile setup.  The XAM
+            // ABI returns the required item buffer size through r9 and the
+            // enumerator handle through r10; returning only HRESULT leaves
+            // the caller with an uninitialized object that is later treated
+            // as a vtable and dispatches through arbitrary guest memory.
+            const uint32_t flags = ctx.r6.u32;
+            const uint32_t count = ctx.r8.u32;
+            const uint32_t entrySize = 36u + ((flags & 7u) != 0 ? 464u : 0u);
+            if (ctx.r9.u32 != 0)
+                storeU32(base, ctx.r9.u32, entrySize * count);
+            if (ctx.r10.u32 != 0)
+                storeU32(base, ctx.r10.u32, createObject(base));
+            ctx.r3.u32 = 0;
+            return;
+        }
         if (service == "XamContentCreate" || service == "XamContentCreateEnumerator" ||
             service == "XamNotifyCreateListener" || service == "XamSessionCreateHandle" ||
             service == "XamVoiceCreate" || service == "XMACreateContext")
