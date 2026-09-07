@@ -2827,6 +2827,16 @@ extern "C" void PPCUnknownIndirectTrap(uint32_t address, PPCContext& ctx, uint8_
         ctx.r3.u32 = 0;
         return;
     }
+    if (ctx.lr == 0x82381888u || ctx.lr == 0x82381924u)
+    {
+        // The display queue has optional platform notification hooks at
+        // these two call sites.  On the retail boot path their storage can
+        // still contain a floating point value (0x3f800000), which is data
+        // rather than a PPC entry point.  The queue itself is valid, so
+        // complete only the absent notification and continue submission.
+        ctx.r3.u32 = 0;
+        return;
+    }
     ++gPpcUnknownIndirectCalls;
     if (gPpcUnknownIndirectCalls <= 40)
     {
