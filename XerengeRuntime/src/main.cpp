@@ -1920,6 +1920,14 @@ public:
             ctx.r3.u32 = 0;
             return;
         }
+        if (service == "XamLoaderGetLaunchData")
+        {
+            // This title is started directly and has no launch-data blob.
+            // XAM reports the absence explicitly; returning a generic NT
+            // failure makes callers take the wrong bootstrap error path.
+            ctx.r3.u32 = 1168u; // X_ERROR_NOT_FOUND.
+            return;
+        }
         if (service == "NtSuspendThread")
         {
             const uint32_t thread = ctx.r3.u32;
