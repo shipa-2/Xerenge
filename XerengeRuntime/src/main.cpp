@@ -1928,6 +1928,15 @@ public:
             ctx.r3.u32 = 1168u; // X_ERROR_NOT_FOUND.
             return;
         }
+        if (service == "XamLoaderGetLaunchDataSize")
+        {
+            // Keep the size query consistent with GetLaunchData for a direct
+            // title launch without a handoff payload.
+            if (ctx.r3.u32 >= 0x50000000u && ctx.r3.u32 < 0x90000000u)
+                storeU32(base, ctx.r3.u32, 0);
+            ctx.r3.u32 = 1168u; // X_ERROR_NOT_FOUND.
+            return;
+        }
         if (service == "NtSuspendThread")
         {
             const uint32_t thread = ctx.r3.u32;
