@@ -1803,11 +1803,16 @@ public:
             uint16_t buttons = gInputButtons.load(std::memory_order_relaxed);
             const bool holdStart = std::getenv("XERENGE_HOLD_START") != nullptr;
             const bool holdA = std::getenv("XERENGE_HOLD_A") != nullptr;
-            if (holdStart || (std::getenv("XERENGE_AUTO_START") != nullptr &&
-                packet % 300u >= 20u && packet % 300u < 24u))
+            const bool lateAutoStart = std::getenv("XERENGE_AUTO_START_LATE") != nullptr;
+            const bool autoStartPulse = std::getenv("XERENGE_AUTO_START") != nullptr &&
+                packet >= (lateAutoStart ? 300u : 0u) &&
+                packet % 300u >= 20u && packet % 300u < 24u;
+            const bool autoAPulse = std::getenv("XERENGE_AUTO_A") != nullptr &&
+                packet >= (lateAutoStart ? 300u : 0u) &&
+                packet % 300u >= 20u && packet % 300u < 24u;
+            if (holdStart || autoStartPulse)
                 buttons |= 0x0010u;
-            if (holdA || (std::getenv("XERENGE_AUTO_A") != nullptr &&
-                packet % 300u >= 20u && packet % 300u < 24u))
+            if (holdA || autoAPulse)
                 buttons |= 0x1000u;
             storeU16(base, state + 4, buttons);
             if (std::getenv("XERENGE_INPUT_TRACE") != nullptr)
