@@ -43,6 +43,8 @@ XboxMedia gXboxMedia;
 
 namespace
 {
+std::atomic<bool> gHostCloseRequested{false};
+
 struct XexImportLibrary
 {
     std::string name;
@@ -2812,14 +2814,16 @@ extern "C" void PPCUnknownIndirectTrap(uint32_t address, PPCContext& ctx, uint8_
         ctx.r3.u32 = 0;
         return;
     }
-    if (ctx.lr == 0x8256544Cu)
+    if (ctx.lr == 0x825651CCu || ctx.lr == 0x82565388u ||
+        ctx.lr == 0x8256544Cu)
     {
-        // XAudio's completion pass invokes an optional client notification
-        // through the voice object's vtable.  The render-driver client is
-        // real and already submits PCM frames, but the retail title can
-        // leave this secondary notification object without a host-backed
-        // method.  Treat only this invalid notification as completed so it
-        // cannot turn the guest scheduler into a call to a data address.
+        // XAudio's completion pass invokes optional client notifications
+        // through voice-object vtables at three fan-out sites. The
+        // render-driver client is real and already submits PCM frames, but
+        // the retail title can leave these secondary notification objects
+        // without host-backed methods. Complete only these invalid
+        // notifications so they cannot turn the guest scheduler into calls
+        // to data addresses.
         ctx.r3.u32 = 0;
         return;
     }
@@ -3555,12 +3559,22 @@ int main(int argc, char** argv)
             }
             glfwMakeContextCurrent(window);
             glfwSwapInterval(1);
+            gHostCloseRequested.store(false, std::memory_order_release);
+            // Keep the close request explicit: after the event callback sets
+            // this flag, the loop performs window cleanup and returns from
+            // main, which terminates the process together with detached
+            // guest-owned workers.
+            glfwSetWindowCloseCallback(window, [](GLFWwindow*)
+            {
+                gHostCloseRequested.store(true, std::memory_order_release);
+            });
             glPixelStorei(GL_UNPACK_ALIGNMENT, 1);
             bool readbackReported = false;
             bool guestReturnReported = false;
             uint64_t lastEntryTraceCalls = 0;
             auto nextEntryTrace = std::chrono::steady_clock::now() + std::chrono::seconds(1);
-            while (!glfwWindowShouldClose(window))
+            while (!glfwWindowShouldClose(window) &&
+                   !gHostCloseRequested.load(std::memory_order_acquire))
             {
                 if (!guestReturnReported && guestReturned.load(std::memory_order_acquire))
                 {
