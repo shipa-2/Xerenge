@@ -1853,15 +1853,17 @@ public:
         }
         if (service == "NtAllocateVirtualMemory")
         {
-            // NT signature: process, *base, zeroBits, *size, allocationType,
-            // protection.  The title uses the current process pseudo-handle;
-            // guest pointers in r4/r6 carry the requested range.
-            const uint32_t sizeAddress = ctx.r6.u32;
+            // Xenon XAPI wrapper ABI: r3 = *baseAddress, r4 = *regionSize,
+            // r5 = allocation type, r6 = protection. The recompiled title
+            // passes these four arguments directly; r3 is not a process
+            // handle and r6 is not a size pointer.
+            const uint32_t baseAddress = ctx.r3.u32;
+            const uint32_t sizeAddress = ctx.r4.u32;
             const uint32_t requested = sizeAddress != 0 ? loadU32(base, sizeAddress) : 0;
             const uint32_t size = std::max<uint32_t>(requested, 0x1000u);
             const uint32_t allocation = allocate(size, base);
-            if (ctx.r4.u32 != 0)
-                storeU32(base, ctx.r4.u32, allocation);
+            if (baseAddress != 0)
+                storeU32(base, baseAddress, allocation);
             if (sizeAddress != 0)
                 storeU32(base, sizeAddress, size);
             ctx.r3.u32 = allocation != 0 ? 0 : 0xC0000017u; // STATUS_NO_MEMORY
@@ -2669,6 +2671,67 @@ public:
                     storeU32(base, destination + i * 4, 0x80000000u);
             }
             ctx.r3.u32 = count;
+            return;
+        }
+        if (service == "RtlUnicodeStringToAnsiString")
+        {
+            // Xbox uses the standard counted-string layout, but all fields
+            // live in the big-endian guest image. The prototype's paths are
+            // ASCII-compatible UTF-16, so preserve non-ASCII code units as
+            // '?' while keeping the exact counted-string ABI.
+            const uint32_t destination = ctx.r3.u32;
+            const uint32_t source = ctx.r4.u32;
+            const bool allocateDestination = ctx.r5.u32 != 0;
+            const uint32_t sourceLength = source != 0 ? loadU16(base, source) : 0;
+            const uint32_t sourceBuffer = source != 0 ? loadU32(base, source + 4) : 0;
+            if (destination == 0 || sourceBuffer == 0 || (sourceLength & 1u) != 0)
+            {
+                ctx.r3.u32 = 0xC000000Du; // STATUS_INVALID_PARAMETER
+                return;
+            }
+
+            const uint32_t characterCount = sourceLength / 2;
+            const uint32_t required = characterCount + 1;
+            uint32_t destinationBuffer = loadU32(base, destination + 4);
+            uint32_t capacity = loadU16(base, destination + 2);
+            if (allocateDestination)
+            {
+                destinationBuffer = allocate(required, base);
+                capacity = required;
+                storeU32(base, destination + 4, destinationBuffer);
+                storeU16(base, destination + 2, static_cast<uint16_t>(capacity));
+            }
+            if (destinationBuffer == 0 || capacity == 0 || capacity < required)
+            {
+                ctx.r3.u32 = 0xC0000005u; // STATUS_ACCESS_VIOLATION
+                return;
+            }
+
+            const uint32_t outputLength = std::min(characterCount, capacity - 1);
+            for (uint32_t i = 0; i < outputLength; ++i)
+            {
+                const uint16_t codeUnit = loadU16(base, sourceBuffer + i * 2);
+                base[destinationBuffer + i] =
+                    codeUnit <= 0x7Fu ? static_cast<uint8_t>(codeUnit) : '?';
+            }
+            base[destinationBuffer + outputLength] = 0;
+            storeU16(base, destination, static_cast<uint16_t>(outputLength));
+            ctx.r3.u32 = 0;
+            return;
+        }
+        if (service == "RtlFreeAnsiString")
+        {
+            const uint32_t string = ctx.r3.u32;
+            if (string != 0)
+            {
+                const uint32_t buffer = loadU32(base, string + 4);
+                if (buffer != 0)
+                    allocations_.erase(buffer);
+                storeU16(base, string, 0);
+                storeU16(base, string + 2, 0);
+                storeU32(base, string + 4, 0);
+            }
+            ctx.r3.u32 = 0;
             return;
         }
         if (service == "RtlInitAnsiString")
