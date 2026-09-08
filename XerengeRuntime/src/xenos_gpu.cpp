@@ -1550,13 +1550,14 @@ void XenosGpu::rasterizeDraw(uint8_t* guestBase, uint32_t initiator)
         const uint32_t textureFormat = texture1 & 0x3Fu;
         const uint32_t textureEndian = (texture1 >> 6) & 0x3u;
         const bool textureIsValid = (texture0 & 0x3u) == 2u;
+        const bool hasDxt1Texture = textureIsValid && textureFormat == 13u;
         const bool hasDxt3Texture = textureIsValid && textureFormat == 19u;
         const bool hasRgba8Texture = textureIsValid && textureFormat == 6u;
         if (std::getenv("XERENGE_XENOS_TEXTURE_TRACE_ALL") != nullptr)
             std::cerr << "Xenos tf0 raw=0x" << std::hex << texture0 << ' ' << texture1
                       << ' ' << texture2 << " ps=0x" << activePixelShaderHash_
                       << std::dec << '\n';
-        const bool solidVertexColor = !hasDxt3Texture && !hasRgba8Texture &&
+        const bool solidVertexColor = !hasDxt1Texture && !hasDxt3Texture && !hasRgba8Texture &&
             !havePixelConstant && activePixelShaderHash_ == 0x2E372EA28CC404B7ull;
         if (solidVertexColor)
         {
@@ -1564,7 +1565,7 @@ void XenosGpu::rasterizeDraw(uint8_t* guestBase, uint32_t initiator)
                 drawColor[component] = static_cast<uint8_t>(
                     std::clamp(triangle[0].color[component], 0.0f, 1.0f) * 255.0f);
         }
-        if (primitive != 6u && !hasDxt3Texture && !hasRgba8Texture &&
+        if (primitive != 6u && !hasDxt1Texture && !hasDxt3Texture && !hasRgba8Texture &&
             !havePixelConstant && !solidVertexColor)
         {
             if (std::getenv("XERENGE_XENOS_DRAW_TRACE") != nullptr)
@@ -1579,7 +1580,7 @@ void XenosGpu::rasterizeDraw(uint8_t* guestBase, uint32_t initiator)
         // with 1x1 UI resources.
         const uint32_t texturePitchPixels = std::max(32u,
             ((texture0 >> 22) & 0x1FFu) << 5);
-        if ((hasDxt3Texture || hasRgba8Texture) &&
+        if ((hasDxt1Texture || hasDxt3Texture || hasRgba8Texture) &&
             std::getenv("XERENGE_XENOS_TEXTURE_TRACE") != nullptr)
             std::cerr << "Xenos texture tf0 base=0x" << std::hex
                       << ((texture1 >> 12) & 0xFFFFFu)
@@ -1636,7 +1637,8 @@ void XenosGpu::rasterizeDraw(uint8_t* guestBase, uint32_t initiator)
         auto sampleTexture = [&](float u, float v)
         {
             std::array<uint8_t, 4> result{255, 255, 255, 255};
-            if ((!hasDxt3Texture && !hasRgba8Texture) || textureWidth == 0 || textureHeight == 0)
+            if ((!hasDxt1Texture && !hasDxt3Texture && !hasRgba8Texture) ||
+                textureWidth == 0 || textureHeight == 0)
                 return result;
             u = std::clamp(u, 0.0f, 1.0f);
             v = std::clamp(v, 0.0f, 1.0f);
@@ -1644,11 +1646,12 @@ void XenosGpu::rasterizeDraw(uint8_t* guestBase, uint32_t initiator)
                 static_cast<uint32_t>(u * textureWidth));
             const uint32_t y = std::min(textureHeight - 1,
                 static_cast<uint32_t>(v * textureHeight));
-            const uint32_t blockX = hasDxt3Texture ? x / 4u : x;
-            const uint32_t blockY = hasDxt3Texture ? y / 4u : y;
+            const bool blockCompressed = hasDxt1Texture || hasDxt3Texture;
+            const uint32_t blockX = blockCompressed ? x / 4u : x;
+            const uint32_t blockY = blockCompressed ? y / 4u : y;
             const uint32_t address = textureAddress(blockX, blockY,
-                hasDxt3Texture ? texturePitchBlocks : texturePitchPixels,
-                hasDxt3Texture ? 4u : 2u);
+                blockCompressed ? texturePitchBlocks : texturePitchPixels,
+                hasDxt1Texture ? 3u : hasDxt3Texture ? 4u : 2u);
             if (hasRgba8Texture)
             {
                 uint8_t texel[4] = {guestBase[address + 0], guestBase[address + 1],
@@ -1672,28 +1675,38 @@ void XenosGpu::rasterizeDraw(uint8_t* guestBase, uint32_t initiator)
                 return result;
             }
             uint8_t block[16]{};
-            for (uint32_t i = 0; i < 16; ++i)
+            const uint32_t blockBytes = hasDxt1Texture ? 8u : 16u;
+            for (uint32_t i = 0; i < blockBytes; ++i)
                 block[i] = guestBase[address + i];
             if (textureEndian == 1u)
             {
-                for (uint32_t i = 0; i < 16; i += 2)
+                for (uint32_t i = 0; i < blockBytes; i += 2)
                     std::swap(block[i], block[i + 1]);
             }
             else if (textureEndian == 2u)
             {
-                for (uint32_t i = 0; i < 16; i += 4)
+                for (uint32_t i = 0; i < blockBytes; i += 4)
                     std::swap(block[i], block[i + 3]), std::swap(block[i + 1], block[i + 2]);
             }
             else if (textureEndian == 3u)
             {
-                for (uint32_t i = 0; i < 16; i += 4)
+                for (uint32_t i = 0; i < blockBytes; i += 4)
                     std::swap(block[i], block[i + 2]), std::swap(block[i + 1], block[i + 3]);
             }
             const uint32_t local = (y & 3u) * 4u + (x & 3u);
-            const uint8_t alphaByte = block[local >> 1];
-            result[3] = static_cast<uint8_t>(((local & 1u) ? alphaByte >> 4 : alphaByte & 0xFu) * 17u);
-            const uint16_t c0 = uint16_t(block[8]) | (uint16_t(block[9]) << 8);
-            const uint16_t c1 = uint16_t(block[10]) | (uint16_t(block[11]) << 8);
+            if (hasDxt1Texture)
+                result[3] = 255u;
+            else
+            {
+                const uint8_t alphaByte = block[local >> 1];
+                result[3] = static_cast<uint8_t>(
+                    ((local & 1u) ? alphaByte >> 4 : alphaByte & 0xFu) * 17u);
+            }
+            const uint32_t colorOffset = hasDxt1Texture ? 0u : 8u;
+            const uint16_t c0 = uint16_t(block[colorOffset]) |
+                (uint16_t(block[colorOffset + 1]) << 8);
+            const uint16_t c1 = uint16_t(block[colorOffset + 2]) |
+                (uint16_t(block[colorOffset + 3]) << 8);
             auto expand = [](uint16_t c, uint32_t shift, uint32_t bits)
             { return (c >> shift) & ((1u << bits) - 1u); };
             uint8_t colors[4][3]{};
@@ -1704,11 +1717,22 @@ void XenosGpu::rasterizeDraw(uint8_t* guestBase, uint32_t initiator)
                 colors[c][1] = static_cast<uint8_t>(expand(value, 5, 6) * 255 / 63);
                 colors[c][2] = static_cast<uint8_t>(expand(value, 0, 5) * 255 / 31);
             }
-            for (uint32_t c = 0; c < 3; ++c)
-                colors[2][c] = static_cast<uint8_t>((2u * colors[0][c] + colors[1][c]) / 3u);
-            for (uint32_t c = 0; c < 3; ++c)
-                colors[3][c] = static_cast<uint8_t>((colors[0][c] + 2u * colors[1][c]) / 3u);
-            const uint32_t colorIndex = (uint32_t(block[12 + (local >> 2)]) >>
+            if (hasDxt1Texture && c0 <= c1)
+            {
+                for (uint32_t c = 0; c < 3; ++c)
+                    colors[2][c] = static_cast<uint8_t>((colors[0][c] + colors[1][c]) / 2u);
+                std::fill(std::begin(colors[3]), std::end(colors[3]), 0u);
+                result[3] = 0u;
+            }
+            else
+            {
+                for (uint32_t c = 0; c < 3; ++c)
+                    colors[2][c] = static_cast<uint8_t>((2u * colors[0][c] + colors[1][c]) / 3u);
+                for (uint32_t c = 0; c < 3; ++c)
+                    colors[3][c] = static_cast<uint8_t>((colors[0][c] + 2u * colors[1][c]) / 3u);
+            }
+            const uint32_t indexOffset = hasDxt1Texture ? 4u : 12u;
+            const uint32_t colorIndex = (uint32_t(block[indexOffset + (local >> 2)]) >>
                 ((local & 3u) * 2u)) & 3u;
             for (uint32_t c = 0; c < 3; ++c)
                 result[c] = colors[colorIndex][c];
@@ -1763,7 +1787,7 @@ void XenosGpu::rasterizeDraw(uint8_t* guestBase, uint32_t initiator)
                         const float u = w0 * va.uv[0] + w1 * vb.uv[0] + w2 * vc.uv[0];
                         const float v = w0 * va.uv[1] + w1 * vb.uv[1] + w2 * vc.uv[1];
                         const bool hasSampledTexture = !pixelShaderPassesInterpolator &&
-                            (hasDxt3Texture || hasRgba8Texture);
+                            (hasDxt1Texture || hasDxt3Texture || hasRgba8Texture);
                         std::array<uint8_t, 4> output = hasSampledTexture
                             ? sampleTexture(u, v) : drawColor;
                         if (hasSampledTexture || pixelShaderPassesInterpolator)
