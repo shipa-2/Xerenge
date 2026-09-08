@@ -234,6 +234,8 @@ private:
 #endif
 
 #ifdef XERENGE_HAS_PPC
+struct GuestThreadExit final {};
+
 std::atomic<uint64_t> gPpcServiceCalls = 0;
 uint64_t gPpcUnknownIndirectCalls = 0;
 std::atomic<uint32_t> gPpcLastFunction = 0;
@@ -1183,6 +1185,14 @@ public:
         ++gPpcServiceCalls;
         if (service.compare(0, 7, "__imp__") == 0)
             service.remove_prefix(7);
+
+        if (service == "ExTerminateThread")
+        {
+            if (std::getenv("XERENGE_PPC_TRACE") != nullptr)
+                std::cerr << "ExTerminateThread exit current guest thread caller=0x"
+                          << std::hex << static_cast<uint32_t>(ctx.lr) << std::dec << '\n';
+            throw GuestThreadExit{};
+        }
 
         if (std::getenv("XERENGE_SERVICE_TRACE_UNIQUE") != nullptr)
         {
@@ -3047,24 +3057,32 @@ private:
             PPCContext threadContext{};
             threadContext.r1.u32 = 0x81FC0000u - ((threadId & 0xFFu) * 0x10000u);
             initializeGuestPpcThread(threadContext, base, threadId);
-            if (startupAddress != 0)
+            try
             {
-                // XAPI startup trampoline: r3/r4 carry the requested entry
-                // point and its context.
-                threadContext.r3.u32 = startAddress;
-                threadContext.r4.u32 = startContext;
-                PPCDispatchIndirect(threadContext, base, startupAddress);
+                if (startupAddress != 0)
+                {
+                    // XAPI startup trampoline: r3/r4 carry the requested entry
+                    // point and its context.
+                    threadContext.r3.u32 = startAddress;
+                    threadContext.r4.u32 = startContext;
+                    PPCDispatchIndirect(threadContext, base, startupAddress);
+                }
+                else
+                {
+                    // The startup callback is optional on Xenon.  Kernel and
+                    // graphics worker threads use the entry point directly and
+                    // receive their context in r3.
+                    threadContext.r3.u32 = startContext;
+                    if (std::getenv("XERENGE_PPC_TRACE") != nullptr)
+                        std::cerr << "direct guest thread entry=0x" << std::hex << startAddress
+                                  << " context=0x" << startContext << std::dec << '\n';
+                    PPCDispatchIndirect(threadContext, base, startAddress);
+                }
             }
-            else
+            catch (const GuestThreadExit&)
             {
-                // The startup callback is optional on Xenon.  Kernel and
-                // graphics worker threads use the entry point directly and
-                // receive their context in r3.
-                threadContext.r3.u32 = startContext;
                 if (std::getenv("XERENGE_PPC_TRACE") != nullptr)
-                    std::cerr << "direct guest thread entry=0x" << std::hex << startAddress
-                              << " context=0x" << startContext << std::dec << '\n';
-                PPCDispatchIndirect(threadContext, base, startAddress);
+                    std::cerr << "guest thread exited at ExTerminateThread\n";
             }
         }).detach();
     }
