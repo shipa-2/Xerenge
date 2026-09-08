@@ -40,6 +40,7 @@ public:
     uint64_t opcodeCount(uint32_t opcode) const { return opcodeCounts_[opcode & 0xFFu]; }
     uint32_t writePointer() const { return writePointer_; }
     bool ringConfigured() const { return ringBase_ != 0 && ringSizeDwords_ != 0; }
+    bool takeInterruptPending();
 
 private:
     void writeGpuRegister(uint32_t index, uint32_t value);
@@ -85,6 +86,7 @@ private:
     uint32_t ringBase_ = 0;
     uint32_t ringSizeDwords_ = 0;
     uint32_t readPointerWriteback_ = 0;
+    bool interruptPending_ = false;
     uint64_t mmioWriteCount_ = 0;
     uint64_t packetCount_ = 0;
     uint64_t type0Count_ = 0;

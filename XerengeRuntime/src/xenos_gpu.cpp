@@ -1875,6 +1875,14 @@ void XenosGpu::processSubmittedBuffer(uint8_t* guestBase, uint32_t guestAddress,
     processBuffer(guestBase, guestAddress, dwordCount, 0);
 }
 
+bool XenosGpu::takeInterruptPending()
+{
+    std::lock_guard lock(mutex_);
+    const bool pending = interruptPending_;
+    interruptPending_ = false;
+    return pending;
+}
+
 void XenosGpu::processBuffer(uint8_t* guestBase, uint32_t guestAddress,
     uint32_t dwordCount, uint32_t recursionDepth)
 {
@@ -2069,6 +2077,7 @@ void XenosGpu::processBuffer(uint8_t* guestBase, uint32_t guestAddress,
                     guestBase, guestAddress + (offset + 1) * 4);
                 if (event == 6u)
                     resolveToGuest(guestBase);
+                interruptPending_ = true;
             }
             if ((opcode == 0x58u || opcode == 0x59u) && length >= 4 &&
                 offset + 3 < dwordCount)
@@ -2080,6 +2089,7 @@ void XenosGpu::processBuffer(uint8_t* guestBase, uint32_t guestAddress,
                 const uint32_t value = loadGuestBE(
                     guestBase, guestAddress + (offset + 3) * 4);
                 writeEventToGuest(guestBase, initiator, address, value, frameCount_);
+                interruptPending_ = true;
                 if (std::getenv("XERENGE_XENOS_EVENT_TRACE") != nullptr)
                     std::cerr << "Xenos event opcode=0x" << std::hex << opcode
                               << " initiator=0x" << initiator
@@ -2360,6 +2370,7 @@ void XenosGpu::processRing(uint8_t* guestBase)
                 const uint32_t event = ringLoad(readPointer_ + 1);
                 if (event == 6u)
                     resolveToGuest(guestBase);
+                interruptPending_ = true;
             }
             if ((opcode == 0x58u || opcode == 0x59u) && length >= 4 &&
                 3 < available)
@@ -2368,6 +2379,7 @@ void XenosGpu::processRing(uint8_t* guestBase)
                 const uint32_t address = ringLoad(readPointer_ + 2);
                 const uint32_t value = ringLoad(readPointer_ + 3);
                 writeEventToGuest(guestBase, initiator, address, value, frameCount_);
+                interruptPending_ = true;
                 if (std::getenv("XERENGE_XENOS_EVENT_TRACE") != nullptr)
                     std::cerr << "Xenos event opcode=0x" << std::hex << opcode
                               << " initiator=0x" << initiator

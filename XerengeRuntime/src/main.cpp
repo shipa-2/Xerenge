@@ -222,7 +222,12 @@ void dispatchGraphicsInterrupt(uint8_t* base)
 {
     const uint32_t waitEvent = gGraphicsWaitEvent.load(std::memory_order_acquire);
     if (waitEvent != 0)
-        gGraphicsWaitEventSignaled.store(true, std::memory_order_release);
+    {
+        bool wasSignaled = false;
+        if (!gGraphicsWaitEventSignaled.compare_exchange_strong(
+                wasSignaled, true, std::memory_order_acq_rel))
+            return;
+    }
     const uint32_t callback = gGraphicsInterruptCallback.load(std::memory_order_acquire);
     const uint32_t context = gGraphicsInterruptContext.load(std::memory_order_acquire);
     if (callback == 0 || gInGraphicsInterruptCallback)
@@ -1046,12 +1051,15 @@ extern "C" void PPCGuestMmioStore(uint8_t* base, uint32_t address, uint64_t valu
 
     gXenosGpu.write(base, address, value, width);
 
-    // CP_RB_WPTR is the guest's submission doorbell.  The title registers a
-    // kernel callback for this event and waits for it while bootstrapping the
-    // renderer, so deliver it after the command processor has consumed the
-    // newly submitted ring segment.
+    // CP_RB_WPTR is only the submission doorbell. Deliver the guest callback
+    // after the command processor observed an actual Xenos event writeback;
+    // invoking it for every pointer update turns the worker into a PPC spin
+    // loop before it can reach the title's swap path.
     if (address == XenosGpu::kMmioBase + XenosGpu::kCpRbWptr * 4 && width == 4)
-        dispatchGraphicsInterrupt(base);
+    {
+        if (gXenosGpu.takeInterruptPending())
+            dispatchGraphicsInterrupt(base);
+    }
 
     // Keep the guest-visible big-endian backing bytes until the command
     // processor is connected.  The hook makes MMIO traffic observable while
