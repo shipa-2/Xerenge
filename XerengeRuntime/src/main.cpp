@@ -246,6 +246,8 @@ std::atomic<uint32_t> gPpcEntryFunction = 0;
 std::atomic<uint32_t> gPpcEntryCaller = 0;
 std::atomic<uint64_t> gPpcEntryFunctionCalls = 0;
 std::atomic<uint32_t> gResourceStateWatchAddress = 0;
+std::atomic<bool> gResourceBootstrapReady = false;
+std::atomic<uint32_t> gPpcBootTraceThreadIds = 0;
 std::atomic<uint16_t> gInputButtons = 0;
 thread_local bool gPpcIsEntryThread = false;
 thread_local std::array<uint32_t, 64> gPpcTlsValues{};
@@ -258,6 +260,7 @@ std::atomic<uint32_t> gGraphicsInterruptCallback = 0;
 std::atomic<uint32_t> gGraphicsInterruptContext = 0;
 std::atomic<uint32_t> gGraphicsWaitEvent = 0;
 std::atomic<bool> gGraphicsWaitEventSignaled = false;
+std::atomic<std::condition_variable_any*> gGraphicsWaitCondition = nullptr;
 thread_local bool gInGraphicsInterruptCallback = false;
 
 void dispatchGraphicsInterrupt(uint8_t* base)
@@ -269,6 +272,8 @@ void dispatchGraphicsInterrupt(uint8_t* base)
         // queue and a second writeback can arrive before the worker has
         // reset its dispatcher object.
         gGraphicsWaitEventSignaled.store(true, std::memory_order_release);
+        if (auto* condition = gGraphicsWaitCondition.load(std::memory_order_acquire))
+            condition->notify_all();
     const uint32_t callback = gGraphicsInterruptCallback.load(std::memory_order_acquire);
     const uint32_t context = gGraphicsInterruptContext.load(std::memory_order_acquire);
     if (callback == 0 || gInGraphicsInterruptCallback)
@@ -309,6 +314,7 @@ extern "C" void PPCTraceStore(uint32_t address, uint32_t value, uint64_t lr)
 extern "C" void PPCTraceFunction(uint32_t address, PPCContext& ctx, uint8_t* base)
 {
     static const bool entryTraceEnabled = std::getenv("XERENGE_ENTRY_TRACE") != nullptr;
+    static const bool bootTraceEnabled = std::getenv("XERENGE_BOOT_TRACE") != nullptr;
     static const bool frontendPrepareTraceEnabled =
         std::getenv("XERENGE_FRONTEND_PREPARE_TRACE") != nullptr;
     if (frontendPrepareTraceEnabled)
@@ -638,6 +644,26 @@ extern "C" void PPCTraceFunction(uint32_t address, PPCContext& ctx, uint8_t* bas
         gPpcEntryFunction.store(address, std::memory_order_relaxed);
         gPpcEntryCaller.store(static_cast<uint32_t>(ctx.lr), std::memory_order_relaxed);
         gPpcEntryFunctionCalls.fetch_add(1, std::memory_order_relaxed);
+    }
+    if (bootTraceEnabled &&
+        gResourceBootstrapReady.load(std::memory_order_acquire) &&
+        address >= 0x82000000u && address < 0x82600000u)
+    {
+        static thread_local uint32_t traceThreadId =
+            gPpcBootTraceThreadIds.fetch_add(1, std::memory_order_relaxed) + 1;
+        static thread_local uint32_t previousAddress = 0;
+        static thread_local uint32_t transitionCount = 0;
+        if (address != previousAddress && transitionCount++ < 400)
+        {
+            std::cerr << "post-resource guest thread=" << traceThreadId
+                      << (gPpcIsEntryThread ? " entry" : " worker")
+                      << " transition #" << transitionCount
+                      << " function=0x" << std::hex << address
+                      << " caller=0x" << static_cast<uint32_t>(ctx.lr)
+                      << " r3=0x" << ctx.r3.u32 << " r4=0x" << ctx.r4.u32
+                      << " r5=0x" << ctx.r5.u32 << std::dec << '\n';
+        }
+        previousAddress = address;
     }
     if (address == 0x825847A8u || address == 0x82584E38u)
     {
@@ -1105,6 +1131,8 @@ extern "C" void PPCGuestStoreU32(uint8_t* base, uint32_t address, uint32_t value
                       << gPpcLastDataRoutineArgs[4] << std::dec << '\n';
         }
     }
+    if (watchedResourceState != 0 && address == watchedResourceState && value == 0)
+        gResourceBootstrapReady.store(true, std::memory_order_release);
     if (address >= XenosGpu::kMmioBase && address < XenosGpu::kMmioBase + XenosGpu::kMmioSize)
     {
         PPCGuestMmioStore(base, address, value, 4);
@@ -1182,6 +1210,7 @@ public:
     void invoke(std::string_view service, PPCContext& ctx, uint8_t* base)
     {
         std::unique_lock lock(stateMutex_);
+        gGraphicsWaitCondition.store(&eventCondition_, std::memory_order_release);
         ++gPpcServiceCalls;
         if (service.compare(0, 7, "__imp__") == 0)
             service.remove_prefix(7);
@@ -2142,6 +2171,9 @@ public:
             // Preserve all other status values and only advance the open
             // state used by the title's request queue.
             const uint32_t status = loadU32(base, ctx.r3.u32 + 32u);
+            if (std::getenv("XERENGE_MEDIA_TRACE") != nullptr)
+                std::cerr << "XenonDvdFileSync object=0x" << std::hex << ctx.r3.u32
+                          << " status=" << status << " caller=0x" << ctx.lr << std::dec << '\n';
             if (status == 2u)
                 storeU32(base, ctx.r3.u32 + 32u, 1u);
             ctx.r3.u32 = status == 2u ? 1u : status;
