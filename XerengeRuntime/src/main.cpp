@@ -1525,14 +1525,41 @@ public:
         if (service == "NtCreateFile")
         {
             std::string path;
+            uint32_t nameText = 0;
             if (ctx.r5.u32 != 0)
             {
                 const uint32_t ansi = loadU32(base, ctx.r5.u32 + 4);
                 const uint32_t chars = ansi != 0
                     ? std::min<uint32_t>(loadU16(base, ansi), 0x400u) : 0;
-                const uint32_t text = ansi != 0 ? loadU32(base, ansi + 4) : 0;
-                for (uint32_t i = 0; i < chars && text != 0; ++i)
-                    path.push_back(static_cast<char>(base[text + i]));
+                nameText = ansi != 0 ? loadU32(base, ansi + 4) : 0;
+                for (uint32_t i = 0; i < chars && nameText != 0; ++i)
+                    path.push_back(static_cast<char>(base[nameText + i]));
+            }
+            if (path.empty() && nameText != 0)
+            {
+                // Sound requests in this prototype point an ANSI descriptor
+                // at a reused UTF-16 scratch buffer. The descriptor length is
+                // zero, but the basename is still present in the buffer.
+                std::array<char, 0x200> scratch{};
+                std::memcpy(scratch.data(), base + nameText, scratch.size());
+                for (size_t i = 0; i + 4 < scratch.size(); ++i)
+                {
+                    if (std::tolower(static_cast<unsigned char>(scratch[i])) != '.' ||
+                        std::tolower(static_cast<unsigned char>(scratch[i + 1])) != 'x' ||
+                        std::tolower(static_cast<unsigned char>(scratch[i + 2])) != 'w' ||
+                        std::tolower(static_cast<unsigned char>(scratch[i + 3])) != 'b')
+                        continue;
+                    size_t begin = i;
+                    while (begin != 0 && scratch[begin - 1] != '\\' &&
+                           scratch[begin - 1] != '/' && scratch[begin - 1] != '\0')
+                        --begin;
+                    if (begin < i)
+                    {
+                        path = "D:\\sound\\" +
+                            std::string(scratch.data() + begin, i + 4 - begin);
+                        break;
+                    }
+                }
             }
             // A few prototype sound requests pass an ANSI path assembled in
             // a temporary title buffer.  Its object name can retain the
