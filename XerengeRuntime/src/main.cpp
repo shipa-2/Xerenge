@@ -1524,6 +1524,18 @@ public:
                 for (uint32_t i = 0; i < chars && text != 0; ++i)
                     path.push_back(static_cast<char>(base[text + i]));
             }
+            // A few prototype sound requests pass an ANSI path assembled in
+            // a temporary title buffer.  Its object name can retain the
+            // leading bytes of the previous request, while the actual Xbox
+            // path is still present as the embedded `sound\\*.xwb` suffix.
+            // Recover that suffix before querying XDVDFS; otherwise the
+            // audio bootstrap reports a missing file and leaves the
+            // frontend resource state pending forever.
+            const size_t soundPath = path.find("sound\\");
+            if (soundPath != std::string::npos && soundPath != 0)
+                path.erase(0, soundPath);
+            if (soundPath != std::string::npos && path.rfind("sound\\", 0) == 0)
+                path = "D:\\" + path;
             uint32_t handle = 0;
             uint64_t size = 0;
             if (!path.empty() && gXboxMedia.openFile(path, handle, size))

@@ -55,7 +55,14 @@ bool XboxMedia::open(const std::string& path)
         image_.close();
         return false;
     }
-    return parseDirectory(rootSector, rootSize, "");
+    if (!parseDirectory(rootSector, rootSize, ""))
+        return false;
+    // The prototype issues one optional media open with an empty object name
+    // while probing the sound bank. Keep that probe as a valid zero-byte file
+    // so the guest async file state machine can complete instead of reading
+    // handle 0xffffffff and terminating its resource worker.
+    entries_.emplace("", FileEntry{0, 0, false});
+    return true;
 }
 
 bool XboxMedia::isOpen() const
