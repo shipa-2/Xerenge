@@ -2410,7 +2410,11 @@ public:
         }
         if (service == "XGetLanguage")
         {
-            ctx.r3.u32 = 1; // English, the neutral title default.
+            // The prototype exposes its supported frontend as French and
+            // ships MainFr.bin as the active string bank. XDBF language
+            // identifiers use 4 for French; returning English here selects
+            // a bank that this build does not provide.
+            ctx.r3.u32 = 4;
             return;
         }
         if (service == "ExGetXConfigSetting")
