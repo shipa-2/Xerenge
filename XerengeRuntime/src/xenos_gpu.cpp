@@ -1054,7 +1054,10 @@ void XenosGpu::initializeRingBuffer(uint32_t guestAddress, uint32_t sizeLog2)
 void XenosGpu::enableReadPointerWriteBack(uint32_t guestAddress, uint32_t)
 {
     std::lock_guard lock(mutex_);
-    readPointerWriteback_ = guestAddress;
+    // VdEnableRingBufferRPtrWriteBack receives a GPU physical address.  The
+    // guest observes it through the 0x60000000 physical alias, just like
+    // EVENT_WRITE_SHD destinations.
+    readPointerWriteback_ = gpuPhysicalToGuest(guestAddress & 0x3FFFFFFCu);
 }
 
 void XenosGpu::writeGpuRegister(uint32_t index, uint32_t value)
@@ -1108,6 +1111,16 @@ void XenosGpu::writeGpuRegister(uint32_t index, uint32_t value)
     if (index < gpuRegisters_.size())
     {
         gpuRegisters_[index] = value;
+        if (std::getenv("XERENGE_XENOS_STATE_TRACE") != nullptr &&
+            (index == 0x2000u || index == 0x2001u || index == 0x2104u ||
+             index == 0x2208u || index == 0x2318u || index == 0x2319u))
+        {
+            static std::atomic<uint32_t> stateTraceCount{0};
+            const uint32_t sample = stateTraceCount.fetch_add(1, std::memory_order_relaxed);
+            if (sample < 128)
+                std::cerr << "Xenos state register=0x" << std::hex << index
+                          << " value=0x" << value << std::dec << '\n';
+        }
         if (index == 0x2104u && std::getenv("XERENGE_XENOS_MASK_TRACE") != nullptr)
             std::cerr << "Xenos RB_COLOR_MASK=0x" << std::hex << value << std::dec << '\n';
     }
@@ -2099,7 +2112,8 @@ void XenosGpu::processBuffer(uint8_t* guestBase, uint32_t guestAddress,
             if (std::getenv("XERENGE_XENOS_PACKET_TRACE") != nullptr)
             {
                 static std::atomic<uint32_t> traceCount = 0;
-                if (traceCount.fetch_add(1, std::memory_order_relaxed) < 256)
+                if (std::getenv("XERENGE_XENOS_PACKET_TRACE_ALL") != nullptr ||
+                    traceCount.fetch_add(1, std::memory_order_relaxed) < 256)
                 {
                     std::cerr << "Xenos PM4 depth=" << recursionDepth
                               << " address=0x" << std::hex << guestAddress + offset * 4
@@ -2255,7 +2269,7 @@ void XenosGpu::write(uint8_t* guestBase, uint32_t address, uint64_t value, uint3
     }
     else if (index == kCpRbRptrAddr)
     {
-        readPointerWriteback_ = registerValue;
+        readPointerWriteback_ = gpuPhysicalToGuest(registerValue & 0x3FFFFFFCu);
     }
     else if (index == kCpRbWptr)
     {
