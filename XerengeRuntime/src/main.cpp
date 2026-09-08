@@ -4261,6 +4261,21 @@ bool initializeVulkan(VkInstance& instance, VkPhysicalDevice& physicalDevice)
 }
 }
 
+// XenonRecomp emits these two XAM calls as C++ direct calls from the title
+// body. Keep the definitions outside the anonymous namespace so they resolve
+// the generated mangled symbols instead of the weak NOP wrappers.
+#ifdef XERENGE_HAS_PPC
+void sub_825C66EC(PPCContext& ctx, uint8_t* base)
+{
+    gXboxServices.invoke("XamInputGetState", ctx, base);
+}
+
+void sub_825C66FC(PPCContext& ctx, uint8_t* base)
+{
+    gXboxServices.invoke("XamInputSetState", ctx, base);
+}
+#endif
+
 // This guest helper registers a cleanup record. The generated implementation
 // is weak; keep the loader ABI while the host owns that lifecycle.
 #ifdef XERENGE_HAS_PPC
