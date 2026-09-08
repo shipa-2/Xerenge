@@ -1930,15 +1930,6 @@ public:
             for (uint32_t i = 0; i < sourceCommands.size(); ++i)
                 sourceCommands[i] = loadU32(base, buffer + i * 4);
 
-            // The command buffer already contains the title's PM4 stream.
-            // Consume it before writing the platform swap packet below;
-            // overwriting the first dwords first would erase the actual draw
-            // commands and make a real frame indistinguishable from a clear.
-            gXenosGpu.processSubmittedBuffer(base, buffer, 64);
-            const bool frontbufferRead = gXenosGpu.presentFromGuest(base, frontbuffer, width, height);
-            if (!frontbufferRead)
-                gXenosGpu.present(width, height);
-
             // VdSwap reserves 64 dwords in the primary ring and fills it with
             // a fetch update followed by Xenia's observable XE_SWAP packet.
             // The same PM4 layout is understood by the Xenos command parser.
@@ -1957,9 +1948,9 @@ public:
             for (uint32_t i = 12; i < 64; ++i)
                 storeU32(base, buffer + i * 4, 0x80000000u);
             gXenosGpu.processSubmittedBuffer(base, buffer, 64);
-            // The swap packet resolves the just-rendered EDRAM into the
-            // frontbuffer. Read it after processing that packet so the host
-            // window presents the current frame instead of the prior one.
+            // This reservation contains the platform swap packet, not a
+            // submitted title command stream. Publish once after processing
+            // it; replaying its previous contents can reissue stale clears.
             if (!gXenosGpu.presentFromGuest(base, frontbuffer, width, height))
                 gXenosGpu.present(width, height);
             if (std::getenv("XERENGE_PPC_TRACE") != nullptr)
@@ -2227,6 +2218,17 @@ public:
             if (std::getenv("XERENGE_MEDIA_TRACE") != nullptr)
                 std::cerr << "XenonDvdFileSync object=0x" << std::hex << ctx.r3.u32
                           << " status=" << status << " caller=0x" << ctx.lr << std::dec << '\n';
+            if (status == 2u && std::getenv("XERENGE_MEDIA_TRACE_FIELDS") != nullptr)
+                std::cerr << "  dvd fields +0=0x" << std::hex << loadU32(base, ctx.r3.u32)
+                          << " +4=0x" << loadU32(base, ctx.r3.u32 + 4u)
+                          << " +8=0x" << loadU32(base, ctx.r3.u32 + 8u)
+                          << " +12=0x" << loadU32(base, ctx.r3.u32 + 12u)
+                          << " +20=0x" << loadU32(base, ctx.r3.u32 + 20u)
+                          << " +24=0x" << loadU32(base, ctx.r3.u32 + 24u)
+                          << " +32=0x" << status
+                          << " +56=0x" << loadU32(base, ctx.r3.u32 + 56u)
+                          << " +60=0x" << loadU32(base, ctx.r3.u32 + 60u)
+                          << std::dec << '\n';
             // The guest DVD state machine uses the callback return value as
             // the number of bytes transferred. Returning status 3 here makes
             // UpdateIO skip its remaining-byte/offset update, so it submits
