@@ -2272,10 +2272,16 @@ void XenosGpu::processRing(uint8_t* guestBase)
         return;
     }
 
-    const uint32_t target = std::min(writePointer_, ringSizeDwords_);
-    while (readPointer_ < target)
+    const uint32_t target = writePointer_ % ringSizeDwords_;
+    uint32_t available =
+        (target + ringSizeDwords_ - readPointer_) % ringSizeDwords_;
+    const auto ringLoad = [&](uint32_t index) {
+        return loadGuestBE(guestBase,
+            ringBase_ + (index % ringSizeDwords_) * 4);
+    };
+    while (readPointer_ != target && available != 0)
     {
-        const uint32_t packet = loadGuestBE(guestBase, ringBase_ + readPointer_ * 4);
+        const uint32_t packet = ringLoad(readPointer_);
         const uint32_t type = packet >> 30;
         uint32_t length = 1;
         if (type == 0)
@@ -2288,8 +2294,7 @@ void XenosGpu::processRing(uint8_t* guestBase)
             {
                 const uint32_t index = writeOne ? baseRegister : baseRegister + i;
                 if (index < gpuRegisters_.size())
-                    writeGpuRegister(index, loadGuestBE(
-                        guestBase, ringBase_ + (readPointer_ + 1 + i) * 4));
+                    writeGpuRegister(index, ringLoad(readPointer_ + 1 + i));
             }
         }
         else if (type == 3)
@@ -2301,10 +2306,9 @@ void XenosGpu::processRing(uint8_t* guestBase)
             if (opcode == 0x2Du || opcode == 0x55u || opcode == 0x56u)
             {
                 const uint32_t payloadCount = length - 1;
-                if (payloadCount != 0 && readPointer_ + payloadCount < target)
+                if (payloadCount != 0 && payloadCount < available)
                 {
-                    const uint32_t offsetType = loadGuestBE(guestBase,
-                        ringBase_ + (readPointer_ + 1) * 4);
+                    const uint32_t offsetType = ringLoad(readPointer_ + 1);
                     uint32_t index = offsetType & (opcode == 0x2Du ? 0x7FFu : 0xFFFFu);
                     if (opcode == 0x2Du)
                     {
@@ -2321,18 +2325,14 @@ void XenosGpu::processRing(uint8_t* guestBase)
                     if (index != 0xFFFFFFFFu)
                         for (uint32_t i = 1; i < payloadCount; ++i)
                             writeGpuRegister(index + i - 1,
-                                loadGuestBE(guestBase,
-                                    ringBase_ + (readPointer_ + 1 + i) * 4));
+                                ringLoad(readPointer_ + 1 + i));
                 }
             }
-            if (opcode == 0x2Fu && length >= 4 && readPointer_ + 3 < target)
+            if (opcode == 0x2Fu && length >= 4 && 3 < available)
             {
-                const uint32_t physicalAddress = loadGuestBE(guestBase,
-                    ringBase_ + (readPointer_ + 1) * 4) & 0x3FFFFFFFu;
-                const uint32_t offsetType = loadGuestBE(guestBase,
-                    ringBase_ + (readPointer_ + 2) * 4);
-                const uint32_t sizeDwords = loadGuestBE(guestBase,
-                    ringBase_ + (readPointer_ + 3) * 4) & 0xFFFu;
+                const uint32_t physicalAddress = ringLoad(readPointer_ + 1) & 0x3FFFFFFFu;
+                const uint32_t offsetType = ringLoad(readPointer_ + 2);
+                const uint32_t sizeDwords = ringLoad(readPointer_ + 3) & 0xFFFu;
                 uint32_t index = offsetType & 0x7FFu;
                 switch ((offsetType >> 16) & 0xFFu)
                 {
@@ -2349,30 +2349,24 @@ void XenosGpu::processRing(uint8_t* guestBase)
                         writeGpuRegister(index + i,
                             loadGuestBE(guestBase, source + i * 4));
             }
-            if (opcode == 0x27u && length >= 3 && readPointer_ + 2 < target)
+            if (opcode == 0x27u && length >= 3 && 2 < available)
             {
-                const uint32_t address = loadGuestBE(guestBase,
-                    ringBase_ + (readPointer_ + 1) * 4);
-                const uint32_t startSize = loadGuestBE(guestBase,
-                    ringBase_ + (readPointer_ + 2) * 4);
+                const uint32_t address = ringLoad(readPointer_ + 1);
+                const uint32_t startSize = ringLoad(readPointer_ + 2);
                 loadPointerShader(guestBase, address, address & 0x3u, startSize);
             }
-            if (opcode == 0x46u && length >= 2 && readPointer_ + 1 < target)
+            if (opcode == 0x46u && length >= 2 && 1 < available)
             {
-                const uint32_t event = loadGuestBE(guestBase,
-                    ringBase_ + (readPointer_ + 1) * 4);
+                const uint32_t event = ringLoad(readPointer_ + 1);
                 if (event == 6u)
                     resolveToGuest(guestBase);
             }
             if ((opcode == 0x58u || opcode == 0x59u) && length >= 4 &&
-                readPointer_ + 3 < target)
+                3 < available)
             {
-                const uint32_t initiator = loadGuestBE(guestBase,
-                    ringBase_ + (readPointer_ + 1) * 4);
-                const uint32_t address = loadGuestBE(guestBase,
-                    ringBase_ + (readPointer_ + 2) * 4);
-                const uint32_t value = loadGuestBE(guestBase,
-                    ringBase_ + (readPointer_ + 3) * 4);
+                const uint32_t initiator = ringLoad(readPointer_ + 1);
+                const uint32_t address = ringLoad(readPointer_ + 2);
+                const uint32_t value = ringLoad(readPointer_ + 3);
                 writeEventToGuest(guestBase, initiator, address, value, frameCount_);
                 if (std::getenv("XERENGE_XENOS_EVENT_TRACE") != nullptr)
                     std::cerr << "Xenos event opcode=0x" << std::hex << opcode
@@ -2380,26 +2374,22 @@ void XenosGpu::processRing(uint8_t* guestBase)
                               << " address=0x" << address
                               << " value=0x" << value << std::dec << '\n';
             }
-            if (opcode == 0x3Fu && length >= 3 && readPointer_ + 2 < target)
+            if (opcode == 0x3Fu && length >= 3 && 2 < available)
             {
-                const uint32_t physicalAddress = loadGuestBE(guestBase,
-                    ringBase_ + (readPointer_ + 1) * 4);
-                const uint32_t indirectCount = loadGuestBE(guestBase,
-                    ringBase_ + (readPointer_ + 2) * 4) & 0xFFFFFu;
+                const uint32_t physicalAddress = ringLoad(readPointer_ + 1);
+                const uint32_t indirectCount = ringLoad(readPointer_ + 2) & 0xFFFFFu;
                 const uint32_t indirectAddress =
                     0x60000000u | (physicalAddress & 0x1FFFFFFFu);
                 processBuffer(guestBase, indirectAddress, indirectCount, 1);
             }
-            if (opcode == 0x36u && length >= 2 && readPointer_ + 1 < target)
+            if (opcode == 0x36u && length >= 2 && 1 < available)
             {
-                gpuRegisters_[0x21FC] = loadGuestBE(
-                    guestBase, ringBase_ + (readPointer_ + 1) * 4);
+                gpuRegisters_[0x21FC] = ringLoad(readPointer_ + 1);
                 rasterizeDraw(guestBase, gpuRegisters_[0x21FC]);
             }
-            if (opcode == 0x22u && length >= 3 && readPointer_ + 2 < target)
+            if (opcode == 0x22u && length >= 3 && 2 < available)
             {
-                gpuRegisters_[0x21FC] = loadGuestBE(
-                    guestBase, ringBase_ + (readPointer_ + 2) * 4);
+                gpuRegisters_[0x21FC] = ringLoad(readPointer_ + 2);
                 rasterizeDraw(guestBase, gpuRegisters_[0x21FC]);
             }
             if (opcode == 0x22u || opcode == 0x36u)
@@ -2475,21 +2465,20 @@ void XenosGpu::processRing(uint8_t* guestBase)
             if (opcode == 0x64u)
             {
                 ++swapPacketCount_;
-                if (length >= 5 && readPointer_ + 4 < target)
+                if (length >= 5 && 4 < available)
                 {
-                    lastFrameWidth_ = loadGuestBE(guestBase,
-                        ringBase_ + (readPointer_ + 3) * 4);
-                    lastFrameHeight_ = loadGuestBE(guestBase,
-                        ringBase_ + (readPointer_ + 4) * 4);
+                    lastFrameWidth_ = ringLoad(readPointer_ + 3);
+                    lastFrameHeight_ = ringLoad(readPointer_ + 4);
                     ++frameCount_;
                 }
             }
         }
 
-        if (length == 0 || length > target - readPointer_)
+        if (length == 0 || length > available)
             break;
         ++packetCount_;
-        readPointer_ += length;
+        readPointer_ = (readPointer_ + length) % ringSizeDwords_;
+        available -= length;
     }
 
     // The read pointer writeback is the first synchronization primitive the
