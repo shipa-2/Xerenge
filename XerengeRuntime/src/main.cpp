@@ -1531,11 +1531,19 @@ public:
             // Recover that suffix before querying XDVDFS; otherwise the
             // audio bootstrap reports a missing file and leaves the
             // frontend resource state pending forever.
-            const size_t soundPath = path.find("sound\\");
-            if (soundPath != std::string::npos && soundPath != 0)
+            // The prototype occasionally reuses an ANSI scratch buffer and
+            // leaves bytes from the preceding object name in front of the
+            // actual path. Recover the last complete Xbox device prefix or
+            // the sound directory before asking XDVDFS to resolve it.
+            const size_t devicePath = path.rfind("D:\\");
+            if (devicePath != std::string::npos && devicePath != 0)
+                path.erase(0, devicePath);
+            const size_t soundPath = path.rfind("sound\\");
+            if (soundPath != std::string::npos)
+            {
                 path.erase(0, soundPath);
-            if (soundPath != std::string::npos && path.rfind("sound\\", 0) == 0)
-                path = "D:\\" + path;
+                path.insert(0, "D:\\");
+            }
             uint32_t handle = 0;
             uint64_t size = 0;
             if (!path.empty() && gXboxMedia.openFile(path, handle, size))
