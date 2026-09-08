@@ -89,11 +89,10 @@ bool XenosGpu::initializeVulkan()
 
     VkApplicationInfo application{VK_STRUCTURE_TYPE_APPLICATION_INFO};
     application.pApplicationName = "Xerenge Xenos backend";
-    // Keep the instance request at Vulkan 1.0.  The runtime uses promoted
-    // device features through the feature chain below, and some systems have
-    // a 1.0 loader even though the selected physical device exposes the
-    // required 1.2 capabilities.
-    application.apiVersion = VK_API_VERSION_1_0;
+    // The backend uses Vulkan 1.2 promoted feature queries and descriptor
+    // indexing, so the instance must expose 1.2 before querying the feature
+    // chain below.
+    application.apiVersion = VK_API_VERSION_1_2;
     VkInstanceCreateInfo instanceInfo{VK_STRUCTURE_TYPE_INSTANCE_CREATE_INFO};
     instanceInfo.pApplicationInfo = &application;
     const VkResult instanceResult = vkCreateInstance(&instanceInfo, nullptr, &vulkanInstance_);
@@ -414,10 +413,25 @@ bool XenosGpu::ensureGraphicsPipeline()
     const auto cache = xerengeShaderCache();
     const auto* vertexMicrocode = cache.findMicrocode(activeVertexShaderHash_);
     const auto* pixelMicrocode = cache.findMicrocode(activePixelShaderHash_);
-    if (vulkanDevice_ == VK_NULL_HANDLE || vertexMicrocode == nullptr ||
-        pixelMicrocode == nullptr || !ensureShaderModule(vertexMicrocode->shaderHash) ||
-        !ensureShaderModule(pixelMicrocode->shaderHash))
+    const bool deviceReady = vulkanDevice_ != VK_NULL_HANDLE;
+    const bool vertexFound = vertexMicrocode != nullptr;
+    const bool pixelFound = pixelMicrocode != nullptr;
+    const bool vertexModule = vertexFound && ensureShaderModule(vertexMicrocode->shaderHash);
+    const bool pixelModule = pixelFound && ensureShaderModule(pixelMicrocode->shaderHash);
+    if (!deviceReady || !vertexFound || !pixelFound || !vertexModule || !pixelModule)
+    {
+        if (std::getenv("XERENGE_XENOS_SHADER_TRACE") != nullptr)
+        {
+            static std::atomic<uint32_t> reasonTraceCount = 0;
+            if (reasonTraceCount.fetch_add(1, std::memory_order_relaxed) < 8)
+                std::cerr << "Xenos Vulkan pipeline prerequisites device=" << deviceReady
+                          << " vsFound=" << vertexFound << " psFound=" << pixelFound
+                          << " vsModule=" << vertexModule << " psModule=" << pixelModule
+                          << " activeVs=0x" << std::hex << activeVertexShaderHash_
+                          << " activePs=0x" << activePixelShaderHash_ << std::dec << '\n';
+        }
         return false;
+    }
 
     const uint32_t blendControl = gpuRegisters_[0x2201u];
     const uint32_t colorMask = gpuRegisters_[0x2104u] & 0xFu;
@@ -1754,12 +1768,14 @@ void XenosGpu::rasterizeDraw(uint8_t* guestBase, uint32_t initiator)
         // the decoded contents keeps unchanged images resident while still
         // detecting guest writes through an unchanged fetch descriptor.
         constexpr size_t textureUploadCapacity = 16u * 1024u * 1024u;
+        std::vector<uint8_t> nativeTexture;
+        uint64_t nativeTextureKey = 0;
         const bool hasNativeTexture = hasDxt3Texture || hasRgba8Texture;
         const size_t nativeTextureBytes = size_t(textureWidth) * textureHeight * 4;
         if (hasNativeTexture && textureWidth != 0 && textureHeight != 0 &&
             nativeTextureBytes <= textureUploadCapacity)
         {
-            std::vector<uint8_t> nativeTexture(nativeTextureBytes);
+            nativeTexture.resize(nativeTextureBytes);
             for (uint32_t y = 0; y < textureHeight; ++y)
                 for (uint32_t x = 0; x < textureWidth; ++x)
                 {
@@ -1773,7 +1789,7 @@ void XenosGpu::rasterizeDraw(uint8_t* guestBase, uint32_t initiator)
             // Guest code may rewrite a texture without changing its fetch
             // descriptor.  Key the upload by decoded contents so video and
             // dynamic UI resources cannot become permanently stale.
-            uint64_t nativeTextureKey = XXH3_64bits(
+            nativeTextureKey = XXH3_64bits(
                 nativeTexture.data(), nativeTexture.size());
             nativeTextureKey ^= uint64_t(textureWidth) << 32;
             nativeTextureKey ^= uint64_t(textureHeight);
@@ -1809,12 +1825,12 @@ void XenosGpu::rasterizeDraw(uint8_t* guestBase, uint32_t initiator)
                               << maxU << ',' << maxV << '\n';
                 }
             }
-            if (drawVulkanTriangles(nativeVertices.data(), nativeOrder.size(),
-                    nativeTextureKey == vulkanTextureKey_
-                        ? nullptr : nativeTexture.data(),
-                    textureWidth, textureHeight, nativeTextureKey))
-                return;
         }
+        if (drawVulkanTriangles(nativeVertices.data(), nativeOrder.size(),
+                hasNativeTexture && nativeTextureKey != vulkanTextureKey_
+                    ? nativeTexture.data() : nullptr,
+                textureWidth, textureHeight, nativeTextureKey))
+            return;
         if (primitive == 6u)
         {
             for (size_t vertex = 2; vertex < stripVertices.size(); ++vertex)
