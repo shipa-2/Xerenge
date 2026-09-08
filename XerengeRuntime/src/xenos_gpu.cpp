@@ -925,6 +925,36 @@ void storeGuestBE(uint8_t* base, uint32_t address, uint32_t value)
     std::memcpy(base + address, &encoded, sizeof(encoded));
 }
 
+void writeEventToGuest(uint8_t* guestBase, uint32_t initiator,
+    uint32_t encodedAddress, uint32_t requestedValue, uint64_t frameCount)
+{
+    const uint32_t endian = encodedAddress & 3u;
+    const uint32_t physicalAddress = encodedAddress & ~3u;
+    const uint32_t destination = gpuPhysicalToGuest(physicalAddress);
+    uint32_t value = (initiator & 0x80000000u) != 0
+        ? static_cast<uint32_t>(frameCount) : requestedValue;
+    switch (endian)
+    {
+    case 1:
+        value = ((value & 0x00FF00FFu) << 8) |
+            ((value & 0xFF00FF00u) >> 8);
+        break;
+    case 2:
+        value = __builtin_bswap32(value);
+        break;
+    case 3:
+        value = ((value & 0x0000FFFFu) << 16) |
+            ((value & 0xFFFF0000u) >> 16);
+        value = ((value & 0xFF00FF00u) >> 8) |
+            ((value & 0x00FF00FFu) << 8);
+        break;
+    default:
+        break;
+    }
+    if (destination < 0x80000000u)
+        storeGuestBE(guestBase, destination, value);
+}
+
 }
 
 void XenosGpu::present(uint32_t width, uint32_t height)
@@ -1011,7 +1041,12 @@ void XenosGpu::initializeRingBuffer(uint32_t guestAddress, uint32_t sizeLog2)
 {
     std::lock_guard lock(mutex_);
     ringBase_ = guestAddress;
-    ringSizeDwords_ = sizeLog2 < 31 ? (1u << sizeLog2) : 0;
+    // CP_RB_CNTL.RB_BLKSZ is the log2 of the number of 8-byte blocks.  The
+    // command processor therefore exposes 1 << (sizeLog2 + 3) bytes, or
+    // 1 << (sizeLog2 + 1) dwords.  Treating the value as a dword exponent
+    // truncates the ring by half and drops the first frame after the cursor
+    // crosses the artificial limit.
+    ringSizeDwords_ = sizeLog2 < 30 ? (1u << (sizeLog2 + 1)) : 0;
     readPointer_ = 0;
     writePointer_ = 0;
 }
@@ -2035,6 +2070,22 @@ void XenosGpu::processBuffer(uint8_t* guestBase, uint32_t guestAddress,
                 if (event == 6u)
                     resolveToGuest(guestBase);
             }
+            if ((opcode == 0x58u || opcode == 0x59u) && length >= 4 &&
+                offset + 3 < dwordCount)
+            {
+                const uint32_t initiator = loadGuestBE(
+                    guestBase, guestAddress + (offset + 1) * 4);
+                const uint32_t address = loadGuestBE(
+                    guestBase, guestAddress + (offset + 2) * 4);
+                const uint32_t value = loadGuestBE(
+                    guestBase, guestAddress + (offset + 3) * 4);
+                writeEventToGuest(guestBase, initiator, address, value, frameCount_);
+                if (std::getenv("XERENGE_XENOS_EVENT_TRACE") != nullptr)
+                    std::cerr << "Xenos event opcode=0x" << std::hex << opcode
+                              << " initiator=0x" << initiator
+                              << " address=0x" << address
+                              << " value=0x" << value << std::dec << '\n';
+            }
             if (std::getenv("XERENGE_XENOS_PACKET_TRACE") != nullptr)
             {
                 static std::atomic<uint32_t> traceCount = 0;
@@ -2190,7 +2241,7 @@ void XenosGpu::write(uint8_t* guestBase, uint32_t address, uint64_t value, uint3
     else if (index == kCpRbCntl)
     {
         const uint32_t sizeLog2 = registerValue & 0x3Fu;
-        ringSizeDwords_ = sizeLog2 < 31 ? (1u << sizeLog2) : 0;
+        ringSizeDwords_ = sizeLog2 < 30 ? (1u << (sizeLog2 + 1)) : 0;
     }
     else if (index == kCpRbRptrAddr)
     {
@@ -2312,6 +2363,22 @@ void XenosGpu::processRing(uint8_t* guestBase)
                     ringBase_ + (readPointer_ + 1) * 4);
                 if (event == 6u)
                     resolveToGuest(guestBase);
+            }
+            if ((opcode == 0x58u || opcode == 0x59u) && length >= 4 &&
+                readPointer_ + 3 < target)
+            {
+                const uint32_t initiator = loadGuestBE(guestBase,
+                    ringBase_ + (readPointer_ + 1) * 4);
+                const uint32_t address = loadGuestBE(guestBase,
+                    ringBase_ + (readPointer_ + 2) * 4);
+                const uint32_t value = loadGuestBE(guestBase,
+                    ringBase_ + (readPointer_ + 3) * 4);
+                writeEventToGuest(guestBase, initiator, address, value, frameCount_);
+                if (std::getenv("XERENGE_XENOS_EVENT_TRACE") != nullptr)
+                    std::cerr << "Xenos event opcode=0x" << std::hex << opcode
+                              << " initiator=0x" << initiator
+                              << " address=0x" << address
+                              << " value=0x" << value << std::dec << '\n';
             }
             if (opcode == 0x3Fu && length >= 3 && readPointer_ + 2 < target)
             {
