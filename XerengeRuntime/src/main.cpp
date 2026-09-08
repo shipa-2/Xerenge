@@ -413,6 +413,29 @@ extern "C" void PPCTraceFunction(uint32_t address, PPCContext& ctx, uint8_t* bas
                       << std::dec << '\n';
         }
     }
+    if (std::getenv("XERENGE_RESOURCE_TRACE") != nullptr &&
+        (address == 0x822D45B8u || address == 0x82356C68u))
+    {
+        static std::atomic<uint32_t> resourceSamples{0};
+        const uint32_t sample = resourceSamples.fetch_add(1, std::memory_order_relaxed);
+        if (sample < 32 || (sample % 10000u) == 0)
+        {
+            auto read32 = [base](uint32_t guestAddress) {
+                uint32_t value = 0;
+                if (guestAddress <= UINT32_MAX - 3u)
+                    std::memcpy(&value, base + guestAddress, sizeof(value));
+                return __builtin_bswap32(value);
+            };
+            std::cerr << "resource trace function=0x" << std::hex << address
+                      << " caller=0x" << static_cast<uint32_t>(ctx.lr)
+                      << " r3=0x" << ctx.r3.u32 << " r4=0x" << ctx.r4.u32
+                      << " r5=0x" << ctx.r5.u32;
+            if (address == 0x822D45B8u)
+                std::cerr << " count=" << read32(ctx.r3.u32 + 4u)
+                          << " entries=0x" << read32(ctx.r3.u32 + 8u);
+            std::cerr << std::dec << '\n';
+        }
+    }
     if (frontendPrepareTraceEnabled && address == 0x821017D8u)
     {
         auto read32 = [base](uint32_t guestAddress) {
@@ -1016,7 +1039,8 @@ extern "C" void PPCTraceFunction(uint32_t address, PPCContext& ctx, uint8_t* bas
         gXenosGpu.processSubmittedBuffer(base, ctx.r4.u32, ctx.r5.u32);
         if (gXenosGpu.takeInterruptPending())
             dispatchGraphicsInterrupt(base);
-        if (std::getenv("XERENGE_PPC_TRACE") != nullptr)
+        if (std::getenv("XERENGE_PPC_TRACE") != nullptr ||
+            std::getenv("XERENGE_RESOURCE_TRACE") != nullptr)
         {
             static std::atomic<uint32_t> commandTraceCount = 0;
             if (commandTraceCount.fetch_add(1, std::memory_order_relaxed) < 8)
@@ -1099,6 +1123,15 @@ uint64_t hostTimeBaseFrequency()
 
 extern "C" void PPCGuestStoreU32(uint8_t* base, uint32_t address, uint32_t value)
 {
+    if (address > UINT32_MAX - sizeof(uint32_t) + 1u)
+    {
+        if (std::getenv("XERENGE_PPC_TRACE") != nullptr)
+            std::cerr << "ignored out-of-range guest u32 store address=0x"
+                      << std::hex << address << " value=0x" << value
+                      << " function=0x" << gPpcCurrentFunction << " caller=0x"
+                      << gPpcCurrentCaller << std::dec << '\n';
+        return;
+    }
     if (address == 0x825EACE8u + 3760u &&
         std::getenv("XERENGE_FRONTEND_PREPARE_TRACE") != nullptr)
         std::cerr << "Memory block 19 pointer store value=0x" << std::hex << value
@@ -1610,9 +1643,15 @@ public:
                 path.erase(0, soundPath);
                 path.insert(0, "D:\\");
             }
+            // After the loading scene the prototype also probes optional
+            // media slots with a reused binary buffer instead of a path.
+            // Keep those probes on the zero-byte media sentinel; reporting
+            // NAME_NOT_FOUND leaves the DVD worker retrying the same slot.
+            if (path.size() < 3 || path[1] != ':' || path[2] != '\\')
+                path.clear();
             uint32_t handle = 0;
             uint64_t size = 0;
-            if (!path.empty() && gXboxMedia.openFile(path, handle, size))
+            if (gXboxMedia.openFile(path, handle, size))
             {
                 if (ctx.r3.u32 != 0)
                     storeU32(base, ctx.r3.u32, handle);
@@ -1631,7 +1670,21 @@ public:
             {
                 if (std::getenv("XERENGE_PPC_TRACE") != nullptr ||
                     std::getenv("XERENGE_MEDIA_TRACE") != nullptr)
+                {
                     std::cerr << "media file not found: '" << path << "'\n";
+                    if (std::getenv("XERENGE_MEDIA_TRACE") != nullptr && nameText != 0)
+                    {
+                        static std::atomic<uint32_t> missingDumpCount = 0;
+                        if (missingDumpCount.fetch_add(1, std::memory_order_relaxed) < 8)
+                        {
+                            std::cerr << "media missing nameText=0x" << std::hex << nameText
+                                      << " bytes=";
+                            for (uint32_t i = 0; i < 96; ++i)
+                                std::cerr << static_cast<unsigned>(base[nameText + i]) << ' ';
+                            std::cerr << std::dec << '\n';
+                        }
+                    }
+                }
                 ctx.r3.u32 = 0xC0000034u;
             }
             return;
@@ -2174,9 +2227,27 @@ public:
             if (std::getenv("XERENGE_MEDIA_TRACE") != nullptr)
                 std::cerr << "XenonDvdFileSync object=0x" << std::hex << ctx.r3.u32
                           << " status=" << status << " caller=0x" << ctx.lr << std::dec << '\n';
-            if (status == 2u)
+            // The guest DVD state machine uses the callback return value as
+            // the number of bytes transferred. Returning status 3 here makes
+            // UpdateIO skip its remaining-byte/offset update, so it submits
+            // the same block forever. The request's status field remains 1
+            // until the generated Read method observes EOF and changes it to
+            // 3.
+            if (status == 1u)
+            {
+                const uint32_t remaining = loadU32(base, ctx.r3.u32 + 56u);
+                ctx.r3.u32 = remaining == 0
+                    ? 3u : std::min<uint32_t>(remaining, 0x20000u);
+            }
+            else if (status == 2u)
+            {
                 storeU32(base, ctx.r3.u32 + 32u, 1u);
-            ctx.r3.u32 = status == 2u ? 1u : status;
+                ctx.r3.u32 = 1u;
+            }
+            else
+            {
+                ctx.r3.u32 = status;
+            }
             return;
         }
         if (service == "XAudioRegisterRenderDriverClient")
@@ -3344,6 +3415,17 @@ extern "C" void __wrap___imp__sub_825857A8(PPCContext& ctx, uint8_t* base)
 
 extern "C" void PPCUnknownIndirectTrap(uint32_t address, PPCContext& ctx, uint8_t* base)
 {
+    if (ctx.lr == 0x8235F938u &&
+        (address < PPC_IMAGE_BASE || address >= PPC_CODE_BASE))
+    {
+        // UpdateIO invokes the file backend through a request vtable. Some
+        // optional prototype slots contain bytes from the loaded scene
+        // instead of a PPC entry point; treating that request as a completed
+        // transfer lets the DVD queue discard it without writing through the
+        // corrupt object or retrying it forever.
+        ctx.r3.u32 = 3u;
+        return;
+    }
     if (ctx.lr == 0x8238B834u || ctx.lr == 0x8238BE1Cu)
     {
         // These are optional notification hooks in the frontend state
