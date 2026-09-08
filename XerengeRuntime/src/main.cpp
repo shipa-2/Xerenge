@@ -975,6 +975,8 @@ extern "C" void PPCTraceFunction(uint32_t address, PPCContext& ctx, uint8_t* bas
         // PM4 draw packets are visible before the generated copy advances the
         // guest ring cursor.
         gXenosGpu.processSubmittedBuffer(base, ctx.r4.u32, ctx.r5.u32);
+        if (gXenosGpu.takeInterruptPending())
+            dispatchGraphicsInterrupt(base);
         if (std::getenv("XERENGE_PPC_TRACE") != nullptr)
         {
             static std::atomic<uint32_t> commandTraceCount = 0;
