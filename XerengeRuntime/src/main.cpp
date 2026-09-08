@@ -163,7 +163,9 @@ public:
     void invokeEntryPoint()
     {
         context_ = PPCContext{};
-        context_.r1.u64 = 0x70000000u;
+        // Keep guest stacks above the physical allocation arena. Burnout's
+        // two early video heaps span 0x60000000..0x78110000.
+        context_.r1.u64 = 0x81FF0000u;
         entryPoint_(context_, base_);
     }
 
@@ -228,7 +230,7 @@ void dispatchGraphicsInterrupt(uint8_t* base)
 
     gInGraphicsInterruptCallback = true;
     PPCContext interrupt{};
-    interrupt.r1.u32 = 0x6E000000u;
+    interrupt.r1.u32 = 0x81FE0000u;
     interrupt.r3.u32 = 1; // Xenos interrupt notification: command processor.
     interrupt.r4.u32 = context;
     if (std::getenv("XERENGE_PPC_TRACE") != nullptr)
@@ -261,6 +263,232 @@ extern "C" void PPCTraceStore(uint32_t address, uint32_t value, uint64_t lr)
 extern "C" void PPCTraceFunction(uint32_t address, PPCContext& ctx, uint8_t* base)
 {
     static const bool entryTraceEnabled = std::getenv("XERENGE_ENTRY_TRACE") != nullptr;
+    static const bool frontendPrepareTraceEnabled =
+        std::getenv("XERENGE_FRONTEND_PREPARE_TRACE") != nullptr;
+    if (frontendPrepareTraceEnabled)
+    {
+        uint32_t encodedPointer = 0;
+        std::memcpy(&encodedPointer, base + 0x825EACE8u + 3760u, sizeof(encodedPointer));
+        const uint32_t pointer = __builtin_bswap32(encodedPointer);
+        static thread_local uint32_t previousPointer = UINT32_MAX;
+        if (pointer != previousPointer)
+        {
+            std::cerr << "Memory block 19 pointer transition 0x" << std::hex
+                      << previousPointer << " -> 0x" << pointer << " at function=0x"
+                      << address << " caller=0x" << static_cast<uint32_t>(ctx.lr)
+                      << std::dec << '\n';
+            previousPointer = pointer;
+        }
+    }
+    if (frontendPrepareTraceEnabled && address == 0x82114A48u)
+    {
+        static std::atomic<uint32_t> previousState{UINT32_MAX};
+        static std::atomic<uint32_t> stateThreeSamples{0};
+        uint32_t state = 0;
+        std::memcpy(&state, base + ctx.r3.u32 + 48, sizeof(state));
+        state = __builtin_bswap32(state);
+        const uint32_t old = previousState.exchange(state, std::memory_order_relaxed);
+        if (old != state)
+            std::cerr << "Frontend prepare state=" << state << " object=0x"
+                      << std::hex << ctx.r3.u32 << std::dec << '\n';
+        if (state == 3 && stateThreeSamples.fetch_add(1, std::memory_order_relaxed) % 10000u == 0)
+        {
+            auto read32 = [base](uint32_t address) {
+                uint32_t value = 0;
+                std::memcpy(&value, base + address, sizeof(value));
+                return __builtin_bswap32(value);
+            };
+            constexpr uint32_t flash = 0x82A528B0u;
+            constexpr uint32_t loader = 0x82847090u;
+            const uint32_t movie = read32(flash + 1012);
+            const uint32_t slot = read32(flash + (movie + 150u) * 4u);
+            const uint32_t request = read32(loader + 2216) * 92u + loader;
+            const uint32_t file = read32(loader + 2208);
+            std::cerr << "Flash prepare movie=" << movie << " loaded="
+                      << static_cast<uint32_t>(base[flash + 755]) << " slot=0x"
+                      << std::hex << slot << " loaderFile=0x" << file
+                      << " readIndex=" << read32(loader + 2216)
+                      << " writeIndex=" << read32(loader + 2220)
+                      << " decompressStarted="
+                      << static_cast<uint32_t>(base[0x82825C35u])
+                      << " decompressBusy="
+                      << static_cast<uint32_t>(base[0x82825C36u])
+                      << " requestState=0x" << read32(request + 76)
+                      << " requestDone=0x" << read32(request + 80);
+            if (file != 0)
+                std::cerr << " fileStatus=" << std::dec << read32(file + 32)
+                          << " fileCommand=" << read32(file + 320)
+                          << " remaining=0x" << std::hex << read32(file + 56);
+            std::cerr << std::dec << '\n';
+        }
+    }
+    if (frontendPrepareTraceEnabled && address == 0x8210DDC0u)
+    {
+        static std::atomic<uint32_t> loaderUpdates{0};
+        const uint32_t count = loaderUpdates.fetch_add(1, std::memory_order_relaxed);
+        if (count < 64 || count % 100u == 0)
+            std::cerr << "Async loader update=" << count << " caller=0x" << std::hex
+                      << ctx.lr << " object=0x" << ctx.r3.u32 << std::dec << '\n';
+    }
+    if (frontendPrepareTraceEnabled && address == 0x8211F8D0u)
+    {
+        static std::atomic<uint32_t> previousGame{UINT32_MAX};
+        const uint32_t old = previousGame.exchange(ctx.r3.u32, std::memory_order_relaxed);
+        if (old != ctx.r3.u32)
+            std::cerr << "CB4Game::Update this=0x" << std::hex << ctx.r3.u32
+                      << " caller=0x" << static_cast<uint32_t>(ctx.lr) << std::dec << '\n';
+    }
+    if (frontendPrepareTraceEnabled && address == 0x82200778u)
+    {
+        static std::atomic<uint32_t> previousFlashState{UINT32_MAX};
+        uint32_t state = 0;
+        std::memcpy(&state, base + ctx.r3.u32 + 584, sizeof(state));
+        state = __builtin_bswap32(state);
+        const uint32_t old = previousFlashState.exchange(state, std::memory_order_relaxed);
+        if (old != state)
+            std::cerr << "Flash manager prepare state=" << state << " loaded="
+                      << static_cast<uint32_t>(base[ctx.r3.u32 + 755]) << '\n';
+    }
+    if (frontendPrepareTraceEnabled && address == 0x8210CEC0u)
+    {
+        auto read32 = [base](uint32_t guestAddress) {
+            uint32_t value = 0;
+            std::memcpy(&value, base + guestAddress, sizeof(value));
+            return __builtin_bswap32(value);
+        };
+        static std::atomic<uint32_t> acquireSamples{0};
+        if (acquireSamples.fetch_add(1, std::memory_order_relaxed) < 128)
+            std::cerr << "Memory block acquire id=" << ctx.r4.u32 << " manager=0x"
+                      << std::hex << ctx.r3.u32 << " caller=0x"
+                      << static_cast<uint32_t>(ctx.lr) << std::dec << '\n';
+        if (ctx.r4.u32 == 19u)
+        {
+            static std::atomic<uint64_t> previous{UINT64_MAX};
+            const uint64_t state = (uint64_t(read32(ctx.r3.u32 + 3748)) << 32) |
+                read32(ctx.r3.u32 + 3760);
+            if (previous.exchange(state, std::memory_order_relaxed) != state)
+                std::cerr << "Memory block 19 manager=0x" << std::hex << ctx.r3.u32
+                          << " lock=0x" << (state >> 32) << " pointer=0x"
+                          << static_cast<uint32_t>(state) << std::dec << '\n';
+        }
+    }
+    if (frontendPrepareTraceEnabled && address == 0x82350C50u)
+    {
+        static std::atomic<uint32_t> samples{0};
+        const uint32_t sample = samples.fetch_add(1, std::memory_order_relaxed);
+        if (sample < 64)
+        {
+            auto read32 = [base](uint32_t guestAddress) {
+                uint32_t value = 0;
+                std::memcpy(&value, base + guestAddress, sizeof(value));
+                return __builtin_bswap32(value);
+            };
+            const uint32_t object = ctx.r3.u32;
+            const uint32_t vtable = read32(object);
+            std::cerr << "Queue float entry caller=0x" << std::hex
+                      << static_cast<uint32_t>(ctx.lr) << " object=0x" << object
+                      << " vtable=0x" << vtable << " methods={0x" << read32(vtable)
+                      << ",0x" << read32(vtable + 4) << ",0x" << read32(vtable + 8)
+                      << ",0x" << read32(vtable + 12) << "}" << std::dec << '\n';
+        }
+    }
+    if (frontendPrepareTraceEnabled && address == 0x8210BFD8u)
+        std::cerr << "Memory manager initialize object=0x" << std::hex << ctx.r3.u32
+                  << " caller=0x" << static_cast<uint32_t>(ctx.lr) << std::dec << '\n';
+    if (frontendPrepareTraceEnabled &&
+        (address == 0x8210756Cu || address == 0x821075A0u))
+    {
+        auto read32 = [base](uint32_t guestAddress) {
+            uint32_t value = 0;
+            std::memcpy(&value, base + guestAddress, sizeof(value));
+            return __builtin_bswap32(value);
+        };
+        const uint32_t pointerOffset = address == 0x8210756Cu ? 3760u : 3792u;
+        std::cerr << "Memory block leaf=0x" << std::hex << address << " manager=0x"
+                  << ctx.r11.u32 << " pointer=0x" << read32(ctx.r11.u32 + pointerOffset)
+                  << " id=" << std::dec << ctx.r4.u32 << '\n';
+    }
+    if (frontendPrepareTraceEnabled && address == 0x8210E168u &&
+        static_cast<uint32_t>(ctx.lr) == 0x821F6708u)
+        std::cerr << "Flash async enqueue path=0x" << std::hex << ctx.r4.u32
+                  << " done=0x" << ctx.r5.u32 << " buffer=0x" << ctx.r6.u32
+                  << " bytes=0x" << ctx.r7.u32 << std::dec << '\n';
+    if (frontendPrepareTraceEnabled && address == 0x8259C760u &&
+        static_cast<uint32_t>(ctx.lr) == 0x821F66D8u)
+    {
+        uint32_t encoded = 0;
+        std::memcpy(&encoded, base + ctx.r31.u32 + ctx.r27.u32, sizeof(encoded));
+        std::cerr << "Flash block slot after acquire address=0x" << std::hex
+                  << ctx.r31.u32 + ctx.r27.u32 << " value=0x"
+                  << __builtin_bswap32(encoded) << std::dec << '\n';
+    }
+    static const bool profileEnabled = std::getenv("XERENGE_FUNCTION_PROFILE") != nullptr;
+    if (profileEnabled)
+    {
+        if (address == 0x820A38E8u || address == 0x820A3988u ||
+            address == 0x821819B8u || address == 0x821F7118u ||
+            address == 0x82201010u || address == 0x82207630u ||
+            address == 0x82207720u || address == 0x82207838u ||
+            address == 0x822078F8u)
+        {
+            static std::atomic<uint32_t> bootTraceCount = 0;
+            if (bootTraceCount.fetch_add(1, std::memory_order_relaxed) < 256)
+                std::cerr << "Boot flow function=0x" << std::hex << address
+                          << " caller=0x" << static_cast<uint32_t>(ctx.lr)
+                          << " r3=0x" << ctx.r3.u32 << " r4=0x" << ctx.r4.u32
+                          << " r5=0x" << ctx.r5.u32 << " r6=0x" << ctx.r6.u32
+                          << std::dec << '\n';
+        }
+        if (address == 0x82104DD0u)
+        {
+            thread_local uint32_t memoryCardSamples = 0;
+            if ((++memoryCardSamples % 1000000u) == 0)
+            {
+                auto profileWord = [base](uint32_t guestAddress) {
+                    uint32_t value = 0;
+                    std::memcpy(&value, base + guestAddress, sizeof(value));
+                    return __builtin_bswap32(value);
+                };
+                std::cerr << "Memory card profile thread=" << std::this_thread::get_id()
+                          << " object=0x" << std::hex << ctx.r3.u32
+                          << " state=" << std::dec << profileWord(ctx.r3.u32 + 48)
+                          << " result=" << profileWord(ctx.r3.u32 + 22400)
+                          << " submitted=" << profileWord(ctx.r3.u32 + 2336)
+                          << " completed=" << profileWord(ctx.r3.u32 + 2348)
+                          << " readIndex=" << profileWord(ctx.r3.u32 + 2344)
+                          << " readLimit=" << profileWord(ctx.r3.u32 + 2352) << '\n';
+            }
+        }
+        thread_local std::unordered_map<uint32_t, uint32_t> profileCounts;
+        thread_local uint32_t profileCalls = 0;
+        ++profileCounts[address];
+        if (++profileCalls == 250000)
+        {
+            std::vector<std::pair<uint32_t, uint32_t>> hottest(
+                profileCounts.begin(), profileCounts.end());
+            std::partial_sort(hottest.begin(),
+                hottest.begin() + std::min<size_t>(hottest.size(), 12), hottest.end(),
+                [](const auto& lhs, const auto& rhs) { return lhs.second > rhs.second; });
+            std::cerr << "PPC profile thread=" << std::this_thread::get_id();
+            for (size_t i = 0; i < std::min<size_t>(hottest.size(), 12); ++i)
+                std::cerr << " 0x" << std::hex << hottest[i].first << ':'
+                          << std::dec << hottest[i].second;
+            std::cerr << '\n';
+            hottest.erase(std::remove_if(hottest.begin(), hottest.end(),
+                [](const auto& entry) { return entry.first >= 0x82300000u; }),
+                hottest.end());
+            std::partial_sort(hottest.begin(),
+                hottest.begin() + std::min<size_t>(hottest.size(), 20), hottest.end(),
+                [](const auto& lhs, const auto& rhs) { return lhs.second > rhs.second; });
+            std::cerr << "PPC game profile thread=" << std::this_thread::get_id();
+            for (size_t i = 0; i < std::min<size_t>(hottest.size(), 20); ++i)
+                std::cerr << " 0x" << std::hex << hottest[i].first << ':'
+                          << std::dec << hottest[i].second;
+            std::cerr << '\n';
+            profileCounts.clear();
+            profileCalls = 0;
+        }
+    }
     gPpcCurrentFunction = address;
     gPpcCurrentCaller = static_cast<uint32_t>(ctx.lr);
     if (gPpcIsEntryThread && entryTraceEnabled)
@@ -697,6 +925,11 @@ uint64_t hostTimeBaseFrequency()
 
 extern "C" void PPCGuestStoreU32(uint8_t* base, uint32_t address, uint32_t value)
 {
+    if (address == 0x825EACE8u + 3760u &&
+        std::getenv("XERENGE_FRONTEND_PREPARE_TRACE") != nullptr)
+        std::cerr << "Memory block 19 pointer store value=0x" << std::hex << value
+                  << " function=0x" << gPpcCurrentFunction << " caller=0x"
+                  << gPpcCurrentCaller << std::dec << '\n';
     const uint32_t watchedResourceState =
         gResourceStateWatchAddress.load(std::memory_order_relaxed);
     if (watchedResourceState != 0 && address == watchedResourceState &&
@@ -1311,7 +1544,13 @@ public:
         }
         if (service == "MmAllocatePhysicalMemoryEx")
         {
-            ctx.r3.u32 = allocatePhysical(std::max<uint32_t>(ctx.r4.u32, 0x1000u), base);
+            const uint32_t size = std::max<uint32_t>(ctx.r4.u32, 0x1000u);
+            const uint32_t address = allocatePhysical(size, base);
+            if (std::getenv("XERENGE_FRONTEND_PREPARE_TRACE") != nullptr)
+                std::cerr << "MmAllocatePhysicalMemoryEx size=0x" << std::hex << size
+                          << " result=0x" << address << " next=0x" << heapCursor_
+                          << std::dec << '\n';
+            ctx.r3.u32 = address;
             return;
         }
         if (service == "MmGetPhysicalAddress")
@@ -1564,6 +1803,34 @@ public:
             // NT ABI: RtlFreeHeap(heapHandle, flags, allocation).
             allocations_.erase(ctx.r5.u32);
             ctx.r3.u32 = 1;
+            return;
+        }
+        if (service == "RtlAllocateHeap")
+        {
+            // The title's XAPI heap object is initialized by the retail
+            // kernel.  The generated guest implementation requires that
+            // object to be present before its first allocation, while the
+            // runtime already owns a bounds-checked guest allocator.  Keep
+            // the Xbox ABI (heap, flags, size) and return a real guest
+            // pointer so callers can use the allocation immediately.
+            const uint32_t size = ctx.r5.u32;
+            ctx.r3.u32 = allocate(size, base);
+            return;
+        }
+        if (service == "RtlReAllocateHeap")
+        {
+            // RtlReAllocateHeap(heap, flags, old, size). Preserve existing
+            // contents when possible; callers use this for small metadata
+            // buffers during frontend setup.
+            const uint32_t oldAddress = ctx.r5.u32;
+            const uint32_t oldSize = allocations_.count(oldAddress)
+                ? allocations_.at(oldAddress) : 0;
+            const uint32_t newAddress = allocate(ctx.r6.u32, base);
+            if (newAddress != 0 && oldAddress != 0 && oldSize != 0)
+                std::memcpy(base + newAddress, base + oldAddress,
+                    std::min(oldSize, ctx.r6.u32));
+            allocations_.erase(oldAddress);
+            ctx.r3.u32 = newAddress;
             return;
         }
         if (service == "XAudioGetSpeakerConfig")
@@ -2459,7 +2726,7 @@ private:
             while (!audioThreadStop_.load(std::memory_order_acquire))
             {
                 PPCContext context{};
-                context.r1.u32 = 0x6E800000u;
+                context.r1.u32 = 0x81FD0000u;
                 context.r3.u32 = audioCallbackParameter_;
                 PPCDispatchIndirect(context, audioCallbackBase_, audioCallback_);
                 std::this_thread::sleep_for(interval);
@@ -2487,7 +2754,7 @@ private:
         std::thread([base, startupAddress, startAddress, startContext, threadId]
         {
             PPCContext threadContext{};
-            threadContext.r1.u32 = 0x70000000u - ((threadId & 0xFFu) * 0x10000u);
+            threadContext.r1.u32 = 0x81FC0000u - ((threadId & 0xFFu) * 0x10000u);
             if (startupAddress != 0)
             {
                 // XAPI startup trampoline: r3/r4 carry the requested entry
@@ -2612,7 +2879,7 @@ private:
     uint32_t heapCursor_ = 0x60000000u;
     // Early Burnout allocates large physical video heaps (over 200 MiB)
     // before creating the primary command ring.
-    static constexpr uint32_t heapLimit_ = 0x78000000u;
+    static constexpr uint32_t heapLimit_ = 0x80000000u;
     static constexpr uint32_t kVtableBase = 0x81000000u;
     std::unordered_map<uint32_t, uint32_t> allocations_;
     std::unordered_map<uint32_t, uint32_t> objects_;
@@ -2674,7 +2941,6 @@ extern "C" void sub_825C614C(PPCContext& ctx, uint8_t* base)
 }
 
 extern "C" void __real___imp__sub_825857A8(PPCContext& ctx, uint8_t* base);
-
 extern "C" void __wrap___imp__sub_825857A8(PPCContext& ctx, uint8_t* base)
 {
     // X3DAudioCalculate is title code, but early Burnout emitters can carry
