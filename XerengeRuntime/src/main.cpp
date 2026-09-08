@@ -326,9 +326,76 @@ extern "C" void PPCTraceFunction(uint32_t address, PPCContext& ctx, uint8_t* bas
     {
         static std::atomic<uint32_t> loaderUpdates{0};
         const uint32_t count = loaderUpdates.fetch_add(1, std::memory_order_relaxed);
-        if (count < 64 || count % 100u == 0)
+        if (count < 8 || count % 100u == 0)
+        {
             std::cerr << "Async loader update=" << count << " caller=0x" << std::hex
-                      << ctx.lr << " object=0x" << ctx.r3.u32 << std::dec << '\n';
+                      << ctx.lr << " object=0x" << ctx.r3.u32;
+            auto read32 = [base](uint32_t address) {
+                uint32_t value = 0;
+                std::memcpy(&value, base + address, sizeof(value));
+                return __builtin_bswap32(value);
+            };
+            const uint32_t request = read32(ctx.r3.u32 + 2216u) * 92u + ctx.r3.u32;
+            std::cerr << " readIndex=" << read32(ctx.r3.u32 + 2216u)
+                      << " writeIndex=" << read32(ctx.r3.u32 + 2220u)
+                      << " file=0x" << read32(ctx.r3.u32 + 2208u)
+                      << " requestState=0x" << read32(request + 76u)
+                      << " requestKind=0x" << read32(request + 68u)
+                      << " requestBuffer=0x" << read32(request + 72u);
+            const uint32_t file = read32(ctx.r3.u32 + 2208u);
+            if (file != 0)
+            {
+                const uint32_t vtable = read32(file);
+                std::cerr << " fileVtable=0x" << vtable
+                          << " poll=0x" << read32(vtable + 28u)
+                          << " start=0x" << read32(vtable + 8u)
+                          << " close=0x" << read32(vtable + 4u);
+                if (count < 4)
+                {
+                    std::cerr << " bytes=";
+                    for (uint32_t offset = 32; offset < 112; offset += 4)
+                        std::cerr << std::hex << read32(file + offset) << ',';
+                }
+            }
+            std::cerr
+                      << std::dec << '\n';
+        }
+    }
+    if (frontendPrepareTraceEnabled && address == 0x821017D8u)
+    {
+        auto read32 = [base](uint32_t guestAddress) {
+            uint32_t value = 0;
+            std::memcpy(&value, base + guestAddress, sizeof(value));
+            return __builtin_bswap32(value);
+        };
+        std::cerr << "loader media check object=0x" << std::hex << ctx.r3.u32
+                  << " field48=0x" << read32(ctx.r3.u32 + 52u)
+                  << " caller=0x" << static_cast<uint32_t>(ctx.lr)
+                  << std::dec << '\n';
+    }
+    if (frontendPrepareTraceEnabled &&
+        (address == 0x82369920u || address == 0x8235F370u))
+    {
+        static std::atomic<uint32_t> dvdTraceCount{0};
+        if (dvdTraceCount.fetch_add(1, std::memory_order_relaxed) < 12)
+        {
+            auto read32 = [base](uint32_t guestAddress) {
+                uint32_t value = 0;
+                std::memcpy(&value, base + guestAddress, sizeof(value));
+                return __builtin_bswap32(value);
+            };
+            std::cerr << "DVD file method=0x" << std::hex << address
+                      << " this=0x" << ctx.r3.u32
+                      << " r4=0x" << ctx.r4.u32 << " r5=0x" << ctx.r5.u32
+                      << " status=0x" << read32(ctx.r3.u32 + 32u)
+                      << " mode=0x" << read32(ctx.r3.u32 + 36u)
+                      << " handle=0x" << read32(ctx.r3.u32 + 40u)
+                      << " offset=0x" << read32(ctx.r3.u32 + 48u)
+                      << " bytes=0x" << read32(ctx.r3.u32 + 56u)
+                      << " buffer=0x" << read32(ctx.r3.u32 + 60u)
+                      << " backend=0x" << read32(ctx.r3.u32 + 328u)
+                      << std::dec << '\n';
+        }
     }
     if (frontendPrepareTraceEnabled && address == 0x8211F8D0u)
     {
@@ -1884,6 +1951,30 @@ public:
             ctx.r3.u32 = 0;
             return;
         }
+        if (service == "XAudioEffectManagerQueryEffectSize" ||
+            service == "XAudioRoutedVoiceInitialize")
+        {
+            // Burnout creates no custom XAudio effects on the boot path. The
+            // retail effect manager and routed voice normally call back into
+            // their kernel-owned vtables; the host audio path has no need for
+            // those optional objects, so report an empty effect chain and a
+            // successfully initialized routed voice.
+            ctx.r3.u32 = 0;
+            return;
+        }
+        if (service == "XenonDvdFileSync")
+        {
+            // CGtFileXenonDVD exposes the open operation asynchronously. The
+            // host XDVDFS backend is already mounted synchronously, so a
+            // pending guest open can be completed at the first Sync call.
+            // Preserve all other status values and only advance the open
+            // state used by the title's request queue.
+            const uint32_t status = loadU32(base, ctx.r3.u32 + 32u);
+            if (status == 2u)
+                storeU32(base, ctx.r3.u32 + 32u, 1u);
+            ctx.r3.u32 = status == 2u ? 1u : status;
+            return;
+        }
         if (service == "XAudioRegisterRenderDriverClient")
         {
             if (ctx.r4.u32 != 0)
@@ -2975,6 +3066,17 @@ extern "C" void __wrap___imp__sub_825857A8(PPCContext& ctx, uint8_t* base)
 
 extern "C" void PPCUnknownIndirectTrap(uint32_t address, PPCContext& ctx, uint8_t* base)
 {
+    if (ctx.lr == 0x8238B834u || ctx.lr == 0x8238BE1Cu)
+    {
+        // These are optional notification hooks in the frontend state
+        // machine.  On this prototype their slots contain locale/profile
+        // data (for example 0xffff and 0x1922), rather than PPC entry
+        // points.  The caller already treats the hook as optional and the
+        // normal return value is ignored, so complete the notification
+        // without letting data be dispatched as code.
+        ctx.r3.u32 = 0;
+        return;
+    }
     if (ctx.lr == 0x82095B04u)
     {
         if (std::getenv("XERENGE_PPC_TRACE") != nullptr)
