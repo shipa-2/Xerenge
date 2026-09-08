@@ -925,6 +925,32 @@ void storeGuestBE(uint8_t* base, uint32_t address, uint32_t value)
     std::memcpy(base + address, &encoded, sizeof(encoded));
 }
 
+uint32_t gpuSwap32(uint32_t value, uint32_t endian)
+{
+    switch (endian & 3u)
+    {
+    case 1:
+        return ((value & 0x00FF00FFu) << 8) |
+            ((value & 0xFF00FF00u) >> 8);
+    case 2:
+        return __builtin_bswap32(value);
+    case 3:
+        value = ((value & 0x0000FFFFu) << 16) |
+            ((value & 0xFFFF0000u) >> 16);
+        return ((value & 0xFF00FF00u) >> 8) |
+            ((value & 0x00FF00FFu) << 8);
+    default:
+        return value;
+    }
+}
+
+void writeGpuMemory(uint8_t* guestBase, uint32_t encodedAddress, uint32_t value)
+{
+    const uint32_t destination = gpuPhysicalToGuest(encodedAddress & ~3u);
+    if (destination < 0x80000000u)
+        storeGuestBE(guestBase, destination, gpuSwap32(value, encodedAddress));
+}
+
 void writeEventToGuest(uint8_t* guestBase, uint32_t initiator,
     uint32_t encodedAddress, uint32_t requestedValue, uint64_t frameCount)
 {
@@ -1983,7 +2009,69 @@ void XenosGpu::processBuffer(uint8_t* guestBase, uint32_t guestAddress,
                 if (index != 0xFFFFFFFFu && sizeDwords <= 0x8000u - index)
                     for (uint32_t i = 0; i < sizeDwords; ++i)
                         writeGpuRegister(index + i,
-                            loadGuestBE(guestBase, source + i * 4));
+                        loadGuestBE(guestBase, source + i * 4));
+            }
+
+            if (opcode == 0x21u && length >= 4 && offset + 3 < dwordCount)
+            {
+                const uint32_t info = loadGuestBE(guestBase,
+                    guestAddress + (offset + 1) * 4);
+                const uint32_t andOperand = loadGuestBE(guestBase,
+                    guestAddress + (offset + 2) * 4);
+                const uint32_t orOperand = loadGuestBE(guestBase,
+                    guestAddress + (offset + 3) * 4);
+                const uint32_t index = info & 0x1FFFu;
+                if (index < gpuRegisters_.size())
+                {
+                    uint32_t value = gpuRegisters_[index];
+                    value &= (info & 0x80000000u) != 0
+                        ? gpuRegisters_[andOperand & 0x1FFFu] : andOperand;
+                    value |= (info & 0x40000000u) != 0
+                        ? gpuRegisters_[orOperand & 0x1FFFu] : orOperand;
+                    writeGpuRegister(index, value);
+                }
+            }
+
+            if (opcode == 0x3Du && length >= 3 && offset + 2 < dwordCount)
+            {
+                uint32_t address = loadGuestBE(guestBase,
+                    guestAddress + (offset + 1) * 4);
+                for (uint32_t i = 0; i + 2 < length; ++i)
+                {
+                    writeGpuMemory(guestBase, address,
+                        loadGuestBE(guestBase,
+                            guestAddress + (offset + 2 + i) * 4));
+                    address += 4;
+                }
+            }
+
+            if (opcode == 0x3Cu && length >= 6 && offset + 5 < dwordCount)
+            {
+                const uint32_t waitInfo = loadGuestBE(guestBase,
+                    guestAddress + (offset + 1) * 4);
+                const uint32_t pollAddress = loadGuestBE(guestBase,
+                    guestAddress + (offset + 2) * 4);
+                const uint32_t reference = loadGuestBE(guestBase,
+                    guestAddress + (offset + 3) * 4);
+                const uint32_t mask = loadGuestBE(guestBase,
+                    guestAddress + (offset + 4) * 4);
+                const uint32_t value = (waitInfo & 0x10u) != 0
+                    ? loadGuestBE(guestBase, gpuPhysicalToGuest(pollAddress & ~3u))
+                    : (pollAddress < gpuRegisters_.size() ? gpuRegisters_[pollAddress] : 0);
+                const uint32_t relation = waitInfo & 7u;
+                const uint32_t masked = value & mask;
+                const bool matched = relation == 0u ? false :
+                    relation == 1u ? masked < reference :
+                    relation == 2u ? masked <= reference :
+                    relation == 3u ? masked == reference :
+                    relation == 4u ? masked != reference :
+                    relation == 5u ? masked >= reference :
+                    relation == 6u ? masked > reference : true;
+                if (!matched && std::getenv("XERENGE_XENOS_WAIT_TRACE") != nullptr)
+                    std::cerr << "Xenos WAIT_REG_MEM unsatisfied address=0x"
+                              << std::hex << pollAddress << " value=0x" << value
+                              << " ref=0x" << reference << " mask=0x" << mask
+                              << std::dec << '\n';
             }
             if (opcode == 0x2Bu && length >= 3 && offset + 2 < dwordCount &&
                 std::getenv("XERENGE_XENOS_SHADER_TRACE") != nullptr)
@@ -2372,6 +2460,59 @@ void XenosGpu::processRing(uint8_t* guestBase)
                     for (uint32_t i = 0; i < sizeDwords; ++i)
                         writeGpuRegister(index + i,
                             loadGuestBE(guestBase, source + i * 4));
+            }
+
+            if (opcode == 0x21u && length >= 4 && 3 < available)
+            {
+                const uint32_t info = ringLoad(readPointer_ + 1);
+                const uint32_t andOperand = ringLoad(readPointer_ + 2);
+                const uint32_t orOperand = ringLoad(readPointer_ + 3);
+                const uint32_t index = info & 0x1FFFu;
+                if (index < gpuRegisters_.size())
+                {
+                    uint32_t value = gpuRegisters_[index];
+                    value &= (info & 0x80000000u) != 0
+                        ? gpuRegisters_[andOperand & 0x1FFFu] : andOperand;
+                    value |= (info & 0x40000000u) != 0
+                        ? gpuRegisters_[orOperand & 0x1FFFu] : orOperand;
+                    writeGpuRegister(index, value);
+                }
+            }
+
+            if (opcode == 0x3Du && length >= 3 && 2 < available)
+            {
+                uint32_t address = ringLoad(readPointer_ + 1);
+                for (uint32_t i = 0; i + 2 < length; ++i)
+                {
+                    writeGpuMemory(guestBase, address,
+                        ringLoad(readPointer_ + 2 + i));
+                    address += 4;
+                }
+            }
+
+            if (opcode == 0x3Cu && length >= 6 && 5 < available)
+            {
+                const uint32_t waitInfo = ringLoad(readPointer_ + 1);
+                const uint32_t pollAddress = ringLoad(readPointer_ + 2);
+                const uint32_t reference = ringLoad(readPointer_ + 3);
+                const uint32_t mask = ringLoad(readPointer_ + 4);
+                const uint32_t value = (waitInfo & 0x10u) != 0
+                    ? loadGuestBE(guestBase, gpuPhysicalToGuest(pollAddress & ~3u))
+                    : (pollAddress < gpuRegisters_.size() ? gpuRegisters_[pollAddress] : 0);
+                const uint32_t relation = waitInfo & 7u;
+                const uint32_t masked = value & mask;
+                const bool matched = relation == 0u ? false :
+                    relation == 1u ? masked < reference :
+                    relation == 2u ? masked <= reference :
+                    relation == 3u ? masked == reference :
+                    relation == 4u ? masked != reference :
+                    relation == 5u ? masked >= reference :
+                    relation == 6u ? masked > reference : true;
+                if (!matched && std::getenv("XERENGE_XENOS_WAIT_TRACE") != nullptr)
+                    std::cerr << "Xenos WAIT_REG_MEM unsatisfied address=0x"
+                              << std::hex << pollAddress << " value=0x" << value
+                              << " ref=0x" << reference << " mask=0x" << mask
+                              << std::dec << '\n';
             }
             if (opcode == 0x27u && length >= 3 && 2 < available)
             {
