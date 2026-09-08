@@ -39,6 +39,34 @@
 #endif
 #include "xbox_media.h"
 
+#ifdef XERENGE_HAS_PPC
+namespace
+{
+constexpr uint32_t kGuestPcrBase = 0x82F00000u;
+constexpr uint32_t kGuestPcrStride = 0x1000u;
+constexpr uint32_t kGuestPcrSize = 0xAB0u;
+constexpr uint32_t kGuestTlsSize = 0x100u;
+
+void initializeGuestPpcThread(PPCContext& context, uint8_t* base, uint32_t slot)
+{
+    const uint32_t pcr = kGuestPcrBase + (slot % 256u) * kGuestPcrStride;
+    const uint32_t tls = pcr + kGuestPcrSize;
+    const uint32_t teb = tls + kGuestTlsSize;
+    std::memset(base + pcr, 0, kGuestPcrStride);
+    const auto store = [base](uint32_t address, uint32_t value)
+    {
+        const uint32_t encoded = __builtin_bswap32(value);
+        std::memcpy(base + address, &encoded, sizeof(encoded));
+    };
+    store(pcr + 0x00u, tls);
+    store(pcr + 0x10u, 0xFFFFFFFFu);
+    store(pcr + 0x100u, teb);
+    store(teb + 0x14Cu, slot);
+    context.r13.u32 = pcr;
+}
+}
+#endif
+
 XboxMedia gXboxMedia;
 
 namespace
@@ -166,6 +194,7 @@ public:
         // Keep guest stacks above the physical allocation arena. Burnout's
         // two early video heaps span 0x60000000..0x78110000.
         context_.r1.u64 = 0x81FF0000u;
+        initializeGuestPpcThread(context_, base_, 0);
         entryPoint_(context_, base_);
     }
 
@@ -222,12 +251,11 @@ void dispatchGraphicsInterrupt(uint8_t* base)
 {
     const uint32_t waitEvent = gGraphicsWaitEvent.load(std::memory_order_acquire);
     if (waitEvent != 0)
-    {
-        bool wasSignaled = false;
-        if (!gGraphicsWaitEventSignaled.compare_exchange_strong(
-                wasSignaled, true, std::memory_order_acq_rel))
-            return;
-    }
+        // Each Xenos event is a distinct command-processor notification.
+        // Do not coalesce them here: the title's callback drains the event
+        // queue and a second writeback can arrive before the worker has
+        // reset its dispatcher object.
+        gGraphicsWaitEventSignaled.store(true, std::memory_order_release);
     const uint32_t callback = gGraphicsInterruptCallback.load(std::memory_order_acquire);
     const uint32_t context = gGraphicsInterruptContext.load(std::memory_order_acquire);
     if (callback == 0 || gInGraphicsInterruptCallback)
@@ -2985,6 +3013,7 @@ private:
         {
             PPCContext threadContext{};
             threadContext.r1.u32 = 0x81FC0000u - ((threadId & 0xFFu) * 0x10000u);
+            initializeGuestPpcThread(threadContext, base, threadId);
             if (startupAddress != 0)
             {
                 // XAPI startup trampoline: r3/r4 carry the requested entry

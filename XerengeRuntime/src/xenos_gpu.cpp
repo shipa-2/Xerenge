@@ -89,31 +89,69 @@ bool XenosGpu::initializeVulkan()
 
     VkApplicationInfo application{VK_STRUCTURE_TYPE_APPLICATION_INFO};
     application.pApplicationName = "Xerenge Xenos backend";
-    application.apiVersion = VK_API_VERSION_1_2;
+    // Keep the instance request at Vulkan 1.0.  The runtime uses promoted
+    // device features through the feature chain below, and some systems have
+    // a 1.0 loader even though the selected physical device exposes the
+    // required 1.2 capabilities.
+    application.apiVersion = VK_API_VERSION_1_0;
     VkInstanceCreateInfo instanceInfo{VK_STRUCTURE_TYPE_INSTANCE_CREATE_INFO};
     instanceInfo.pApplicationInfo = &application;
-    if (vkCreateInstance(&instanceInfo, nullptr, &vulkanInstance_) != VK_SUCCESS)
+    const VkResult instanceResult = vkCreateInstance(&instanceInfo, nullptr, &vulkanInstance_);
+    if (instanceResult != VK_SUCCESS)
+    {
+        if (std::getenv("XERENGE_XENOS_VULKAN_TRACE") != nullptr)
+            std::cerr << "Xenos Vulkan instance creation failed result=" << instanceResult << '\n';
         return false;
+    }
 
     uint32_t physicalCount = 0;
     vkEnumeratePhysicalDevices(vulkanInstance_, &physicalCount, nullptr);
     std::vector<VkPhysicalDevice> physicalDevices(physicalCount);
     vkEnumeratePhysicalDevices(vulkanInstance_, &physicalCount, physicalDevices.data());
+    if (std::getenv("XERENGE_XENOS_VULKAN_TRACE") != nullptr)
+        std::cerr << "Xenos Vulkan physical devices=" << physicalCount << '\n';
     for (VkPhysicalDevice candidate : physicalDevices)
     {
+        VkPhysicalDeviceProperties candidateProperties{};
+        vkGetPhysicalDeviceProperties(candidate, &candidateProperties);
         uint32_t familyCount = 0;
         vkGetPhysicalDeviceQueueFamilyProperties(candidate, &familyCount, nullptr);
         std::vector<VkQueueFamilyProperties> families(familyCount);
         vkGetPhysicalDeviceQueueFamilyProperties(candidate, &familyCount, families.data());
+        uint32_t candidateQueueFamily = UINT32_MAX;
         for (uint32_t i = 0; i < familyCount; ++i)
             if ((families[i].queueFlags & VK_QUEUE_GRAPHICS_BIT) != 0u)
             {
-                vulkanPhysicalDevice_ = candidate;
-                vulkanQueueFamily_ = i;
+                candidateQueueFamily = i;
                 break;
             }
-        if (vulkanPhysicalDevice_ != VK_NULL_HANDLE)
-            break;
+        if (candidateQueueFamily == UINT32_MAX)
+            continue;
+
+        VkPhysicalDeviceVulkan12Features available12{
+            VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_VULKAN_1_2_FEATURES};
+        VkPhysicalDeviceFeatures2 available{VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_FEATURES_2};
+        available.pNext = &available12;
+        vkGetPhysicalDeviceFeatures2(candidate, &available);
+        if (std::getenv("XERENGE_XENOS_VULKAN_TRACE") != nullptr)
+            std::cerr << "Xenos Vulkan candidate '" << candidateProperties.deviceName
+                      << "' clip=" << available.features.shaderClipDistance
+                      << " int64=" << available.features.shaderInt64
+                      << " bda=" << available12.bufferDeviceAddress
+                      << " runtimeArray=" << available12.runtimeDescriptorArray
+                      << " partial=" << available12.descriptorBindingPartiallyBound
+                      << " variable=" << available12.descriptorBindingVariableDescriptorCount
+                      << '\n';
+        if (!available.features.shaderClipDistance || !available.features.shaderInt64 ||
+            !available12.bufferDeviceAddress ||
+            !available12.runtimeDescriptorArray ||
+            !available12.descriptorBindingPartiallyBound ||
+            !available12.descriptorBindingVariableDescriptorCount)
+            continue;
+
+        vulkanPhysicalDevice_ = candidate;
+        vulkanQueueFamily_ = candidateQueueFamily;
+        break;
     }
     if (vulkanPhysicalDevice_ == VK_NULL_HANDLE)
         return false;
@@ -123,15 +161,8 @@ bool XenosGpu::initializeVulkan()
     queueInfo.queueFamilyIndex = vulkanQueueFamily_;
     queueInfo.queueCount = 1;
     queueInfo.pQueuePriorities = &priority;
-    VkPhysicalDeviceVulkan12Features available12{VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_VULKAN_1_2_FEATURES};
-    VkPhysicalDeviceFeatures2 available{VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_FEATURES_2};
-    available.pNext = &available12;
-    vkGetPhysicalDeviceFeatures2(vulkanPhysicalDevice_, &available);
-    if (!available.features.shaderClipDistance || !available.features.shaderInt64 ||
-        !available12.bufferDeviceAddress ||
-        !available12.runtimeDescriptorArray || !available12.descriptorBindingPartiallyBound ||
-        !available12.descriptorBindingVariableDescriptorCount)
-        return false;
+    VkPhysicalDeviceVulkan12Features available12{
+        VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_VULKAN_1_2_FEATURES};
     VkPhysicalDeviceVulkan12Features requested12{VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_VULKAN_1_2_FEATURES};
     requested12.bufferDeviceAddress = VK_TRUE;
     requested12.runtimeDescriptorArray = VK_TRUE;
@@ -954,29 +985,10 @@ void writeGpuMemory(uint8_t* guestBase, uint32_t encodedAddress, uint32_t value)
 void writeEventToGuest(uint8_t* guestBase, uint32_t initiator,
     uint32_t encodedAddress, uint32_t requestedValue, uint64_t frameCount)
 {
-    const uint32_t endian = encodedAddress & 3u;
     const uint32_t physicalAddress = encodedAddress & ~3u;
     const uint32_t destination = gpuPhysicalToGuest(physicalAddress);
     uint32_t value = (initiator & 0x80000000u) != 0
         ? static_cast<uint32_t>(frameCount) : requestedValue;
-    switch (endian)
-    {
-    case 1:
-        value = ((value & 0x00FF00FFu) << 8) |
-            ((value & 0xFF00FF00u) >> 8);
-        break;
-    case 2:
-        value = __builtin_bswap32(value);
-        break;
-    case 3:
-        value = ((value & 0x0000FFFFu) << 16) |
-            ((value & 0xFFFF0000u) >> 16);
-        value = ((value & 0xFF00FF00u) >> 8) |
-            ((value & 0x00FF00FFu) << 8);
-        break;
-    default:
-        break;
-    }
     if (destination < 0x80000000u)
         storeGuestBE(guestBase, destination, value);
 }
