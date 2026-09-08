@@ -563,6 +563,35 @@ extern "C" void PPCTraceFunction(uint32_t address, PPCContext& ctx, uint8_t* bas
     }
     gPpcCurrentFunction = address;
     gPpcCurrentCaller = static_cast<uint32_t>(ctx.lr);
+    if (std::getenv("XERENGE_RING_PATH_TRACE") != nullptr &&
+        (address == 0x82380E70u || address == 0x82380F20u || address == 0x82380FE8u))
+    {
+        static std::atomic<uint32_t> ringTraceCount{0};
+        const uint32_t sample = ringTraceCount.fetch_add(1, std::memory_order_relaxed);
+        if (sample < 64)
+        {
+            const auto loadGuest = [base](uint32_t guestAddress) {
+                uint32_t value = 0;
+                std::memcpy(&value, base + guestAddress, sizeof(value));
+                return __builtin_bswap32(value);
+            };
+            const uint32_t object = ctx.r3.u32;
+            std::cerr << "D3D ring path fn=0x" << std::hex << address
+                      << " caller=0x" << static_cast<uint32_t>(ctx.lr)
+                      << " r3=0x" << ctx.r3.u32 << " r4=0x" << ctx.r4.u32
+                      << " r5=0x" << ctx.r5.u32 << " r6=0x" << ctx.r6.u32
+                      << " fields={10384:0x" << loadGuest(object + 10384)
+                      << " 10444:0x" << loadGuest(object + 10444)
+                      << " 13996:0x" << loadGuest(object + 13996)
+                      << " 14000:0x" << loadGuest(object + 14000)
+                      << " 14028:0x" << loadGuest(object + 14028) << "}";
+            const uint32_t vtable = loadGuest(object + 10384);
+            if (vtable != 0)
+                std::cerr << " vtable+4=0x" << loadGuest(vtable + 4)
+                          << " vtable+60=0x" << loadGuest(vtable + 60);
+            std::cerr << std::dec << '\n';
+        }
+    }
     if (gPpcIsEntryThread && entryTraceEnabled)
     {
         gPpcEntryFunction.store(address, std::memory_order_relaxed);
