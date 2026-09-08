@@ -997,7 +997,11 @@ extern "C" void PPCGuestClockMidAsmHook(PPCRegister& r3)
 
 extern "C" void PPCStubZeroMidAsmHook(PPCRegister& r3)
 {
-    r3.u32 = 0;
+    // 0x8238C278 is the command-ring reservation check.  Returning zero
+    // makes 0x82380E70 retry forever; this hook exists because the original
+    // mid-assembly path is unsafe in the current generated PPC output, but
+    // the caller must observe a successful reservation to submit commands.
+    r3.u32 = 1;
 }
 
 extern "C" void PPCStubZeroClearOutputMidAsmHook(PPCRegister& r3, PPCRegister& r4, uint8_t* base)
@@ -1361,7 +1365,38 @@ public:
                 return semaphore != semaphores_.end() && semaphore->second > 0;
             };
             if (!ready())
-                eventCondition_.wait_for(lock, std::chrono::milliseconds(2), ready);
+            {
+                if (ctx.r7.u32 == 0)
+                {
+                    eventCondition_.wait(lock, ready);
+                }
+                else
+                {
+                    uint64_t encodedTimeout = 0;
+                    std::memcpy(&encodedTimeout, base + ctx.r7.u32,
+                        sizeof(encodedTimeout));
+                    const int64_t timeout100ns = static_cast<int64_t>(
+                        __builtin_bswap64(encodedTimeout));
+                    if (timeout100ns < 0)
+                    {
+                        const auto ticks = static_cast<uint64_t>(-timeout100ns);
+                        constexpr uint64_t maxNanoseconds = static_cast<uint64_t>(
+                            std::chrono::nanoseconds::max().count());
+                        const auto duration = std::chrono::nanoseconds(
+                            ticks > maxNanoseconds / 100u
+                                ? maxNanoseconds : ticks * 100u);
+                        eventCondition_.wait_for(lock, duration, ready);
+                    }
+                    else
+                    {
+                        // Absolute Xenon deadlines are based on the guest
+                        // system time. The runtime has no shared wall-clock
+                        // epoch, so preserve the wait contract with a bounded
+                        // host wait until the dispatcher state changes.
+                        eventCondition_.wait_for(lock, std::chrono::milliseconds(1), ready);
+                    }
+                }
+            }
             if (ready())
             {
                 if (object == gGraphicsWaitEvent.load(std::memory_order_acquire))
