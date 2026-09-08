@@ -53,9 +53,10 @@ private:
     void loadPointerShader(uint8_t* guestBase, uint32_t address,
         uint32_t shaderType, uint32_t startSize);
     bool ensureShaderModule(uint64_t shaderHash);
-    bool ensureGraphicsPipeline();
+    bool ensureGraphicsPipeline(VkPrimitiveTopology topology);
     bool initializeDrawResources();
-    bool drawVulkanTriangles(const float* vertices, uint32_t vertexCount,
+    bool drawVulkanGeometry(const float* vertices, uint32_t vertexCount,
+        VkPrimitiveTopology topology,
         const uint8_t* texture, uint32_t textureWidth, uint32_t textureHeight,
         uint64_t textureKey);
     uint32_t findMemoryType(uint32_t typeBits, VkMemoryPropertyFlags properties) const;

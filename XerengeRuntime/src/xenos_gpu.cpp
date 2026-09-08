@@ -408,7 +408,7 @@ bool XenosGpu::initializeDrawResources()
     return vkCreateFence(vulkanDevice_, &fenceInfo, nullptr, &vulkanFence_) == VK_SUCCESS;
 }
 
-bool XenosGpu::ensureGraphicsPipeline()
+bool XenosGpu::ensureGraphicsPipeline(VkPrimitiveTopology topology)
 {
     const auto cache = xerengeShaderCache();
     const auto* vertexMicrocode = cache.findMicrocode(activeVertexShaderHash_);
@@ -435,11 +435,16 @@ bool XenosGpu::ensureGraphicsPipeline()
 
     const uint32_t blendControl = gpuRegisters_[0x2201u];
     const uint32_t colorMask = gpuRegisters_[0x2104u] & 0xFu;
+    // The prototype's bootstrap packets leave RB_COLOR_MASK at zero while
+    // still issuing visible setup draws. Keep those draws observable until
+    // the complete render-target register mapping is implemented.
+    const uint32_t effectiveColorMask = colorMask == 0u ? 0xFu : colorMask;
     uint64_t key = activeVertexShaderHash_ ^
         (activePixelShaderHash_ + 0x9E3779B97F4A7C15ull +
             (activeVertexShaderHash_ << 6) + (activeVertexShaderHash_ >> 2));
     key ^= uint64_t(blendControl) * 0xD6E8FEB86659FD93ull;
-    key ^= uint64_t(colorMask) * 0xA0761D6478BD642Full;
+    key ^= uint64_t(effectiveColorMask) * 0xA0761D6478BD642Full;
+    key ^= uint64_t(topology) * 0xE7037ED1A0B428DBull;
     if (vulkanPipelines_.find(key) != vulkanPipelines_.end())
         return true;
 
@@ -536,7 +541,7 @@ bool XenosGpu::ensureGraphicsPipeline()
     vertexInput.pVertexAttributeDescriptions = attributes;
     VkPipelineInputAssemblyStateCreateInfo assembly{
         VK_STRUCTURE_TYPE_PIPELINE_INPUT_ASSEMBLY_STATE_CREATE_INFO};
-    assembly.topology = VK_PRIMITIVE_TOPOLOGY_TRIANGLE_LIST;
+    assembly.topology = topology;
     // XenosRecomp passes -fvk-invert-y to DXC for vertex shaders, so their
     // SPIR-V output already accounts for the Direct3D/Vulkan Y convention.
     // A second inversion in the viewport would mirror native draws again.
@@ -558,10 +563,10 @@ bool XenosGpu::ensureGraphicsPipeline()
         VK_STRUCTURE_TYPE_PIPELINE_MULTISAMPLE_STATE_CREATE_INFO};
     multisample.rasterizationSamples = VK_SAMPLE_COUNT_1_BIT;
     VkPipelineColorBlendAttachmentState blendAttachment{};
-    if (colorMask & 0x1u) blendAttachment.colorWriteMask |= VK_COLOR_COMPONENT_R_BIT;
-    if (colorMask & 0x2u) blendAttachment.colorWriteMask |= VK_COLOR_COMPONENT_G_BIT;
-    if (colorMask & 0x4u) blendAttachment.colorWriteMask |= VK_COLOR_COMPONENT_B_BIT;
-    if (colorMask & 0x8u) blendAttachment.colorWriteMask |= VK_COLOR_COMPONENT_A_BIT;
+    if (effectiveColorMask & 0x1u) blendAttachment.colorWriteMask |= VK_COLOR_COMPONENT_R_BIT;
+    if (effectiveColorMask & 0x2u) blendAttachment.colorWriteMask |= VK_COLOR_COMPONENT_G_BIT;
+    if (effectiveColorMask & 0x4u) blendAttachment.colorWriteMask |= VK_COLOR_COMPONENT_B_BIT;
+    if (effectiveColorMask & 0x8u) blendAttachment.colorWriteMask |= VK_COLOR_COMPONENT_A_BIT;
     auto blendFactor = [](uint32_t factor)
     {
         switch (factor)
@@ -643,22 +648,28 @@ bool XenosGpu::ensureGraphicsPipeline()
     return true;
 }
 
-bool XenosGpu::drawVulkanTriangles(const float* vertices, uint32_t vertexCount,
+bool XenosGpu::drawVulkanGeometry(const float* vertices, uint32_t vertexCount,
+    VkPrimitiveTopology topology,
     const uint8_t* texture, uint32_t textureWidth, uint32_t textureHeight,
     uint64_t textureKey)
 {
     constexpr uint32_t vertexCapacity = (4u * 1024u * 1024u) /
         (12u * sizeof(float));
-    if (vertexCount < 3 || vertexCount % 3 != 0 || vertexCount > vertexCapacity ||
-        !ensureGraphicsPipeline() || !initializeDrawResources())
+    const bool validCount = topology == VK_PRIMITIVE_TOPOLOGY_POINT_LIST
+        ? vertexCount != 0
+        : vertexCount >= 3 && vertexCount % 3 == 0;
+    if (!validCount || vertexCount > vertexCapacity ||
+        !ensureGraphicsPipeline(topology) || !initializeDrawResources())
         return false;
     const uint32_t blendControl = gpuRegisters_[0x2201u];
     const uint32_t colorMask = gpuRegisters_[0x2104u] & 0xFu;
+    const uint32_t effectiveColorMask = colorMask == 0u ? 0xFu : colorMask;
     uint64_t key = activeVertexShaderHash_ ^
         (activePixelShaderHash_ + 0x9E3779B97F4A7C15ull +
             (activeVertexShaderHash_ << 6) + (activeVertexShaderHash_ >> 2));
     key ^= uint64_t(blendControl) * 0xD6E8FEB86659FD93ull;
-    key ^= uint64_t(colorMask) * 0xA0761D6478BD642Full;
+    key ^= uint64_t(effectiveColorMask) * 0xA0761D6478BD642Full;
+    key ^= uint64_t(topology) * 0xE7037ED1A0B428DBull;
     const auto pipeline = vulkanPipelines_.find(key);
     if (pipeline == vulkanPipelines_.end())
         return false;
@@ -1289,13 +1300,15 @@ void XenosGpu::rasterizeDraw(uint8_t* guestBase, uint32_t initiator)
     const uint32_t count = initiator >> 16;
     if ((primitive != 1u && primitive != 6u && primitive != 8u) ||
         source != 2u || count == 0 ||
-        gpuRegisters_[0x2318] != 0 || gpuRegisters_[0x2104] == 0)
+        gpuRegisters_[0x2318] != 0)
         return;
 
     // Materialize the native pipeline as soon as both bound stages are known.
     // Draw submission remains on the bootstrap path until its resources and
     // render target have been uploaded below.
-    ensureGraphicsPipeline();
+    ensureGraphicsPipeline(primitive == 1u
+        ? VK_PRIMITIVE_TOPOLOGY_POINT_LIST
+        : VK_PRIMITIVE_TOPOLOGY_TRIANGLE_LIST);
 
     const uint32_t fetchRegister = 0x4800u + activeVertexFetchConstantIndex_ * 2u;
     const uint32_t fetch0 = vertexFetchRegisters_[fetchRegister - 0x4800u];
@@ -1325,7 +1338,8 @@ void XenosGpu::rasterizeDraw(uint8_t* guestBase, uint32_t initiator)
     constexpr uint32_t height = 720;
     if (edram_.size() != size_t(width) * height * 4)
         edram_.assign(size_t(width) * height * 4, 0);
-    const uint32_t colorMask = gpuRegisters_[0x2104u];
+    const uint32_t colorMask = (gpuRegisters_[0x2104u] & 0xFu) == 0u
+        ? 0xFu : gpuRegisters_[0x2104u];
     auto writeColorMasked = [&](size_t pixel, const uint8_t* color)
     {
         for (uint32_t component = 0; component < 4; ++component)
@@ -1345,6 +1359,9 @@ void XenosGpu::rasterizeDraw(uint8_t* guestBase, uint32_t initiator)
     std::vector<RasterVertex> stripVertices;
     if (primitive == 6u)
         stripVertices.reserve(count);
+    std::vector<float> pointVertices;
+    if (primitive == 1u)
+        pointVertices.reserve(size_t(count) * 12u);
     std::array<uint8_t, 4> drawColor{255, 255, 255, 255};
     std::array<uint8_t, 4> constantColor{};
     bool havePixelConstant = false;
@@ -1369,7 +1386,7 @@ void XenosGpu::rasterizeDraw(uint8_t* guestBase, uint32_t initiator)
         for (uint32_t component = 0; component < 2; ++component)
             bits[component] = loadGuestBE(guestBase, address + component * 4);
 
-        if ((primitive == 8u || primitive == 6u) &&
+        if ((primitive == 1u || primitive == 8u || primitive == 6u) &&
             std::getenv("XERENGE_XENOS_VERTEX_TRACE") != nullptr && i < 3)
         {
             std::cerr << "Xenos vertex i=" << i << " guest=0x" << std::hex << address
@@ -1424,6 +1441,23 @@ void XenosGpu::rasterizeDraw(uint8_t* guestBase, uint32_t initiator)
             if (!std::isfinite(vertexColor[component]))
                 vertexColor[component] = 1.0f;
         }
+        if (primitive == 1u)
+        {
+            const size_t oldSize = pointVertices.size();
+            pointVertices.resize(oldSize + 12u);
+            float* destination = pointVertices.data() + oldSize;
+            destination[0] = xNdc;
+            destination[1] = yNdc;
+            destination[2] = 0.0f;
+            destination[3] = 1.0f;
+            destination[4] = uv[0];
+            destination[5] = uv[1];
+            destination[6] = 0.0f;
+            destination[7] = 0.0f;
+            for (uint32_t component = 0; component < 4; ++component)
+                destination[8u + component] = vertexColor[component];
+            continue;
+        }
         if (primitive == 8u && i < triangle.size())
             triangle[i] = {{xNdc, yNdc, 0.0f}, uv, vertexColor};
         if (primitive == 8u)
@@ -1457,6 +1491,32 @@ void XenosGpu::rasterizeDraw(uint8_t* guestBase, uint32_t initiator)
                 color[component] = static_cast<uint8_t>(std::clamp(value, 0.0f, 1.0f) * 255.0f);
         }
         writeColorMasked(pixel, color);
+    }
+
+    if (primitive == 1u && !pointVertices.empty())
+    {
+        if (drawVulkanGeometry(pointVertices.data(), pointVertices.size() / 12u,
+                VK_PRIMITIVE_TOPOLOGY_POINT_LIST, nullptr, 1, 1, 0))
+            return;
+
+        for (size_t vertex = 0; vertex < pointVertices.size(); vertex += 12u)
+        {
+            const float xNdc = pointVertices[vertex + 0];
+            const float yNdc = pointVertices[vertex + 1];
+            const uint32_t x = std::min(width - 1,
+                static_cast<uint32_t>(std::clamp(xNdc * 0.5f + 0.5f, 0.0f, 1.0f) * width));
+            const uint32_t y = std::min(height - 1,
+                static_cast<uint32_t>(std::clamp(1.0f - (yNdc * 0.5f + 0.5f), 0.0f, 1.0f) * height));
+            uint8_t color[4]{};
+            for (uint32_t component = 0; component < 4; ++component)
+                color[component] = static_cast<uint8_t>(
+                    std::clamp(pointVertices[vertex + 8u + component], 0.0f, 1.0f) * 255.0f);
+            writeColorMasked((size_t(y) * width + x) * 4, color);
+        }
+        if (std::getenv("XERENGE_XENOS_DRAW_TRACE") != nullptr)
+            std::cerr << "Xenos point draw rasterized count="
+                      << pointVertices.size() / 12u << '\n';
+        return;
     }
 
     if ((primitive == 8u && drawVertices == 3u) ||
@@ -1826,7 +1886,8 @@ void XenosGpu::rasterizeDraw(uint8_t* guestBase, uint32_t initiator)
                 }
             }
         }
-        if (drawVulkanTriangles(nativeVertices.data(), nativeOrder.size(),
+        if (drawVulkanGeometry(nativeVertices.data(), nativeOrder.size(),
+                VK_PRIMITIVE_TOPOLOGY_TRIANGLE_LIST,
                 hasNativeTexture && nativeTextureKey != vulkanTextureKey_
                     ? nativeTexture.data() : nullptr,
                 textureWidth, textureHeight, nativeTextureKey))
