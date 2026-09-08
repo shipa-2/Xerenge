@@ -69,6 +69,17 @@ void initializeGuestPpcThread(PPCContext& context, uint8_t* base, uint32_t slot)
 
 XboxMedia gXboxMedia;
 
+#ifdef XERENGE_HAS_PPC
+// The generated title body for VdRetrainEDRAM is an empty weak function, but
+// the graphics bootstrap uses its return value as a completion status. The
+// Xenon API returns zero on success; preserving the input r3 leaves the
+// 0x8238DE60 EDRAM setup loop running forever when r3 is nonzero.
+void sub_825C69DC(PPCContext& context, uint8_t*)
+{
+    context.r3.u32 = 0;
+}
+#endif
+
 namespace
 {
 std::atomic<bool> gHostCloseRequested{false};
