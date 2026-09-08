@@ -1027,11 +1027,11 @@ extern "C" void PPCGuestClockMidAsmHook(PPCRegister& r3)
 
 extern "C" void PPCStubZeroMidAsmHook(PPCRegister& r3)
 {
-    // 0x8238C278 is the command-ring reservation check.  Returning zero
-    // makes 0x82380E70 retry forever; this hook exists because the original
-    // mid-assembly path is unsafe in the current generated PPC output, but
-    // the caller must observe a successful reservation to submit commands.
-    r3.u32 = 1;
+    // 0x8238C278 is the command-ring reservation check.  The caller returns
+    // from 0x82380E70 when this check reports no wait is required; returning
+    // one enters its bounded wait loop and starves the title's submission
+    // thread when the native reservation path is not active yet.
+    r3.u32 = 0;
 }
 
 extern "C" void PPCStubZeroClearOutputMidAsmHook(PPCRegister& r3, PPCRegister& r4, uint8_t* base)
