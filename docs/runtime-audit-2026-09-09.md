@@ -86,28 +86,37 @@ not verified; the remaining focus is the guest frontend input/action path.
   compact object callback is not reached in the current boot path.
 - The GLFW close callback is wired to the runtime loop's shutdown flag; a
   close-window test left no `xerenge-runtime` process behind.
+- The EALogo trace narrows the remaining boot stop: the global EALogo state
+  stays at `1`, the movie manager ready byte at `0x82A5900C`'s associated
+  resource flag remains zero, and the video object is repeatedly observed in
+  state `55` with no decoder object. The guest therefore never receives the
+  movie completion transition that should release the frontend into its menu.
 
 ## Work order and acceptance criteria
 
-1. Resolve the frontend input object/vtable path after loading: identify the
+1. Resolve the EALogo/movie completion contract: trace the movie open, decoder
+   creation, frame advancement and completion callback, then implement the
+   missing XFile/XAudio/video service behavior that keeps the guest state
+   machine moving.
+2. Resolve the frontend input object/vtable path after loading: identify the
    caller that consumes the XInput result, bind its real callback contract, and
    verify A/D-pad navigation changes the guest menu state.
-2. Capture the current frontend draw state after loading: movie/render-unit
+3. Capture the current frontend draw state after loading: movie/render-unit
    identity, vertex bounds, active shader pair, texture descriptor and resolved
    framebuffer bounds. Use that correlation to identify the first missing or
    clipped menu batch.
-3. Correct the kernel object/thread contract. Separate handles and guest object
+4. Correct the kernel object/thread contract. Separate handles and guest object
    addresses, validate object types and lifetime, implement suspended startup
    and wait/signalling consistently. Audit the existing resource-worker bypass,
    forced context state=2, and device-selector resumption of unrelated threads.
    Remove each workaround only alongside a verified replacement.
-4. Keep asynchronous file completion evidence-backed. The current audit shows
+5. Keep asynchronous file completion evidence-backed. The current audit shows
    the FEMain completion callback is already delivered; remove or narrow any
    remaining workaround only after the same callback path remains verified.
-5. Once the actual wait is known, implement the implicated audio/movie/XAM
+6. Once the actual wait is known, implement the implicated audio/movie/XAM
    service contract. Do not assume sound or a logo movie is the blocker merely
    from a black frame.
-6. Audit GPU command/resolve/present ownership separately. Current code turns a
+7. Audit GPU command/resolve/present ownership separately. Current code turns a
    zero color-write mask into all channels enabled and restores old software
    pixels over black Vulkan pixels. These behaviors need focused register and
    framebuffer tests, not more coordinate flips. Preserve the working Vulkan
