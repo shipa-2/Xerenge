@@ -563,6 +563,20 @@ extern "C" void PPCTraceFunction(uint32_t address, PPCContext& ctx, uint8_t* bas
                           << ',' << read8(ctx.r3.u32 + 22400u)
                           << ',' << read8(ctx.r3.u32 + 22402u);
             }
+            if (address == 0x821FF308u || address == 0x821FF3C0u)
+            {
+                const uint32_t textAddress = ctx.r3.u32;
+                std::string text;
+                for (uint32_t offset = 0; offset < 96u; ++offset)
+                {
+                    const unsigned char value = base[textAddress + offset];
+                    if (value == 0)
+                        break;
+                    text.push_back(static_cast<char>(value));
+                }
+                if (!text.empty())
+                    std::cerr << " text='" << text << "'";
+            }
             std::cerr << '\n';
         }
     }

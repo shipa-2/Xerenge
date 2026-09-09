@@ -49,6 +49,11 @@ loading assets do not establish correct Xbox platform behavior.
   uses zero as a genuine no-write mask, including depth-only passes. The GPU
   path now preserves the lower four mask bits for both Vulkan and the software
   fallback, preventing setup/depth packets from contaminating the UI target.
+- Apt animation tracing now identifies the actual main-menu assets: `Logo1`,
+  `A-button`, `B-button`, `B4ButtonTextures`, and `Menu/background/bgVideo` are
+  loaded and receive completion callbacks. The title is therefore past asset
+  loading; the remaining failure is in rendering-unit resource binding or
+  scanout composition.
 
 ## Work order and acceptance criteria
 
