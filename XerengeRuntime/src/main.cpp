@@ -502,19 +502,10 @@ extern "C" void PPCTraceFunction(uint32_t address, PPCContext& ctx, uint8_t* bas
         const uint32_t sample = flashTraceCount.fetch_add(1, std::memory_order_relaxed);
         if (sample < 256)
         {
-            auto readFlashU32 = [base](uint32_t guestAddress) {
-                uint32_t value = 0;
-                std::memcpy(&value, base + guestAddress, sizeof(value));
-                return __builtin_bswap32(value);
-            };
             std::cerr << "Flash function=0x" << std::hex << address
                       << " caller=0x" << static_cast<uint32_t>(ctx.lr)
                       << " r3=0x" << ctx.r3.u32 << " r4=0x" << ctx.r4.u32
                       << " r5=0x" << ctx.r5.u32 << " r6=0x" << ctx.r6.u32
-                      << " manager+0x2fc=0x" << readFlashU32(ctx.r3.u32 + 0x2fcu)
-                      << " manager+0x5744=0x" << readFlashU32(ctx.r3.u32 + 0x5744u)
-                      << " manager+0x5748=0x" << readFlashU32(ctx.r3.u32 + 0x5748u)
-                      << " manager+0x577c=0x" << readFlashU32(ctx.r3.u32 + 0x577cu)
                       << std::dec << '\n';
         }
     }
@@ -577,11 +568,17 @@ extern "C" void PPCTraceFunction(uint32_t address, PPCContext& ctx, uint8_t* bas
                   << ctx.r11.u32 << " pointer=0x" << read32(ctx.r11.u32 + pointerOffset)
                   << " id=" << std::dec << ctx.r4.u32 << '\n';
     }
-    if (frontendPrepareTraceEnabled && address == 0x8210E168u &&
-        static_cast<uint32_t>(ctx.lr) == 0x821F6708u)
-        std::cerr << "Flash async enqueue path=0x" << std::hex << ctx.r4.u32
-                  << " done=0x" << ctx.r5.u32 << " buffer=0x" << ctx.r6.u32
-                  << " bytes=0x" << ctx.r7.u32 << std::dec << '\n';
+    if (frontendPrepareTraceEnabled && address == 0x8210E168u)
+    {
+        static std::atomic<uint32_t> resourceEnqueueTrace{0};
+        const uint32_t sample = resourceEnqueueTrace.fetch_add(1, std::memory_order_relaxed);
+        if (sample < 64)
+            std::cerr << "Resource async enqueue caller=0x" << std::hex
+                      << static_cast<uint32_t>(ctx.lr) << " manager=0x" << ctx.r3.u32
+                      << " path=0x" << ctx.r4.u32 << " done=0x" << ctx.r5.u32
+                      << " buffer=0x" << ctx.r6.u32 << " bytes=0x" << ctx.r7.u32
+                      << " context=0x" << ctx.r8.u32 << std::dec << '\n';
+    }
     if (frontendPrepareTraceEnabled && address == 0x8259C760u &&
         static_cast<uint32_t>(ctx.lr) == 0x821F66D8u)
     {
@@ -1448,7 +1445,9 @@ public:
         }
         if (service == "ObReferenceObjectByHandle")
         {
-            const uint32_t outputObject = ctx.r6.u32;
+            // Xbox ABI: (handle, objectType, outObject), so the output is r5.
+            // r6 is unrelated caller state and must never be used as a pointer.
+            const uint32_t outputObject = ctx.r5.u32;
             if (outputObject != 0)
                 storeU32(base, outputObject, ctx.r3.u32);
             ctx.r3.u32 = 0;
