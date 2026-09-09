@@ -5074,34 +5074,42 @@ int main(int argc, char** argv)
                     nextEntryTrace += std::chrono::seconds(1);
                 }
                 const auto pixels = gXenosGpu.framebufferCopy();
+                // Do not swap an uninitialized backbuffer while the guest is
+                // still preparing its first Xenos surface. Swapping it makes
+                // the window flash black between the loading and first real
+                // frame; event processing remains active in the meantime.
+                if (pixels.empty())
+                {
+                    glfwPollEvents();
+                    gInputButtons.store(
+                        gKeyboardButtons.load(std::memory_order_relaxed) | pollGamepadButtons(),
+                        std::memory_order_relaxed);
+                    continue;
+                }
                 glViewport(0, 0, 1280, 720);
                 glClearColor(0.0f, 0.0f, 0.0f, 1.0f);
                 glClear(GL_COLOR_BUFFER_BIT);
-                if (!pixels.empty())
+                // Xenos readback stores row zero at the top of the display
+                // surface, while OpenGL's pixel raster position starts at
+                // the lower-left. Draw from the upper-left with a negative
+                // Y zoom so scanout preserves guest orientation.
+                glRasterPos2f(-1.0f, 1.0f);
+                const float xScale = 1280.0f /
+                    static_cast<float>(gXenosGpu.lastFrameWidth());
+                const float yScale = 720.0f /
+                    static_cast<float>(gXenosGpu.lastFrameHeight());
+                glPixelZoom(xScale, -yScale);
+                glDrawPixels(static_cast<GLsizei>(gXenosGpu.lastFrameWidth()),
+                    static_cast<GLsizei>(gXenosGpu.lastFrameHeight()),
+                    GL_RGBA, GL_UNSIGNED_BYTE, pixels.data());
+                if (!readbackReported)
                 {
-                    // Xenos readback stores row zero at the top of the
-                    // display surface, while OpenGL's pixel raster position
-                    // starts at the lower-left. Draw from the upper-left
-                    // with a negative Y zoom so scanout preserves guest
-                    // orientation.
-                    glRasterPos2f(-1.0f, 1.0f);
-                    const float xScale = 1280.0f /
-                        static_cast<float>(gXenosGpu.lastFrameWidth());
-                    const float yScale = 720.0f /
-                        static_cast<float>(gXenosGpu.lastFrameHeight());
-                    glPixelZoom(xScale, -yScale);
-                    glDrawPixels(static_cast<GLsizei>(gXenosGpu.lastFrameWidth()),
-                        static_cast<GLsizei>(gXenosGpu.lastFrameHeight()),
-                        GL_RGBA, GL_UNSIGNED_BYTE, pixels.data());
-                    if (!readbackReported)
-                    {
-                        std::cout << "Xenos framebuffer readback: "
-                                  << gXenosGpu.lastFrameWidth() << 'x'
-                                  << gXenosGpu.lastFrameHeight() << " checksum=0x"
-                                  << std::hex << gXenosGpu.framebufferChecksum() << std::dec
-                                  << "\n" << std::flush;
-                        readbackReported = true;
-                    }
+                    std::cout << "Xenos framebuffer readback: "
+                              << gXenosGpu.lastFrameWidth() << 'x'
+                              << gXenosGpu.lastFrameHeight() << " checksum=0x"
+                              << std::hex << gXenosGpu.framebufferChecksum() << std::dec
+                              << "\n" << std::flush;
+                    readbackReported = true;
                 }
                 glfwSwapBuffers(window);
                 glfwPollEvents();
