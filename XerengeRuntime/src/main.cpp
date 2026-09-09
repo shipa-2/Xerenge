@@ -4313,6 +4313,36 @@ void sub_825C6A7C(PPCContext& ctx, uint8_t* base)
 {
     gXboxServices.invoke("RtlTryEnterCriticalSection", ctx, base);
 }
+
+// The generated body calls these video imports directly. Keep that path
+// equivalent to calls through ppc_import_stubs.cpp, whose names are routed by
+// PPCImportedServiceTrap.
+#define XERENGE_DIRECT_IMPORT(symbol, service) \
+    void symbol(PPCContext& ctx, uint8_t* base) { gXboxServices.invoke(service, ctx, base); }
+XERENGE_DIRECT_IMPORT(sub_825C67DC, "VdEnableRingBufferRPtrWriteBack")
+XERENGE_DIRECT_IMPORT(sub_825C67EC, "VdInitializeRingBuffer")
+XERENGE_DIRECT_IMPORT(sub_825C67FC, "MmGetPhysicalAddress")
+XERENGE_DIRECT_IMPORT(sub_825C680C, "VdSetSystemCommandBufferGpuIdentifierAddress")
+XERENGE_DIRECT_IMPORT(sub_825C681C, "VdGetGraphicsAsicID")
+XERENGE_DIRECT_IMPORT(sub_825C682C, "VdEnableDisableClockGating")
+XERENGE_DIRECT_IMPORT(sub_825C684C, "VdPersistDisplay")
+XERENGE_DIRECT_IMPORT(sub_825C686C, "VdGetSystemCommandBuffer")
+XERENGE_DIRECT_IMPORT(sub_825C687C, "VdGetCurrentDisplayGamma")
+XERENGE_DIRECT_IMPORT(sub_825C68BC, "VdShutdownEngines")
+XERENGE_DIRECT_IMPORT(sub_825C68DC, "VdSetGraphicsInterruptCallback")
+XERENGE_DIRECT_IMPORT(sub_825C68EC, "VdInitializeEngines")
+XERENGE_DIRECT_IMPORT(sub_825C690C, "VdQueryVideoMode")
+XERENGE_DIRECT_IMPORT(sub_825C691C, "VdGetCurrentDisplayInformation")
+XERENGE_DIRECT_IMPORT(sub_825C692C, "VdSetDisplayMode")
+XERENGE_DIRECT_IMPORT(sub_825C693C, "VdIsHSIOTrainingSucceeded")
+XERENGE_DIRECT_IMPORT(sub_825C694C, "VdInitializeEDRAM")
+XERENGE_DIRECT_IMPORT(sub_825C69CC, "KeLeaveCriticalRegion")
+XERENGE_DIRECT_IMPORT(sub_825C69EC, "VdRetrainEDRAMWorker")
+XERENGE_DIRECT_IMPORT(sub_825C69FC, "KeEnterCriticalRegion")
+XERENGE_DIRECT_IMPORT(sub_825C6A0C, "VdQueryVideoFlags")
+XERENGE_DIRECT_IMPORT(sub_825C6A1C, "VdCallGraphicsNotificationRoutines")
+XERENGE_DIRECT_IMPORT(sub_825C6A2C, "VdInitializeScalerCommandBuffer")
+#undef XERENGE_DIRECT_IMPORT
 #endif
 
 // This guest helper registers a cleanup record. The generated implementation
