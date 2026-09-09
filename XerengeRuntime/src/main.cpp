@@ -713,45 +713,6 @@ extern "C" void PPCTraceFunction(uint32_t address, PPCContext& ctx, uint8_t* bas
     const bool traceEnabled = gPpcTraceEnabled.load(std::memory_order_relaxed);
     const uint64_t callCount = traceEnabled
         ? gPpcFunctionCalls.fetch_add(1, std::memory_order_relaxed) + 1 : 0;
-    if (address == 0x82355500u && ctx.r3.u32 != 0)
-    {
-        // CGtResourceManager::Update derives a bucket descriptor from the
-        // manager object and divides by its configured bucket size.  The
-        // title creates this object through an Xbox virtual callback before
-        // the callback table is fully materialized in the current bring-up;
-        // keep the guest on the resource loading path while that table is
-        // being completed instead of executing a native divide-by-zero.
-        const auto loadGuest = [base](uint32_t address) {
-            uint32_t value = 0;
-            std::memcpy(&value, base + address, sizeof(value));
-            return __builtin_bswap32(value);
-        };
-        const uint32_t list = loadGuest(ctx.r3.u32 + 16384);
-        const uint32_t slotCount = loadGuest(ctx.r3.u32 + 16388);
-        if (std::getenv("XERENGE_RESOURCE_TRACE") != nullptr)
-        {
-            static std::atomic<uint32_t> resourceTraceCount = 0;
-            if (resourceTraceCount.fetch_add(1, std::memory_order_relaxed) < 32)
-                std::cerr << "resource update manager=0x" << std::hex << ctx.r3.u32
-                          << " list=0x" << list << " slots=" << std::dec << slotCount
-                          << " caller=0x" << std::hex << static_cast<uint32_t>(ctx.lr)
-                          << std::dec << '\n';
-        }
-        if (list != ctx.r3.u32 && slotCount != 0)
-        {
-            const uint32_t descriptor = ctx.r3.u32 + ((slotCount << 5) & 0xFFFFFFE0u) +
-                (__builtin_rotateleft32(list - ctx.r3.u32, 1) - 1u);
-            const uint32_t bucketSize = loadGuest(descriptor + 16476);
-            if (bucketSize == 0)
-            {
-                const uint32_t encoded = __builtin_bswap32(1u);
-                std::memcpy(base + descriptor + 16476, &encoded, sizeof(encoded));
-                if (std::getenv("XERENGE_PPC_TRACE") != nullptr)
-                    std::cerr << "resource manager repaired zero bucket size at 0x"
-                              << std::hex << descriptor + 16476 << std::dec << '\n';
-            }
-        }
-    }
     if (traceEnabled && (callCount % 10000) == 0)
     {
         std::cerr << "guest function calls=" << callCount << " current=0x"
