@@ -1642,7 +1642,11 @@ void XenosGpu::rasterizeDraw(uint8_t* guestBase, uint32_t initiator)
             continue;
         if (primitive == 4u)
         {
-            listVertices.push_back({{position[0], position[1], 0.0f}, uv, vertexColor});
+            // RectangleList vertices arrive in viewport pixels for the
+            // frontend.  The software path above already converts them to
+            // Vulkan's NDC space; keep the same coordinates for the native
+            // path or the vertex shader clips the rectangle diagonally.
+            listVertices.push_back({{xNdc, yNdc, 0.0f}, uv, vertexColor});
         }
         else if (primitive == 6u)
         {
