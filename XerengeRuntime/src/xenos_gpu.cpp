@@ -1467,6 +1467,11 @@ void XenosGpu::rasterizeDraw(uint8_t* guestBase, uint32_t initiator)
                       << asFloat(1, 2) << ',' << asFloat(1, 3)
                       << " c2=" << asFloat(2, 0) << ',' << asFloat(2, 1) << ','
                       << asFloat(2, 2) << ',' << asFloat(2, 3) << '\n';
+            std::cerr << "Xenos frontend shared textureIndex=0x" << std::hex
+                      << gpuRegisters_[0x4400u]
+                      << " samplerIndex=0x" << gpuRegisters_[0x440Cu]
+                      << " alphaThreshold=0x" << gpuRegisters_[0x4413u]
+                      << std::dec << '\n';
         }
     }
     auto writeColorMasked = [&](size_t pixel, const uint8_t* color)
