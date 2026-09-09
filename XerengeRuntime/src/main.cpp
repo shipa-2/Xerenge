@@ -1324,6 +1324,8 @@ public:
             const uint32_t threadIdAddress = ctx.r5.u32;
             const uint32_t startAddress = ctx.r7.u32;
             const uint32_t startContext = ctx.r8.u32;
+            const bool threadTraceEnabled =
+                std::getenv("XERENGE_THREAD_TRACE") != nullptr;
             if (std::getenv("XERENGE_PPC_TRACE") != nullptr)
                 std::cerr << "ExCreateThread handle=0x" << std::hex << handleAddress
                           << " startup=0x" << ctx.r6.u32
@@ -1340,15 +1342,22 @@ public:
                 storeU32(base, threadIdAddress, threadId);
             if (handle != 0 && startAddress != 0)
             {
-                // CREATE_SUSPENDED is part of the Xbox thread contract. The
-                // title creates its bootstrap and resource workers before
-                // their contexts are ready, then resumes them explicitly.
-                // Starting them here races that initialization and leaves
-                // the frontend waiting forever for resource blocks 22/44.
+                // CREATE_SUSPENDED is part of the Xbox thread contract. Keep
+                // it for ordinary workers. This prototype never resumes its
+                // resource worker after creating it, so its state is prepared
+                // above and the worker is released here to drain the loader
+                // queue.
                 {
                     std::lock_guard lock(stateMutex_);
-                    threadSuspendCounts_[handle] = (ctx.r9.u32 & 1u) != 0 ? 1u : 0u;
+                    const bool resourceWorker = startAddress == 0x821109F8u;
+                    threadSuspendCounts_[handle] =
+                        ((ctx.r9.u32 & 1u) != 0 && !resourceWorker) ? 1u : 0u;
                 }
+                if (threadTraceEnabled)
+                    std::cerr << "thread queued handle=0x" << std::hex << handle
+                              << " suspended=" << ((ctx.r9.u32 & 1u) != 0 &&
+                                  startAddress != 0x821109F8u)
+                              << " start=0x" << startAddress << std::dec << '\n';
                 // The title's resource-worker context is allocated from the
                 // zeroed guest heap, while the PPC constructor leaves its
                 // state field implicit. State 2 is the worker's documented
@@ -1439,6 +1448,9 @@ public:
             }
             if (ctx.r4.u32 != 0)
                 storeU32(base, ctx.r4.u32, previous);
+            if (std::getenv("XERENGE_THREAD_TRACE") != nullptr)
+                std::cerr << "thread resume handle=0x" << std::hex << thread
+                          << " previous=" << previous << std::dec << '\n';
             threadCondition_.notify_all();
             ctx.r3.u32 = 0;
             return;
@@ -3217,6 +3229,9 @@ private:
                 });
                 threadSuspendCounts_.erase(threadHandle);
             }
+            if (std::getenv("XERENGE_THREAD_TRACE") != nullptr)
+                std::cerr << "thread started handle=0x" << std::hex << threadHandle
+                          << " start=0x" << startAddress << std::dec << '\n';
             PPCContext threadContext{};
             threadContext.r1.u32 = 0x81FC0000u - ((threadId & 0xFFu) * 0x10000u);
             initializeGuestPpcThread(threadContext, base, threadId);
