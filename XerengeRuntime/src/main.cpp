@@ -1345,12 +1345,9 @@ public:
                 // resource worker after creating it, so its state is prepared
                 // above and the worker is released here to drain the loader
                 // queue.
-                {
-                    std::lock_guard lock(stateMutex_);
-                    const bool resourceWorker = startAddress == 0x821109F8u;
-                    threadSuspendCounts_[handle] =
-                        ((ctx.r9.u32 & 1u) != 0 && !resourceWorker) ? 1u : 0u;
-                }
+                const bool resourceWorker = startAddress == 0x821109F8u;
+                threadSuspendCounts_[handle] =
+                    ((ctx.r9.u32 & 1u) != 0 && !resourceWorker) ? 1u : 0u;
                 if (threadTraceEnabled)
                     std::cerr << "thread queued handle=0x" << std::hex << handle
                               << " suspended=" << ((ctx.r9.u32 & 1u) != 0 &&
@@ -1434,15 +1431,12 @@ public:
         {
             const uint32_t thread = ctx.r3.u32;
             uint32_t previous = 0;
+            const auto it = threadSuspendCounts_.find(thread);
+            if (it != threadSuspendCounts_.end())
             {
-                std::lock_guard lock(stateMutex_);
-                const auto it = threadSuspendCounts_.find(thread);
-                if (it != threadSuspendCounts_.end())
-                {
-                    previous = it->second;
-                    if (it->second != 0)
-                        --it->second;
-                }
+                previous = it->second;
+                if (it->second != 0)
+                    --it->second;
             }
             if (ctx.r4.u32 != 0)
                 storeU32(base, ctx.r4.u32, previous);
@@ -2575,13 +2569,10 @@ public:
             // XAM resumes the resource worker when its modal UI is dismissed;
             // without that UI there is no later user-driven resume call, so
             // release the thread suspension created by the selector path.
+            for (auto& [thread, suspendCount] : threadSuspendCounts_)
             {
-                std::lock_guard lock(stateMutex_);
-                for (auto& [thread, suspendCount] : threadSuspendCounts_)
-                {
-                    if (suspendCount != 0)
-                        suspendCount = 0;
-                }
+                if (suspendCount != 0)
+                    suspendCount = 0;
             }
             threadCondition_.notify_all();
             ctx.r3.u32 = 0;
@@ -2636,11 +2627,8 @@ public:
         {
             const uint32_t thread = ctx.r3.u32;
             uint32_t previous = 0;
-            {
-                std::lock_guard lock(stateMutex_);
-                previous = threadSuspendCounts_[thread];
-                ++threadSuspendCounts_[thread];
-            }
+            previous = threadSuspendCounts_[thread];
+            ++threadSuspendCounts_[thread];
             if (ctx.r4.u32 != 0)
                 storeU32(base, ctx.r4.u32, previous);
             // Keep suspension cooperative. The import return address is shared
@@ -3415,7 +3403,11 @@ private:
     std::atomic<uint32_t> nextThreadId_{1};
     uint32_t inputPacketNumber_ = 1;
     XAudioBackend xaudio_;
-    std::recursive_mutex stateMutex_;
+    // A service call owns this mutex for its state mutation. Event waits pass
+    // this lock to condition_variable_any, so it must be fully releasable;
+    // recursive_mutex would leave nested ownership held while a guest thread
+    // sleeps and would starve the thread that signals the event.
+    std::mutex stateMutex_;
     std::mutex audioMutex_;
     std::thread audioThread_;
     std::atomic<bool> audioThreadStop_{false};
