@@ -2433,12 +2433,14 @@ public:
             const bool holdStart = std::getenv("XERENGE_HOLD_START") != nullptr;
             const bool holdA = std::getenv("XERENGE_HOLD_A") != nullptr;
             const bool lateAutoStart = std::getenv("XERENGE_AUTO_START_LATE") != nullptr;
+            const char* autoStartAfterText = std::getenv("XERENGE_AUTO_START_AFTER_PACKET");
+            const uint32_t autoStartAfter = autoStartAfterText != nullptr
+                ? static_cast<uint32_t>(std::strtoul(autoStartAfterText, nullptr, 0))
+                : (lateAutoStart ? 300u : 0u);
             const bool autoStartPulse = std::getenv("XERENGE_AUTO_START") != nullptr &&
-                packet >= (lateAutoStart ? 300u : 0u) &&
-                packet % 300u >= 20u && packet % 300u < 24u;
+                packet >= autoStartAfter && packet % 300u >= 20u && packet % 300u < 24u;
             const bool autoAPulse = std::getenv("XERENGE_AUTO_A") != nullptr &&
-                packet >= (lateAutoStart ? 300u : 0u) &&
-                packet % 300u >= 20u && packet % 300u < 24u;
+                packet >= autoStartAfter && packet % 300u >= 20u && packet % 300u < 24u;
             if (holdStart || autoStartPulse)
                 buttons |= 0x0010u;
             if (holdA || autoAPulse)
