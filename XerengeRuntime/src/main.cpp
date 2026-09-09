@@ -315,6 +315,7 @@ extern "C" void PPCTraceFunction(uint32_t address, PPCContext& ctx, uint8_t* bas
 {
     static const bool entryTraceEnabled = std::getenv("XERENGE_ENTRY_TRACE") != nullptr;
     static const bool bootTraceEnabled = std::getenv("XERENGE_BOOT_TRACE") != nullptr;
+    static const bool aptTraceEnabled = std::getenv("XERENGE_APT_TRACE") != nullptr;
     static const bool frontendPrepareTraceEnabled =
         std::getenv("XERENGE_FRONTEND_PREPARE_TRACE") != nullptr;
     if (frontendPrepareTraceEnabled)
@@ -532,6 +533,37 @@ extern "C" void PPCTraceFunction(uint32_t address, PPCContext& ctx, uint8_t* bas
                       << " r3=0x" << ctx.r3.u32 << " r4=0x" << ctx.r4.u32
                       << " r5=0x" << ctx.r5.u32 << " r6=0x" << ctx.r6.u32
                       << std::dec << '\n';
+        }
+    }
+    if (aptTraceEnabled &&
+        (address == 0x821F6000u || address == 0x821F6288u ||
+         address == 0x821F62B0u || address == 0x821F6318u ||
+         address == 0x821F6428u || address == 0x821F64C8u ||
+         address == 0x821FCCE0u || address == 0x821FF308u ||
+         address == 0x821FF3C0u || address == 0x821FF400u ||
+         address == 0x821FF208u || address == 0x82150750u ||
+         address == 0x822030F8u))
+    {
+        static std::atomic<uint32_t> aptTraceCount{0};
+        const uint32_t sample = aptTraceCount.fetch_add(1, std::memory_order_relaxed);
+        if (sample < 512)
+        {
+            std::cerr << "Apt callback=0x" << std::hex << address
+                      << " caller=0x" << static_cast<uint32_t>(ctx.lr)
+                      << " r3=0x" << ctx.r3.u32 << " r4=0x" << ctx.r4.u32
+                      << " r5=0x" << ctx.r5.u32 << " r6=0x" << ctx.r6.u32
+                      << std::dec;
+            if (address == 0x821FF208u && ctx.r3.u32 <= 0x82FFFFFFu)
+            {
+                auto read8 = [base](uint32_t guestAddress) {
+                    return static_cast<unsigned>(base[guestAddress]);
+                };
+                std::cerr << " flags=" << read8(ctx.r3.u32 + 22397u)
+                          << ',' << read8(ctx.r3.u32 + 22399u)
+                          << ',' << read8(ctx.r3.u32 + 22400u)
+                          << ',' << read8(ctx.r3.u32 + 22402u);
+            }
+            std::cerr << '\n';
         }
     }
     if (frontendPrepareTraceEnabled && address == 0x8210CEC0u)

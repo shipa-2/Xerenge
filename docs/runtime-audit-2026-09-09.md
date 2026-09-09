@@ -29,6 +29,15 @@ loading assets do not establish correct Xbox platform behavior.
   Vulkan shader modules for the active pairs. The framebuffer still contained
   only about 28,000 nonzero pixels, so packet submission alone is not evidence
   of correct menu rendering.
+- The Apt callback trace now reaches `CB4AptManager::Render` (0x821FF208) after
+  the frontend enters state 5. Its render flags transition from `0,0,1,0` to
+  `1,1,1,0`, and `AptCBDrawRenderingUnit` (0x821F64C8) is called repeatedly.
+  The trace also records texture lookup, animation, matrix and rendering-unit
+  loading callbacks. This rules out a missing Apt dispatch path; remaining
+  faults are in the rendering-unit data, texture interpretation, or GPU output.
+- A 10-second GPU trace produced thousands of Vulkan draws, including large UI
+  batches. The earlier count of two Vulkan draws came from a run without the
+  current trace and was not representative of the steady-state path.
 
 ## Work order and acceptance criteria
 
@@ -65,3 +74,6 @@ screenshots. Keep generated game code, images and shader caches out of Git.
 - A bounded 30-second run selected the RX 6800 XT Vulkan backend, loaded through
   the stagehed request and continued executing guest code. Main-menu progress
   is not established by this run. Log: `/tmp/xerenge-abi-audit.log` (local only).
+- `XERENGE_APT_TRACE=1` shows the Apt rendering callbacks and manager flags;
+  `XERENGE_XENOS_DRAW_TRACE=1 XERENGE_XENOS_VULKAN_TRACE=1` shows sustained
+  Vulkan UI submission. Logs were kept in `/tmp` and are not repository data.
