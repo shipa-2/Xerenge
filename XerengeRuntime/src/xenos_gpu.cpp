@@ -2092,7 +2092,8 @@ void XenosGpu::rasterizeDraw(uint8_t* guestBase, uint32_t initiator)
                 }
             }
         }
-        if (drawVulkanGeometry(nativeVertices.data(), nativeOrder.size(),
+        const bool forceSoftware = std::getenv("XERENGE_XENOS_FORCE_SOFTWARE") != nullptr;
+        if (!forceSoftware && drawVulkanGeometry(nativeVertices.data(), nativeOrder.size(),
                 VK_PRIMITIVE_TOPOLOGY_TRIANGLE_LIST,
                 hasNativeTexture && nativeTextureKey != vulkanTextureKey_
                     ? nativeTexture.data() : nullptr,

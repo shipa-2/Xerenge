@@ -63,6 +63,10 @@ loading assets do not establish correct Xbox platform behavior.
   state 5 with `frontendState=28` and repeatedly calls `CB4FrontEnd::Render`.
   The input service receives the button, but no state transition follows;
   this makes the remaining issue reproducible in the guest frontend path.
+- An A/B runtime comparison with `XERENGE_XENOS_FORCE_SOFTWARE=1` produces
+  only 2-3 nonzero framebuffer pixels, while the default Vulkan path produces
+  about 22,000. The GPU path is therefore the useful rendering path; the
+  software switch is retained only for diagnostics and is disabled by default.
 
 ## Work order and acceptance criteria
 
