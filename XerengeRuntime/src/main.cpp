@@ -631,8 +631,12 @@ extern "C" void PPCTraceFunction(uint32_t address, PPCContext& ctx, uint8_t* bas
             profileCalls = 0;
         }
     }
-    gPpcCurrentFunction = address;
-    gPpcCurrentCaller = static_cast<uint32_t>(ctx.lr);
+    static const bool ppcTraceEnabled = std::getenv("XERENGE_PPC_TRACE") != nullptr;
+    if (ppcTraceEnabled)
+    {
+        gPpcCurrentFunction = address;
+        gPpcCurrentCaller = static_cast<uint32_t>(ctx.lr);
+    }
     if (std::getenv("XERENGE_RING_PATH_TRACE") != nullptr &&
         (address == 0x82380E70u || address == 0x82380F20u || address == 0x82380FE8u))
     {
@@ -1014,14 +1018,17 @@ extern "C" void PPCTraceFunction(uint32_t address, PPCContext& ctx, uint8_t* bas
             }
         }
     }
-    const uint32_t previous = gPpcLastFunction.exchange(address, std::memory_order_relaxed);
-    if (previous != address && gPpcFunctionTransitions.fetch_add(1, std::memory_order_relaxed) < 5000)
+    if (ppcTraceEnabled)
     {
-        std::cerr << "guest function: 0x" << std::hex << address;
-        if (address == 0x825AC688)
-            std::cerr << " r3=0x" << ctx.r3.u32 << " r8=0x" << ctx.r8.u32
-                      << " r10=0x" << ctx.r10.u32 << " r11=0x" << ctx.r11.u32;
-        std::cerr << std::dec << '\n';
+        const uint32_t previous = gPpcLastFunction.exchange(address, std::memory_order_relaxed);
+        if (previous != address && gPpcFunctionTransitions.fetch_add(1, std::memory_order_relaxed) < 5000)
+        {
+            std::cerr << "guest function: 0x" << std::hex << address;
+            if (address == 0x825AC688)
+                std::cerr << " r3=0x" << ctx.r3.u32 << " r8=0x" << ctx.r8.u32
+                          << " r10=0x" << ctx.r10.u32 << " r11=0x" << ctx.r11.u32;
+            std::cerr << std::dec << '\n';
+        }
     }
 }
 
