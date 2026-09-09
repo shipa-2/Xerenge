@@ -376,6 +376,26 @@ extern "C" void PPCTraceFunction(uint32_t address, PPCContext& ctx, uint8_t* bas
             std::cerr << std::dec << '\n';
         }
     }
+    if (std::getenv("XERENGE_STATE_ACTION_TRACE") != nullptr &&
+        address == 0x82207720u)
+    {
+        static std::atomic<uint32_t> stateActionTraceCount{0};
+        if (stateActionTraceCount.fetch_add(1, std::memory_order_relaxed) < 96)
+        {
+            auto guestWord = [base](uint32_t guestAddress) {
+                uint32_t value = 0;
+                std::memcpy(&value, base + guestAddress, sizeof(value));
+                return __builtin_bswap32(value);
+            };
+            std::cerr << "EALogo action r4=" << ctx.r4.u32
+                      << " r5=0x" << std::hex << ctx.r5.u32
+                      << " r6=" << std::dec << ctx.r6.u32
+                      << " r7=" << ctx.r7.u32
+                      << " state=0x" << std::hex << guestWord(0x82A5900Cu)
+                      << " caller=0x" << static_cast<uint32_t>(ctx.lr)
+                      << std::dec << '\n';
+        }
+    }
     if (frontendPrepareTraceEnabled && address == 0x8210DDC0u)
     {
         static std::atomic<uint32_t> loaderUpdates{0};
@@ -3681,6 +3701,21 @@ extern "C" void __wrap___imp__sub_825857A8(PPCContext& ctx, uint8_t* base)
         return;
     }
     __real___imp__sub_825857A8(ctx, base);
+}
+
+extern "C" void PPCTraceIndirectCall(uint32_t address, PPCContext& ctx, uint8_t*)
+{
+    if (std::getenv("XERENGE_VTABLE_TRACE") == nullptr)
+        return;
+    const uint32_t caller = static_cast<uint32_t>(ctx.lr);
+    if (caller < 0x8211F8D0u || caller >= 0x8212079Cu)
+        return;
+    static std::atomic<uint32_t> count{0};
+    if (count.fetch_add(1, std::memory_order_relaxed) < 128)
+        std::cerr << "CB4Game indirect target=0x" << std::hex << address
+                  << " caller=0x" << caller
+                  << " r3=0x" << ctx.r3.u32 << " r4=0x" << ctx.r4.u32
+                  << " r5=0x" << ctx.r5.u32 << std::dec << '\n';
 }
 
 extern "C" void PPCUnknownIndirectTrap(uint32_t address, PPCContext& ctx, uint8_t* base)
