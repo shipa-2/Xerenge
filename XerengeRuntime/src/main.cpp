@@ -1918,8 +1918,15 @@ public:
             const uint32_t requestedWidth = ctx.r11.u32 != 0 ? loadU32(base, ctx.r11.u32) : 0;
             const uint32_t heightPointer = loadU32(base, ctx.r1.u32 + 84);
             const uint32_t requestedHeight = heightPointer != 0 ? loadU32(base, heightPointer) : 0;
-            const uint32_t width = fallbackWidth;
-            const uint32_t height = fallbackHeight;
+            // Xenos fetch dword 2 stores display dimensions minus one. The
+            // temporary resolve remains 1280 pixels wide; presentation trims
+            // that padding row by row until native tiled resolve is complete.
+            const uint32_t fetchWidth = (fetch2 & 0x1FFFu) + 1u;
+            const uint32_t fetchHeight = ((fetch2 >> 13) & 0x1FFFu) + 1u;
+            const uint32_t width = fetchWidth >= 1 && fetchWidth <= 4096
+                ? fetchWidth : fallbackWidth;
+            const uint32_t height = fetchHeight >= 1 && fetchHeight <= 4096
+                ? fetchHeight : fallbackHeight;
 
             std::array<uint32_t, 16> sourceCommands{};
             for (uint32_t i = 0; i < sourceCommands.size(); ++i)
@@ -1942,15 +1949,16 @@ public:
             storeU32(base, buffer + 44, height);
             for (uint32_t i = 12; i < 64; ++i)
                 storeU32(base, buffer + i * 4, 0x80000000u);
-            gXenosGpu.processSubmittedBuffer(base, buffer, 64);
-            // This reservation contains the platform swap packet, not a
-            // submitted title command stream. Publish once after processing
-            // it; replaying its previous contents can reissue stale clears.
-            // The title alternates display swaps with bookkeeping swaps that
-            // carry no frontbuffer address. Preserve the last scanout for
-            // those calls instead of replacing every second frame with black.
             if (frontbuffer != 0)
-                gXenosGpu.presentFromGuest(base, frontbuffer, width, height);
+            {
+                // This reservation contains the platform swap packet, not a
+                // submitted title command stream. Process and publish it only
+                // when it carries a real surface. Bookkeeping swaps have no
+                // frontbuffer and must preserve the last scanout dimensions.
+                gXenosGpu.processSubmittedBuffer(base, buffer, 64);
+                gXenosGpu.presentFromGuest(base, frontbuffer, width, height,
+                    fallbackWidth);
+            }
             if (std::getenv("XERENGE_PPC_TRACE") != nullptr)
             {
                 static std::atomic<uint32_t> swapTraceCount = 0;
@@ -4524,7 +4532,11 @@ int main(int argc, char** argv)
                     // with a negative Y zoom so scanout preserves guest
                     // orientation.
                     glRasterPos2f(-1.0f, 1.0f);
-                    glPixelZoom(1.0f, -1.0f);
+                    const float xScale = 1280.0f /
+                        static_cast<float>(gXenosGpu.lastFrameWidth());
+                    const float yScale = 720.0f /
+                        static_cast<float>(gXenosGpu.lastFrameHeight());
+                    glPixelZoom(xScale, -yScale);
                     glDrawPixels(static_cast<GLsizei>(gXenosGpu.lastFrameWidth()),
                         static_cast<GLsizei>(gXenosGpu.lastFrameHeight()),
                         GL_RGBA, GL_UNSIGNED_BYTE, pixels.data());

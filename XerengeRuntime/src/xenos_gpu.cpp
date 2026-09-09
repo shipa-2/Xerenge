@@ -1045,18 +1045,24 @@ void XenosGpu::present(uint32_t width, uint32_t height)
 }
 
 bool XenosGpu::presentFromGuest(uint8_t* guestBase, uint32_t guestAddress,
-    uint32_t width, uint32_t height)
+    uint32_t width, uint32_t height, uint32_t sourcePitch)
 {
     std::lock_guard lock(mutex_);
     width = std::clamp(width, 1u, 4096u);
     height = std::clamp(height, 1u, 4096u);
+    // The display fetch width and the temporary resolve pitch can differ.
+    // Read rows using the producer pitch so scanout cannot shear diagonally.
+    if (sourcePitch == 0)
+        sourcePitch = width;
+    sourcePitch = std::max(sourcePitch, width);
+    const size_t sourceByteCount = static_cast<size_t>(sourcePitch) * height * 4;
     const size_t byteCount = static_cast<size_t>(width) * height * 4;
     // Xenos render targets are exposed through the title's 0x60000000
     // physical-memory alias.  Reject low values passed by a malformed or
     // not-yet-initialized VdSwap call instead of copying arbitrary guest
     // memory into the displayed framebuffer.
     if (guestAddress < 0x60000000u || guestAddress >= 0x80000000u ||
-        guestAddress > 0xFFFFFFFFu - byteCount)
+        guestAddress > 0xFFFFFFFFu - sourceByteCount)
         return false;
 
     // The first bring-up path uses the guest surface as a linear X8R8G8B8
@@ -1064,7 +1070,17 @@ bool XenosGpu::presentFromGuest(uint8_t* guestBase, uint32_t guestAddress,
     // packets identify the render-target format; keeping the copy here makes
     // a title-provided frontbuffer observable without fabricating pixels.
     framebuffer_.resize(byteCount);
-    std::memcpy(framebuffer_.data(), guestBase + guestAddress, byteCount);
+    if (sourcePitch == width)
+        std::memcpy(framebuffer_.data(), guestBase + guestAddress, byteCount);
+    else
+    {
+        const size_t rowBytes = static_cast<size_t>(width) * 4;
+        const size_t sourceRowBytes = static_cast<size_t>(sourcePitch) * 4;
+        for (uint32_t y = 0; y < height; ++y)
+            std::memcpy(framebuffer_.data() + static_cast<size_t>(y) * rowBytes,
+                guestBase + guestAddress + static_cast<size_t>(y) * sourceRowBytes,
+                rowBytes);
+    }
     if (std::getenv("XERENGE_FRAMEBUFFER_TRACE") != nullptr)
     {
         size_t nonzeroRgbPixels = 0;
@@ -1081,6 +1097,7 @@ bool XenosGpu::presentFromGuest(uint8_t* guestBase, uint32_t guestAddress,
         }
         std::cerr << "Xenos frontbuffer guest=0x" << std::hex << guestAddress
                   << " bytes=" << std::dec << byteCount
+                  << " sourcePitch=" << sourcePitch
                   << " nonzeroRgbPixels=" << nonzeroRgbPixels
                   << " checksum=0x" << std::hex << checksum << std::dec << '\n';
     }

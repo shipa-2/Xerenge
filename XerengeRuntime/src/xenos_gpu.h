@@ -26,7 +26,8 @@ public:
     bool initializeVulkan();
     void readbackVulkanFrame();
     void present(uint32_t width, uint32_t height);
-    bool presentFromGuest(uint8_t* guestBase, uint32_t guestAddress, uint32_t width, uint32_t height);
+    bool presentFromGuest(uint8_t* guestBase, uint32_t guestAddress, uint32_t width,
+        uint32_t height, uint32_t sourcePitch = 0);
     std::vector<uint8_t> framebufferCopy() const;
     uint64_t framebufferChecksum() const;
 
