@@ -3774,6 +3774,20 @@ extern "C" void sub_825C614C(PPCContext& ctx, uint8_t* base)
     gXboxServices.invoke("XNotifyGetNext", ctx, base);
 }
 
+// The title's compact input wrapper reaches these kernel export bodies with a
+// direct branch instead of the generated import thunk.  XenonRecomp emits the
+// bodies as weak NOPs, so bind them to the same XInput implementation as the
+// normal import path.
+extern "C" void sub_825C66EC(PPCContext& ctx, uint8_t* base)
+{
+    gXboxServices.invoke("XamInputGetState", ctx, base);
+}
+
+extern "C" void sub_825C66FC(PPCContext& ctx, uint8_t* base)
+{
+    gXboxServices.invoke("XamInputSetState", ctx, base);
+}
+
 extern "C" void __real___imp__sub_825857A8(PPCContext& ctx, uint8_t* base);
 extern "C" void __wrap___imp__sub_825857A8(PPCContext& ctx, uint8_t* base)
 {
