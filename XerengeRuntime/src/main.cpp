@@ -1053,10 +1053,8 @@ extern "C" void PPCGuestClockMidAsmHook(PPCRegister& r3)
 
 extern "C" void PPCStubZeroMidAsmHook(PPCRegister& r3)
 {
-    // 0x8238C278 is the command-ring reservation check.  The caller returns
-    // from 0x82380E70 when this check reports no wait is required; returning
-    // one enters its bounded wait loop and starves the title's submission
-    // thread when the native reservation path is not active yet.
+    // 0x8238C278 is the command-ring reservation check. The caller returns
+    // from 0x82380E70 when this check reports no wait is required.
     r3.u32 = 0;
 }
 
@@ -1458,6 +1456,11 @@ public:
         if (service == "KeWaitForSingleObject" || service == "NtWaitForSingleObjectEx")
         {
             const uint32_t object = ctx.r3.u32;
+            // KeWaitForSingleObject has the LARGE_INTEGER timeout in r7,
+            // while NtWaitForSingleObjectEx takes it in r5.  The two traps
+            // share the dispatcher implementation but not their ABI.
+            const uint32_t timeoutPointer = service == "NtWaitForSingleObjectEx"
+                ? ctx.r5.u32 : ctx.r7.u32;
             const auto ready = [&]
             {
                 if (object == gGraphicsWaitEvent.load(std::memory_order_acquire))
@@ -1470,14 +1473,14 @@ public:
             };
             if (!ready())
             {
-                if (ctx.r7.u32 == 0)
+                if (timeoutPointer == 0)
                 {
                     eventCondition_.wait(lock, ready);
                 }
                 else
                 {
                     uint64_t encodedTimeout = 0;
-                    std::memcpy(&encodedTimeout, base + ctx.r7.u32,
+                    std::memcpy(&encodedTimeout, base + timeoutPointer,
                         sizeof(encodedTimeout));
                     const int64_t timeout100ns = static_cast<int64_t>(
                         __builtin_bswap64(encodedTimeout));
