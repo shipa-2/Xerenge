@@ -396,6 +396,78 @@ extern "C" void PPCTraceFunction(uint32_t address, PPCContext& ctx, uint8_t* bas
                       << std::dec << '\n';
         }
     }
+    if (std::getenv("XERENGE_EALOGO_STATE_TRACE") != nullptr &&
+        (address == 0x821FF458u || address == 0x822030F8u ||
+         address == 0x821FCFC0u || address == 0x821FD398u ||
+         address == 0x82426310u || address == 0x821FCB48u))
+    {
+        static std::atomic<uint32_t> ealogoFlowTraceCount{0};
+        if (ealogoFlowTraceCount.fetch_add(1, std::memory_order_relaxed) < 128)
+        {
+            uint32_t encodedState = 0;
+            std::memcpy(&encodedState, base + 0x82A5900Cu, sizeof(encodedState));
+            const uint32_t globalState = __builtin_bswap32(encodedState);
+            std::cerr << "EALogo flow function=0x" << std::hex << address
+                      << " r3=0x" << ctx.r3.u32 << " r4=0x" << ctx.r4.u32
+                      << " r5=0x" << ctx.r5.u32 << " global=0x"
+                      << globalState << " readyByte="
+                      << std::dec << unsigned(base[0x82A538A0u + 22401u]);
+            if (address == 0x821FD398u)
+            {
+                auto readGuest = [base](uint32_t a) { uint32_t v = 0;
+                    std::memcpy(&v, base + a, sizeof(v)); return __builtin_bswap32(v); };
+                std::cerr << " playFields760=" << readGuest(0x82A528B0u + 760u)
+                          << " 764=" << readGuest(0x82A528B0u + 764u)
+                          << " 768=" << readGuest(0x82A528B0u + 768u);
+            }
+            if (address == 0x82426310u)
+            {
+                auto readText = [base](uint32_t a) {
+                    std::string value;
+                    for (size_t i = 0; i < 96 && a + i < 0x90000000u; ++i)
+                    {
+                        const char c = static_cast<char>(base[a + i]);
+                        if (c == 0) break;
+                        if (c < 0x20 || c > 0x7e) return std::string("<binary>");
+                        value.push_back(c);
+                    }
+                    return value;
+                };
+                std::cerr << " asset=\"" << readText(ctx.r3.u32)
+                          << "\" name=\"" << readText(ctx.r4.u32) << "\"";
+            }
+            std::cerr
+                      << " lr=0x" << std::hex
+                      << static_cast<uint32_t>(ctx.lr) << std::dec << '\n';
+        }
+    }
+    if (std::getenv("XERENGE_VIDEO_TRACE") != nullptr &&
+        (address == 0x821FE8C8u || address == 0x821F8F58u ||
+         address == 0x821F90D8u || address == 0x821F9180u ||
+         address == 0x821017D8u))
+    {
+        static std::atomic<uint32_t> videoTraceCount{0};
+        if (videoTraceCount.fetch_add(1, std::memory_order_relaxed) < 96)
+        {
+            auto guestWord = [base](uint32_t guestAddress) {
+                uint32_t value = 0;
+                std::memcpy(&value, base + guestAddress, sizeof(value));
+                return __builtin_bswap32(value);
+            };
+            const uint32_t object = ctx.r3.u32;
+            std::cerr << "Video function=0x" << std::hex << address
+                      << " object=0x" << object;
+            if (object >= 0x60000000u && object < 0x90000000u)
+                std::cerr << " state=" << std::dec << guestWord(object + 152u)
+                          << " phase=" << guestWord(object + 148u)
+                          << " flags=0x" << std::hex << guestWord(object + 144u)
+                          << " decoder=0x" << guestWord(object + 4u)
+                          << " completed=" << std::dec << unsigned(base[object + 85u])
+                          << " timeBits=0x" << std::hex << guestWord(object + 160u);
+            std::cerr << " caller=0x" << std::hex << static_cast<uint32_t>(ctx.lr)
+                      << std::dec << '\n';
+        }
+    }
     if (frontendPrepareTraceEnabled && address == 0x8210DDC0u)
     {
         static std::atomic<uint32_t> loaderUpdates{0};
