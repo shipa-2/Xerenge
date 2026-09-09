@@ -1088,7 +1088,25 @@ bool XenosGpu::presentFromGuest(uint8_t* guestBase, uint32_t guestAddress,
     const bool useVulkanReadback = guestNonzeroRgbPixels < 8 &&
         vulkanImagesInitialized_ && edram_.size() >= byteCount;
     if (useVulkanReadback)
-        std::memcpy(framebuffer_.data(), edram_.data(), byteCount);
+    {
+        const size_t rowBytes = static_cast<size_t>(width) * 4;
+        const size_t sourceRowBytes = 1280u * 4;
+        for (uint32_t y = 0; y < height; ++y)
+        {
+            uint8_t* destination = framebuffer_.data() + static_cast<size_t>(y) * rowBytes;
+            const uint8_t* source = edram_.data() + static_cast<size_t>(y) * sourceRowBytes;
+            // Vulkan uses the fixed 1280x720 bootstrap render target while
+            // the Xenos fetch can request 960x720. Resample horizontally so
+            // a valid render at x >= 960 is not discarded as padding.
+            for (uint32_t x = 0; x < width; ++x)
+            {
+                const uint32_t sourceX = std::min(1279u,
+                    (x * 1280u) / width);
+                std::memcpy(destination + static_cast<size_t>(x) * 4,
+                    source + static_cast<size_t>(sourceX) * 4, 4);
+            }
+        }
+    }
     else if (sourcePitch == width)
         std::memcpy(framebuffer_.data(), guestBase + guestAddress, byteCount);
     else
