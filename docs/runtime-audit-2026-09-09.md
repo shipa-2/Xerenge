@@ -21,6 +21,14 @@ loading assets do not establish correct Xbox platform behavior.
   Entry-only `Prepare state=11` logging cannot identify the final wait: one
   invocation can advance through subsequent states without another entry log.
   The observed caller 0x82114EA8 belongs to state 15's loading-screen predicate.
+- The guest then enters `CB4Game` states 4 and 5. `SetInitialMenuState`
+  (0x82203780) is called once and `CB4FrontEnd::Render` (0x82103D28) is called
+  continuously. This proves the current black/loading-looking output is after
+  menu selection, in the render/resource path.
+- A short GPU audit recorded 41,438 draw packets, all with source 2, and valid
+  Vulkan shader modules for the active pairs. The framebuffer still contained
+  only about 28,000 nonzero pixels, so packet submission alone is not evidence
+  of correct menu rendering.
 
 ## Work order and acceptance criteria
 

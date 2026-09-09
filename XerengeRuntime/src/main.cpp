@@ -474,11 +474,26 @@ extern "C" void PPCTraceFunction(uint32_t address, PPCContext& ctx, uint8_t* bas
     }
     if (frontendPrepareTraceEnabled && address == 0x8211F8D0u)
     {
-        static std::atomic<uint32_t> previousGame{UINT32_MAX};
-        const uint32_t old = previousGame.exchange(ctx.r3.u32, std::memory_order_relaxed);
-        if (old != ctx.r3.u32)
+        auto read32 = [base](uint32_t address) {
+            uint32_t value;
+            std::memcpy(&value, base + address, sizeof(value));
+            return __builtin_bswap32(value);
+        };
+        // CB4Game::Update reads requested/current states at these offsets.
+        const uint32_t requested = read32(ctx.r3.u32 + 0x73F9Cu);
+        const uint32_t current = read32(ctx.r3.u32 + 0x73FA0u);
+        static thread_local uint64_t previousStates = UINT64_MAX;
+        const uint64_t states = (uint64_t(requested) << 32) | current;
+        if (states != previousStates)
+        {
+            previousStates = states;
             std::cerr << "CB4Game::Update this=0x" << std::hex << ctx.r3.u32
-                      << " caller=0x" << static_cast<uint32_t>(ctx.lr) << std::dec << '\n';
+                      << " caller=0x" << static_cast<uint32_t>(ctx.lr) << std::dec
+                      << " requested=" << requested << " current=" << current
+                      << " frontendState=" << read32(0x8287C698u + 48u)
+                      << " stagehedDone=" << unsigned(base[0x8287C698u + 73u])
+                      << '\n';
+        }
     }
     if (frontendPrepareTraceEnabled && address == 0x82200778u)
     {
@@ -490,6 +505,16 @@ extern "C" void PPCTraceFunction(uint32_t address, PPCContext& ctx, uint8_t* bas
         if (old != state)
             std::cerr << "Flash manager prepare state=" << state << " loaded="
                       << static_cast<uint32_t>(base[ctx.r3.u32 + 755]) << '\n';
+    }
+    if (frontendPrepareTraceEnabled &&
+        (address == 0x82103D28u || address == 0x82203780u))
+    {
+        static std::atomic<uint32_t> menuTraceCount{0};
+        const uint32_t sample = menuTraceCount.fetch_add(1, std::memory_order_relaxed);
+        if (sample < 32)
+            std::cerr << "Frontend menu function=0x" << std::hex << address
+                      << " caller=0x" << static_cast<uint32_t>(ctx.lr)
+                      << " this=0x" << ctx.r3.u32 << std::dec << '\n';
     }
     if (std::getenv("XERENGE_FLASH_TRACE") != nullptr &&
         (address == 0x821F6668u || address == 0x821F6718u ||
