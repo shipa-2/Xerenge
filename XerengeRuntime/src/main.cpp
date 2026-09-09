@@ -1468,6 +1468,7 @@ public:
             }
             if (ready())
             {
+                const bool timerObject = timers_.find(object) != timers_.end();
                 if (object == gGraphicsWaitEvent.load(std::memory_order_acquire))
                     gGraphicsWaitEventSignaled.store(false, std::memory_order_release);
                 const auto event = events_.find(object);
@@ -1476,6 +1477,15 @@ public:
                 const auto semaphore = semaphores_.find(object);
                 if (semaphore != semaphores_.end())
                     --semaphore->second;
+                if (timerObject)
+                {
+                    // A Xenon timer is a pulse source.  The host timer
+                    // callback and the guest waiter must yield after one
+                    // consumed pulse; otherwise an already-signalled timer
+                    // turns the translated worker into a tight spin loop.
+                    lock.unlock();
+                    std::this_thread::sleep_for(std::chrono::milliseconds(1));
+                }
                 ctx.r3.u32 = 0;
                 return;
             }
