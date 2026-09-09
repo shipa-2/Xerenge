@@ -1722,6 +1722,25 @@ public:
                 ctx.r3.u32 = 0xC000000Du; // STATUS_INVALID_PARAMETER.
                 return;
             }
+            // The prototype probes an optional sound stream with the
+            // invalid-handle sentinel after the probe object was discarded.
+            // It is an empty stream, not a failed mandatory resource read:
+            // complete its overlapped request so the loader can continue.
+            if (ctx.r3.u32 == 0xFFFFFFFFu)
+            {
+                if (ctx.r7.u32 != 0)
+                {
+                    storeU32(base, ctx.r7.u32 + 0, 0xC0000011u); // STATUS_END_OF_FILE.
+                    storeU32(base, ctx.r7.u32 + 4, 0);
+                }
+                if (ctx.r4.u32 != 0)
+                {
+                    events_[ctx.r4.u32] = true;
+                    eventCondition_.notify_all();
+                }
+                ctx.r3.u32 = 0xC0000011u;
+                return;
+            }
             if (hasExplicitOffset)
             {
                 uint64_t position = 0;
