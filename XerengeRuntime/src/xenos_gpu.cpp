@@ -1069,8 +1069,27 @@ bool XenosGpu::presentFromGuest(uint8_t* guestBase, uint32_t guestAddress,
     // readback.  Xenos tiling/swizzle is handled separately once command
     // packets identify the render-target format; keeping the copy here makes
     // a title-provided frontbuffer observable without fabricating pixels.
+    // The current Vulkan bring-up renders into a native color image and does
+    // not yet implement the complete Xenos tiled resolve into the title's
+    // frontbuffer. Some VdSwap calls therefore point at a surface containing
+    // only its clear value even though the GPU image has a real frame. Keep
+    // the title-provided surface as the primary source, but use the completed
+    // Vulkan readback when that surface is demonstrably empty.
     framebuffer_.resize(byteCount);
-    if (sourcePitch == width)
+    size_t guestNonzeroRgbPixels = 0;
+    for (uint32_t y = 0; y < height; ++y)
+    {
+        const uint8_t* row = guestBase + guestAddress +
+            static_cast<size_t>(y) * sourcePitch * 4;
+        for (uint32_t x = 0; x < width; ++x)
+            guestNonzeroRgbPixels += (row[x * 4] | row[x * 4 + 1] |
+                row[x * 4 + 2]) != 0;
+    }
+    const bool useVulkanReadback = guestNonzeroRgbPixels < 8 &&
+        vulkanImagesInitialized_ && edram_.size() >= byteCount;
+    if (useVulkanReadback)
+        std::memcpy(framebuffer_.data(), edram_.data(), byteCount);
+    else if (sourcePitch == width)
         std::memcpy(framebuffer_.data(), guestBase + guestAddress, byteCount);
     else
     {
@@ -1098,7 +1117,9 @@ bool XenosGpu::presentFromGuest(uint8_t* guestBase, uint32_t guestAddress,
         std::cerr << "Xenos frontbuffer guest=0x" << std::hex << guestAddress
                   << " bytes=" << std::dec << byteCount
                   << " sourcePitch=" << sourcePitch
-                  << " nonzeroRgbPixels=" << nonzeroRgbPixels
+                  << " guestNonzeroRgbPixels=" << guestNonzeroRgbPixels
+                  << " displayedNonzeroRgbPixels=" << nonzeroRgbPixels
+                  << " source=" << (useVulkanReadback ? "vulkan" : "guest")
                   << " checksum=0x" << std::hex << checksum << std::dec << '\n';
     }
     // The display engine scans this surface out as X8R8G8B8.  Render-target
