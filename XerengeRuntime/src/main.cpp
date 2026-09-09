@@ -249,6 +249,7 @@ std::atomic<uint32_t> gResourceStateWatchAddress = 0;
 std::atomic<bool> gResourceBootstrapReady = false;
 std::atomic<uint32_t> gPpcBootTraceThreadIds = 0;
 std::atomic<uint16_t> gInputButtons = 0;
+std::atomic<uint16_t> gGuestInputButtons = 0;
 thread_local bool gPpcIsEntryThread = false;
 thread_local std::array<uint32_t, 64> gPpcTlsValues{};
 thread_local uint32_t gPpcCurrentFunction = 0;
@@ -2640,6 +2641,7 @@ public:
                 buttons |= 0x0010u;
             if (holdA || autoAPulse)
                 buttons |= 0x1000u;
+            gGuestInputButtons.store(buttons, std::memory_order_relaxed);
             storeU16(base, state + 4, buttons);
             if (std::getenv("XERENGE_INPUT_TRACE") != nullptr)
             {
@@ -3718,7 +3720,10 @@ extern "C" void PPCUnknownIndirectTrap(uint32_t address, PPCContext& ctx, uint8_
         // object, rather than the XINPUT_STATE layout returned by
         // XamInputGetState. The old bring-up path always reported zero here,
         // which discarded A/B/Start before the menu state machine saw it.
-        const uint16_t buttons = gInputButtons.load(std::memory_order_relaxed);
+        // Keep the compact frontend object in lockstep with XamInputGetState.
+        // This includes the same transient automated pulses used by the
+        // XINPUT path, while preserving the host keyboard/controller state.
+        const uint16_t buttons = gGuestInputButtons.load(std::memory_order_relaxed);
         uint8_t frontendButtons = 0;
         if ((buttons & 0x1000u) != 0u) frontendButtons |= 0x01u; // A
         if ((buttons & 0x2000u) != 0u) frontendButtons |= 0x02u; // B
