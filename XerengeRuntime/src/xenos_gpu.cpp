@@ -1085,6 +1085,11 @@ bool XenosGpu::presentFromGuest(uint8_t* guestBase, uint32_t guestAddress,
             guestNonzeroRgbPixels += (row[x * 4] | row[x * 4 + 1] |
                 row[x * 4 + 2]) != 0;
     }
+    // VdSwap can publish the same frontbuffer while the next command batch
+    // is still being resolved. Once a real frame has reached scanout, keep
+    // it during that empty handoff instead of exposing an older Vulkan image.
+    if (guestNonzeroRgbPixels < 8 && hasVisibleFrame_)
+        return true;
     const bool useVulkanReadback = guestNonzeroRgbPixels < 8 &&
         vulkanImagesInitialized_ && edram_.size() >= byteCount;
     if (useVulkanReadback)
@@ -1145,6 +1150,7 @@ bool XenosGpu::presentFromGuest(uint8_t* guestBase, uint32_t guestAddress,
     // while writing valid RGB, so make scanout pixels opaque for OpenGL.
     for (size_t i = 0; i < framebuffer_.size(); i += 4)
         framebuffer_[i + 3] = 255;
+    hasVisibleFrame_ = guestNonzeroRgbPixels >= 8 || useVulkanReadback;
     lastFrameWidth_ = width;
     lastFrameHeight_ = height;
     return true;

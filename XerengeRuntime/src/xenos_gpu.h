@@ -99,6 +99,7 @@ private:
     uint64_t resolveCount_ = 0;
     uint32_t lastFrameWidth_ = 0;
     uint32_t lastFrameHeight_ = 0;
+    bool hasVisibleFrame_ = false;
     std::array<uint64_t, 256> opcodeCounts_{};
     VkInstance vulkanInstance_ = VK_NULL_HANDLE;
     VkPhysicalDevice vulkanPhysicalDevice_ = VK_NULL_HANDLE;
