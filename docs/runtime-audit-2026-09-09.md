@@ -38,6 +38,13 @@ loading assets do not establish correct Xbox platform behavior.
 - A 10-second GPU trace produced thousands of Vulkan draws, including large UI
   batches. The earlier count of two Vulkan draws came from a run without the
   current trace and was not representative of the steady-state path.
+- A shader audit over 10 seconds recorded 1,904 cache hits and no shader cache
+  misses or Vulkan pipeline failures. The active frontend pairs therefore
+  reach valid compiled modules; shader lookup/recompilation is not the current
+  cause of the missing menu. The same trace showed both large valid UI batches
+  and many small packets whose fetched vertex words are zero, so the next
+  check must classify fetch descriptors and rendering-unit payloads before
+  changing vertex interpretation.
 
 ## Work order and acceptance criteria
 
