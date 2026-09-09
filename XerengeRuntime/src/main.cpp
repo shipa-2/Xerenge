@@ -249,6 +249,7 @@ std::atomic<uint32_t> gResourceStateWatchAddress = 0;
 std::atomic<bool> gResourceBootstrapReady = false;
 std::atomic<uint32_t> gPpcBootTraceThreadIds = 0;
 std::atomic<uint16_t> gInputButtons = 0;
+std::atomic<uint16_t> gKeyboardButtons = 0;
 std::atomic<uint16_t> gGuestInputButtons = 0;
 
 uint16_t inputButtonForKey(int key)
@@ -273,9 +274,30 @@ void glfwInputCallback(GLFWwindow*, int key, int, int action, int)
     if (button == 0)
         return;
     if (action == GLFW_RELEASE)
-        gInputButtons.fetch_and(static_cast<uint16_t>(~button), std::memory_order_relaxed);
+        gKeyboardButtons.fetch_and(static_cast<uint16_t>(~button), std::memory_order_relaxed);
     else
-        gInputButtons.fetch_or(button, std::memory_order_relaxed);
+        gKeyboardButtons.fetch_or(button, std::memory_order_relaxed);
+}
+
+uint16_t pollGamepadButtons()
+{
+    GLFWgamepadstate state{};
+    if (!glfwGetGamepadState(GLFW_JOYSTICK_1, &state))
+        return 0;
+    uint16_t buttons = 0;
+    if (state.buttons[GLFW_GAMEPAD_BUTTON_DPAD_UP] == GLFW_PRESS) buttons |= 0x0001u;
+    if (state.buttons[GLFW_GAMEPAD_BUTTON_DPAD_DOWN] == GLFW_PRESS) buttons |= 0x0002u;
+    if (state.buttons[GLFW_GAMEPAD_BUTTON_DPAD_LEFT] == GLFW_PRESS) buttons |= 0x0004u;
+    if (state.buttons[GLFW_GAMEPAD_BUTTON_DPAD_RIGHT] == GLFW_PRESS) buttons |= 0x0008u;
+    if (state.buttons[GLFW_GAMEPAD_BUTTON_START] == GLFW_PRESS) buttons |= 0x0010u;
+    if (state.buttons[GLFW_GAMEPAD_BUTTON_BACK] == GLFW_PRESS) buttons |= 0x0020u;
+    if (state.buttons[GLFW_GAMEPAD_BUTTON_A] == GLFW_PRESS) buttons |= 0x1000u;
+    if (state.buttons[GLFW_GAMEPAD_BUTTON_B] == GLFW_PRESS) buttons |= 0x2000u;
+    if (state.buttons[GLFW_GAMEPAD_BUTTON_X] == GLFW_PRESS) buttons |= 0x4000u;
+    if (state.buttons[GLFW_GAMEPAD_BUTTON_Y] == GLFW_PRESS) buttons |= 0x8000u;
+    if (state.buttons[GLFW_GAMEPAD_BUTTON_LEFT_BUMPER] == GLFW_PRESS) buttons |= 0x0100u;
+    if (state.buttons[GLFW_GAMEPAD_BUTTON_RIGHT_BUMPER] == GLFW_PRESS) buttons |= 0x0200u;
+    return buttons;
 }
 
 thread_local bool gPpcIsEntryThread = false;
@@ -4981,6 +5003,9 @@ int main(int argc, char** argv)
                 }
                 glfwSwapBuffers(window);
                 glfwPollEvents();
+                gInputButtons.store(
+                    gKeyboardButtons.load(std::memory_order_relaxed) | pollGamepadButtons(),
+                    std::memory_order_relaxed);
             }
             glfwDestroyWindow(window);
             glfwTerminate();
