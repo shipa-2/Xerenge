@@ -491,6 +491,24 @@ extern "C" void PPCTraceFunction(uint32_t address, PPCContext& ctx, uint8_t* bas
             std::cerr << "Flash manager prepare state=" << state << " loaded="
                       << static_cast<uint32_t>(base[ctx.r3.u32 + 755]) << '\n';
     }
+    if (std::getenv("XERENGE_FLASH_TRACE") != nullptr &&
+        (address == 0x821F6668u || address == 0x821F6718u ||
+         address == 0x821FD610u || address == 0x821FD6C0u ||
+         address == 0x821FD710u || address == 0x82200540u ||
+         address == 0x822005B0u || address == 0x82200778u ||
+         address == 0x82200E80u || address == 0x82201010u))
+    {
+        static std::atomic<uint32_t> flashTraceCount{0};
+        const uint32_t sample = flashTraceCount.fetch_add(1, std::memory_order_relaxed);
+        if (sample < 256)
+        {
+            std::cerr << "Flash function=0x" << std::hex << address
+                      << " caller=0x" << static_cast<uint32_t>(ctx.lr)
+                      << " r3=0x" << ctx.r3.u32 << " r4=0x" << ctx.r4.u32
+                      << " r5=0x" << ctx.r5.u32 << " r6=0x" << ctx.r6.u32
+                      << std::dec << '\n';
+        }
+    }
     if (frontendPrepareTraceEnabled && address == 0x8210CEC0u)
     {
         auto read32 = [base](uint32_t guestAddress) {
