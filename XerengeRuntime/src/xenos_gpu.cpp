@@ -1116,11 +1116,10 @@ bool XenosGpu::presentFromGuest(uint8_t* guestBase, uint32_t guestAddress,
             guestNonzeroRgbPixels += (row[x * 4] | row[x * 4 + 1] |
                 row[x * 4 + 2]) != 0;
     }
-    // VdSwap can publish the same frontbuffer while the next command batch
-    // is still being resolved. Once a real frame has reached scanout, keep
-    // it during that empty handoff instead of exposing an older Vulkan image.
-    if (guestNonzeroRgbPixels < 8 && hasVisibleFrame_)
-        return true;
+    // VdSwap commonly publishes the guest surface before the asynchronous
+    // Xenos copy packet has made its pixels visible there.  Do not preserve
+    // the previous desktop frame at this point: the current Vulkan image is
+    // the completed render target for this swap and must be scanned out.
     const bool useVulkanReadback = guestNonzeroRgbPixels < 8 &&
         vulkanImagesInitialized_ && edram_.size() >= byteCount;
     if (useVulkanReadback)
