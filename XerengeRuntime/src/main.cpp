@@ -502,10 +502,19 @@ extern "C" void PPCTraceFunction(uint32_t address, PPCContext& ctx, uint8_t* bas
         const uint32_t sample = flashTraceCount.fetch_add(1, std::memory_order_relaxed);
         if (sample < 256)
         {
+            auto readFlashU32 = [base](uint32_t guestAddress) {
+                uint32_t value = 0;
+                std::memcpy(&value, base + guestAddress, sizeof(value));
+                return __builtin_bswap32(value);
+            };
             std::cerr << "Flash function=0x" << std::hex << address
                       << " caller=0x" << static_cast<uint32_t>(ctx.lr)
                       << " r3=0x" << ctx.r3.u32 << " r4=0x" << ctx.r4.u32
                       << " r5=0x" << ctx.r5.u32 << " r6=0x" << ctx.r6.u32
+                      << " manager+0x2fc=0x" << readFlashU32(ctx.r3.u32 + 0x2fcu)
+                      << " manager+0x5744=0x" << readFlashU32(ctx.r3.u32 + 0x5744u)
+                      << " manager+0x5748=0x" << readFlashU32(ctx.r3.u32 + 0x5748u)
+                      << " manager+0x577c=0x" << readFlashU32(ctx.r3.u32 + 0x577cu)
                       << std::dec << '\n';
         }
     }
