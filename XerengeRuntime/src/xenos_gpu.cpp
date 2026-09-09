@@ -1012,6 +1012,26 @@ uint32_t gpuSwap32(uint32_t value, uint32_t endian)
     }
 }
 
+std::atomic<uint32_t> gEventCompletion4000{0};
+std::atomic<uint32_t> gEventCompletion4004{0};
+
+uint32_t loadEventCompletion(uint32_t physicalAddress, const uint8_t* guestBase)
+{
+    const uint32_t alignedAddress = physicalAddress & ~3u;
+    if ((alignedAddress & 0xFFFFF000u) == 0x189F5000u)
+    {
+        const uint32_t offset = alignedAddress & 0xFFFu;
+        if (offset == 0u)
+            return gpuSwap32(gEventCompletion4000.load(std::memory_order_acquire),
+                physicalAddress);
+        if (offset == 4u)
+            return gpuSwap32(gEventCompletion4004.load(std::memory_order_acquire),
+                physicalAddress);
+    }
+    return gpuSwap32(loadGuestBE(guestBase, gpuPhysicalToGuest(alignedAddress)),
+        physicalAddress);
+}
+
 void writeGpuMemory(uint8_t* guestBase, uint32_t encodedAddress, uint32_t value)
 {
     const uint32_t destination = gpuPhysicalToGuest(encodedAddress & ~3u);
@@ -1027,7 +1047,18 @@ void writeEventToGuest(uint8_t* guestBase, uint32_t initiator,
     uint32_t value = (initiator & 0x80000000u) != 0
         ? static_cast<uint32_t>(frameCount) : requestedValue;
     if (destination < 0x80000000u)
-        storeGuestBE(guestBase, destination, value);
+    {
+        const uint32_t storedValue = gpuSwap32(value, encodedAddress);
+        storeGuestBE(guestBase, destination, storedValue);
+        if ((physicalAddress & 0xFFFFF000u) == 0x189F4000u)
+        {
+            storeGuestBE(guestBase, destination + 0x1000u, storedValue);
+            if ((physicalAddress & 0xFFFu) == 0u)
+                gEventCompletion4000.store(storedValue, std::memory_order_release);
+            else if ((physicalAddress & 0xFFFu) == 4u)
+                gEventCompletion4004.store(storedValue, std::memory_order_release);
+        }
+    }
 }
 
 }
@@ -2263,7 +2294,7 @@ void XenosGpu::processBuffer(uint8_t* guestBase, uint32_t guestAddress,
                 const uint32_t mask = loadGuestBE(guestBase,
                     guestAddress + (offset + 4) * 4);
                 const uint32_t value = (waitInfo & 0x10u) != 0
-                    ? loadGuestBE(guestBase, gpuPhysicalToGuest(pollAddress & ~3u))
+                    ? loadEventCompletion(pollAddress, guestBase)
                     : (pollAddress < gpuRegisters_.size() ? gpuRegisters_[pollAddress] : 0);
                 const uint32_t relation = waitInfo & 7u;
                 const uint32_t masked = value & mask;
@@ -2703,7 +2734,7 @@ void XenosGpu::processRing(uint8_t* guestBase)
                 const uint32_t reference = ringLoad(readPointer_ + 3);
                 const uint32_t mask = ringLoad(readPointer_ + 4);
                 const uint32_t value = (waitInfo & 0x10u) != 0
-                    ? loadGuestBE(guestBase, gpuPhysicalToGuest(pollAddress & ~3u))
+                    ? loadEventCompletion(pollAddress, guestBase)
                     : (pollAddress < gpuRegisters_.size() ? gpuRegisters_[pollAddress] : 0);
                 const uint32_t relation = waitInfo & 7u;
                 const uint32_t masked = value & mask;
