@@ -1479,6 +1479,10 @@ public:
                     --semaphore->second;
                 if (timerObject)
                 {
+                    // Timer notifications are one-shot pulses. Consume the
+                    // dispatcher signal before returning so the next wait
+                    // blocks until the timer callback publishes a new tick.
+                    events_[object] = false;
                     // A Xenon timer is a pulse source.  The host timer
                     // callback and the guest waiter must yield after one
                     // consumed pulse; otherwise an already-signalled timer
