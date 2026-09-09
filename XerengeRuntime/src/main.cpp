@@ -1899,6 +1899,10 @@ public:
             return;
         }
         if (service == "KeSetBasePriorityThread" ||
+            service == "KeSetAffinityThread" ||
+            service == "KeEnterCriticalRegion" ||
+            service == "KeLeaveCriticalRegion" ||
+            service == "KeQueryBasePriorityThread" ||
             service == "ExRegisterTitleTerminateNotification" ||
             service == "KiApcNormalRoutineNop")
         {
