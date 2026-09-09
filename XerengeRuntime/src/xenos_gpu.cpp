@@ -1841,6 +1841,19 @@ void XenosGpu::rasterizeDraw(uint8_t* guestBase, uint32_t initiator)
             const uint32_t blockBytes = hasDxt1Texture ? 8u : 16u;
             for (uint32_t i = 0; i < blockBytes; ++i)
                 block[i] = guestBase[address + i];
+            static uint32_t texturePayloadTraceCount = 0;
+            const bool tracePayload = std::getenv("XERENGE_XENOS_TEXTURE_PAYLOAD_TRACE") != nullptr &&
+                texturePayloadTraceCount < 24u;
+            if (tracePayload)
+            {
+                ++texturePayloadTraceCount;
+                std::cerr << "Xenos texture payload guest=0x" << std::hex << address
+                          << " base=0x" << textureBase << " format=" << textureFormat
+                          << " bytes=";
+                for (uint32_t i = 0; i < blockBytes; ++i)
+                    std::cerr << (i == 0 ? "" : " ") << unsigned(block[i]);
+                std::cerr << std::dec << " uv=" << x << ',' << y << '\n';
+            }
             if (textureEndian == 1u)
             {
                 for (uint32_t i = 0; i < blockBytes; i += 2)

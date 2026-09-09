@@ -54,6 +54,11 @@ loading assets do not establish correct Xbox platform behavior.
   loaded and receive completion callbacks. The title is therefore past asset
   loading; the remaining failure is in rendering-unit resource binding or
   scanout composition.
+- A bounded texture-payload trace confirms that the guest addresses used for
+  the DXT1 UI resources contain nonzero, structurally valid blocks. The first
+  64x64 resource at guest `0x6A985000` has valid RGB565 endpoints and index
+  data, so the current artifact is not caused by an empty ISO/XDVDFS texture
+  read. The payload trace is diagnostic-only and remains disabled by default.
 
 ## Work order and acceptance criteria
 
