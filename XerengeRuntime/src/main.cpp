@@ -403,6 +403,32 @@ extern "C" void PPCTraceFunction(uint32_t address, PPCContext& ctx, uint8_t* bas
     static const bool aptTraceEnabled = std::getenv("XERENGE_APT_TRACE") != nullptr;
     static const bool frontendPrepareTraceEnabled =
         std::getenv("XERENGE_FRONTEND_PREPARE_TRACE") != nullptr;
+    static const bool inputObjectTraceEnabled =
+        std::getenv("XERENGE_INPUT_OBJECT_TRACE") != nullptr;
+    if (inputObjectTraceEnabled &&
+        (address == 0x82564210u || address == 0x8256424Cu))
+    {
+        static std::atomic<uint32_t> inputObjectTraceCount{0};
+        const uint32_t sample = inputObjectTraceCount.fetch_add(1, std::memory_order_relaxed);
+        if (sample < 96)
+        {
+            auto read32 = [base](uint32_t guestAddress) {
+                uint32_t value = 0;
+                std::memcpy(&value, base + guestAddress, sizeof(value));
+                return __builtin_bswap32(value);
+            };
+            const uint32_t object = ctx.r3.u32;
+            const uint32_t vtable = object >= 0x60000000u && object < 0x90000000u
+                ? read32(object) : 0;
+            std::cerr << "input object function=0x" << std::hex << address
+                      << " caller=0x" << static_cast<uint32_t>(ctx.lr)
+                      << " object=0x" << object << " vtable=0x" << vtable;
+            if (vtable >= 0x60000000u && vtable < 0x90000000u)
+                std::cerr << " slot48=0x" << read32(vtable + 48u);
+            std::cerr << " r4=0x" << ctx.r4.u32 << " r5=0x" << ctx.r5.u32
+                      << std::dec << '\n';
+        }
+    }
     if (frontendPrepareTraceEnabled)
     {
         uint32_t encodedPointer = 0;
@@ -565,14 +591,16 @@ extern "C" void PPCTraceFunction(uint32_t address, PPCContext& ctx, uint8_t* bas
                 std::memcpy(&value, base + address, sizeof(value));
                 return __builtin_bswap32(value);
             };
-            const uint32_t request = read32(ctx.r3.u32 + 2216u) * 92u + ctx.r3.u32;
-            std::cerr << " readIndex=" << read32(ctx.r3.u32 + 2216u)
-                      << " writeIndex=" << read32(ctx.r3.u32 + 2220u)
-                      << " file=0x" << read32(ctx.r3.u32 + 2208u)
+            const uint32_t loader = ctx.r3.u32;
+            const uint32_t request = read32(loader + 2216u) * 92u + loader;
+            std::cerr << " loader=0x" << loader
+                      << " readIndex=" << read32(loader + 2216u)
+                      << " writeIndex=" << read32(loader + 2220u)
+                      << " file=0x" << read32(loader + 2208u)
                       << " requestState=0x" << read32(request + 76u)
                       << " requestKind=0x" << read32(request + 68u)
                       << " requestBuffer=0x" << read32(request + 72u);
-            const uint32_t file = read32(ctx.r3.u32 + 2208u);
+            const uint32_t file = read32(loader + 2208u);
             if (file != 0)
             {
                 const uint32_t vtable = read32(file);
@@ -1471,6 +1499,15 @@ extern "C" void PPCGuestStoreU32(uint8_t* base, uint32_t address, uint32_t value
         std::cerr << "Memory block 19 pointer store value=0x" << std::hex << value
                   << " function=0x" << gPpcCurrentFunction << " caller=0x"
                   << gPpcCurrentCaller << std::dec << '\n';
+    if (std::getenv("XERENGE_FRONTEND_PREPARE_TRACE") != nullptr &&
+        address == 0x82847090u + 2220u)
+    {
+        static std::atomic<uint32_t> loaderIndexTraceCount{0};
+        if (loaderIndexTraceCount.fetch_add(1, std::memory_order_relaxed) < 64)
+            std::cerr << "async loader writeIndex store value=0x" << std::hex
+                      << value << " function=0x" << gPpcCurrentFunction
+                      << " caller=0x" << gPpcCurrentCaller << std::dec << '\n';
+    }
     const uint32_t watchedResourceState =
         gResourceStateWatchAddress.load(std::memory_order_relaxed);
     if (watchedResourceState != 0 && address == watchedResourceState &&

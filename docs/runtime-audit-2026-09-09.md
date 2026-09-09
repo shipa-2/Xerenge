@@ -1,7 +1,9 @@
 # Runtime audit, 2026-09-09
 
-The main-menu milestone is not verified. A working Vulkan device and visible
-loading assets do not establish correct Xbox platform behavior.
+The runtime now reaches the frontend render loop on the virtual Xbox platform:
+`CB4Game` reaches state 5, `CB4FrontEnd::Render` runs continuously, and Vulkan
+readback contains guest-produced pixels. Interactive menu selection is still
+not verified; the remaining focus is the guest frontend input/action path.
 
 ## Verified corrections
 
@@ -74,25 +76,38 @@ loading assets do not establish correct Xbox platform behavior.
 - The frontend vertex shader constant audit reports the expected transform
   (`c0=(-1,1,0,1)`, `c1=(1/480,-1/360,0,0)`) and valid `c2` colors. Constant
   buffer endian conversion is therefore not the cause of the missing menu.
+- A corrected async-loader audit shows the queue itself is drained: the loader
+  queue is at `0x82847090`, both indices remain zero after requests complete,
+  and the active file is closed. The earlier report of
+  `writeIndex=0x3ea22223` came from an incorrect diagnostic base address.
+- The virtual XInput service now exposes standard buttons, triggers and sticks,
+  with packet numbers changing only when buttons change. Runtime traces confirm
+  that automatic A reaches `XamInputGetState` as `0x1000`, but the frontend's
+  compact object callback is not reached in the current boot path.
+- The GLFW close callback is wired to the runtime loop's shutdown flag; a
+  close-window test left no `xerenge-runtime` process behind.
 
 ## Work order and acceptance criteria
 
-1. Capture the current frontend draw state after loading: movie/render-unit
+1. Resolve the frontend input object/vtable path after loading: identify the
+   caller that consumes the XInput result, bind its real callback contract, and
+   verify A/D-pad navigation changes the guest menu state.
+2. Capture the current frontend draw state after loading: movie/render-unit
    identity, vertex bounds, active shader pair, texture descriptor and resolved
    framebuffer bounds. Use that correlation to identify the first missing or
    clipped menu batch.
-2. Correct the kernel object/thread contract. Separate handles and guest object
+3. Correct the kernel object/thread contract. Separate handles and guest object
    addresses, validate object types and lifetime, implement suspended startup
    and wait/signalling consistently. Audit the existing resource-worker bypass,
    forced context state=2, and device-selector resumption of unrelated threads.
    Remove each workaround only alongside a verified replacement.
-3. Keep asynchronous file completion evidence-backed. The current audit shows
+4. Keep asynchronous file completion evidence-backed. The current audit shows
    the FEMain completion callback is already delivered; remove or narrow any
    remaining workaround only after the same callback path remains verified.
-4. Once the actual wait is known, implement the implicated audio/movie/XAM
+5. Once the actual wait is known, implement the implicated audio/movie/XAM
    service contract. Do not assume sound or a logo movie is the blocker merely
    from a black frame.
-5. Audit GPU command/resolve/present ownership separately. Current code turns a
+6. Audit GPU command/resolve/present ownership separately. Current code turns a
    zero color-write mask into all channels enabled and restores old software
    pixels over black Vulkan pixels. These behaviors need focused register and
    framebuffer tests, not more coordinate flips. Preserve the working Vulkan
@@ -106,9 +121,9 @@ screenshots. Keep generated game code, images and shader caches out of Git.
 
 - Canonical CMake build completed with all available cores.
 - Existing `validate_minimal_xex` CTest passed; it does not test kernel object ABI.
-- A bounded 30-second run selected the RX 6800 XT Vulkan backend, loaded through
-  the stagehed request and continued executing guest code. Main-menu progress
-  is not established by this run. Log: `/tmp/xerenge-abi-audit.log` (local only).
+- A bounded runtime run selected the RX 6800 XT Vulkan backend, loaded through
+  the stagehed request, reached frontend state 5, and produced nonzero guest
+  framebuffer readback. Log: `/tmp/xerenge-60.log` (local only).
 - `XERENGE_APT_TRACE=1` shows the Apt rendering callbacks and manager flags;
   `XERENGE_XENOS_DRAW_TRACE=1 XERENGE_XENOS_VULKAN_TRACE=1` shows sustained
   Vulkan UI submission. Logs were kept in `/tmp` and are not repository data.
