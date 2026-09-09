@@ -250,6 +250,34 @@ std::atomic<bool> gResourceBootstrapReady = false;
 std::atomic<uint32_t> gPpcBootTraceThreadIds = 0;
 std::atomic<uint16_t> gInputButtons = 0;
 std::atomic<uint16_t> gGuestInputButtons = 0;
+
+uint16_t inputButtonForKey(int key)
+{
+    switch (key)
+    {
+    case GLFW_KEY_UP: return 0x0001u;
+    case GLFW_KEY_DOWN: return 0x0002u;
+    case GLFW_KEY_LEFT: return 0x0004u;
+    case GLFW_KEY_RIGHT: return 0x0008u;
+    case GLFW_KEY_ENTER: return 0x0010u;
+    case GLFW_KEY_BACKSPACE: return 0x0020u;
+    case GLFW_KEY_SPACE: return 0x1000u;
+    case GLFW_KEY_ESCAPE: return 0x2000u;
+    default: return 0;
+    }
+}
+
+void glfwInputCallback(GLFWwindow*, int key, int, int action, int)
+{
+    const uint16_t button = inputButtonForKey(key);
+    if (button == 0)
+        return;
+    if (action == GLFW_RELEASE)
+        gInputButtons.fetch_and(static_cast<uint16_t>(~button), std::memory_order_relaxed);
+    else
+        gInputButtons.fetch_or(button, std::memory_order_relaxed);
+}
+
 thread_local bool gPpcIsEntryThread = false;
 thread_local std::array<uint32_t, 64> gPpcTlsValues{};
 thread_local uint32_t gPpcCurrentFunction = 0;
@@ -4927,16 +4955,6 @@ int main(int argc, char** argv)
                 }
                 glfwSwapBuffers(window);
                 glfwPollEvents();
-                uint16_t buttons = 0;
-                buttons |= glfwGetKey(window, GLFW_KEY_UP) == GLFW_PRESS ? 0x0001u : 0u;
-                buttons |= glfwGetKey(window, GLFW_KEY_DOWN) == GLFW_PRESS ? 0x0002u : 0u;
-                buttons |= glfwGetKey(window, GLFW_KEY_LEFT) == GLFW_PRESS ? 0x0004u : 0u;
-                buttons |= glfwGetKey(window, GLFW_KEY_RIGHT) == GLFW_PRESS ? 0x0008u : 0u;
-                buttons |= glfwGetKey(window, GLFW_KEY_ENTER) == GLFW_PRESS ? 0x0010u : 0u;
-                buttons |= glfwGetKey(window, GLFW_KEY_BACKSPACE) == GLFW_PRESS ? 0x0020u : 0u;
-                buttons |= glfwGetKey(window, GLFW_KEY_SPACE) == GLFW_PRESS ? 0x1000u : 0u;
-                buttons |= glfwGetKey(window, GLFW_KEY_ESCAPE) == GLFW_PRESS ? 0x2000u : 0u;
-                gInputButtons.store(buttons, std::memory_order_relaxed);
             }
             glfwDestroyWindow(window);
             glfwTerminate();
@@ -5012,6 +5030,7 @@ int main(int argc, char** argv)
         return 1;
     }
     glfwMakeContextCurrent(window);
+    glfwSetKeyCallback(window, glfwInputCallback);
     glfwSwapInterval(1);
 
     VkInstance instance = VK_NULL_HANDLE;
