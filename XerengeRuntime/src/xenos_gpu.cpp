@@ -1118,6 +1118,23 @@ bool XenosGpu::presentFromGuest(uint8_t* guestBase, uint32_t guestAddress,
     // has already merged CPU raster pixels for areas Vulkan left untouched.
     const bool useVulkanReadback = vulkanImagesInitialized_ &&
         edram_.size() >= byteCount;
+    // VdSwap can run once while the next command buffer is still between its
+    // clear and its first draw.  Publishing that all-black intermediate
+    // image makes the desktop window flicker even though the previous frame
+    // is still valid.  Preserve the last confirmed scanout until the new
+    // frame contains visible RGB data.
+    size_t vulkanNonzeroRgbPixels = 0;
+    if (useVulkanReadback)
+    {
+        for (size_t i = 0; i + 2 < byteCount; i += 4)
+            vulkanNonzeroRgbPixels += (edram_[i] | edram_[i + 1] |
+                edram_[i + 2]) != 0;
+        if (hasVisibleFrame_ && guestNonzeroRgbPixels < 8 &&
+            vulkanNonzeroRgbPixels < 8)
+            return false;
+    }
+    if (hasVisibleFrame_ && !useVulkanReadback && guestNonzeroRgbPixels < 8)
+        return false;
     if (useVulkanReadback)
     {
         const size_t rowBytes = static_cast<size_t>(width) * 4;
@@ -1176,7 +1193,7 @@ bool XenosGpu::presentFromGuest(uint8_t* guestBase, uint32_t guestAddress,
     // while writing valid RGB, so make scanout pixels opaque for OpenGL.
     for (size_t i = 0; i < framebuffer_.size(); i += 4)
         framebuffer_[i + 3] = 255;
-    hasVisibleFrame_ = guestNonzeroRgbPixels >= 8 || useVulkanReadback;
+    hasVisibleFrame_ = guestNonzeroRgbPixels >= 8 || vulkanNonzeroRgbPixels >= 8;
     lastFrameWidth_ = width;
     lastFrameHeight_ = height;
     return true;
