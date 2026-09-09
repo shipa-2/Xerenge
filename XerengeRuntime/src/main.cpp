@@ -2628,10 +2628,12 @@ public:
             if (std::getenv("XERENGE_INPUT_TRACE") != nullptr)
             {
                 static std::atomic<uint32_t> inputTraceCount = 0;
-                if (inputTraceCount.fetch_add(1, std::memory_order_relaxed) < 32)
+                if (inputTraceCount.fetch_add(1, std::memory_order_relaxed) < 64)
                     std::cerr << "XamInputGetState packet=" << packet
                               << " buttons=0x" << std::hex << buttons
-                              << " state=0x" << state << std::dec << '\n';
+                              << " state=0x" << state
+                              << " caller=0x" << ctx.lr
+                              << " dwUserIndex=" << userIndex << std::dec << '\n';
             }
             ctx.r3.u32 = 0; // ERROR_SUCCESS.
             return;
