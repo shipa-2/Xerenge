@@ -1973,7 +1973,10 @@ void XenosGpu::rasterizeDraw(uint8_t* guestBase, uint32_t initiator)
         constexpr size_t textureUploadCapacity = 16u * 1024u * 1024u;
         std::vector<uint8_t> nativeTexture;
         uint64_t nativeTextureKey = 0;
-        const bool hasNativeTexture = hasDxt3Texture || hasRgba8Texture;
+        // DXT1 is decoded by sampleTexture as well. Keep it on the Vulkan
+        // path so UI and logo surfaces do not fall through to the white
+        // descriptor merely because the guest resource is block-compressed.
+        const bool hasNativeTexture = hasDxt1Texture || hasDxt3Texture || hasRgba8Texture;
         const size_t nativeTextureBytes = size_t(textureWidth) * textureHeight * 4;
         if (hasNativeTexture && textureWidth != 0 && textureHeight != 0 &&
             nativeTextureBytes <= textureUploadCapacity)
