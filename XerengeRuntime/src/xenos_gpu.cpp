@@ -2114,8 +2114,18 @@ void XenosGpu::resolveToGuest(uint8_t* guestBase)
     // Vulkan readback with no submitted Vulkan draw returns the initially
     // cleared image and would overwrite those valid CPU-rasterized pixels
     // just before the resolve is copied to guest memory.
+    std::vector<uint8_t> softwareEdram;
+    if (vulkanDrawCount_ != 0 && !edram_.empty())
+        softwareEdram = edram_;
     if (vulkanDrawCount_ != 0)
+    {
         readbackVulkanFrame();
+        if (softwareEdram.size() == edram_.size())
+            for (size_t i = 0; i + 3 < edram_.size(); i += 4)
+                if ((edram_[i] | edram_[i + 1] | edram_[i + 2]) == 0 &&
+                    (softwareEdram[i] | softwareEdram[i + 1] | softwareEdram[i + 2]) != 0)
+                    std::copy_n(softwareEdram.data() + i, 4, edram_.data() + i);
+    }
     const uint32_t physicalDestination = gpuRegisters_[0x2319];
     if (physicalDestination == 0)
         return;
