@@ -45,6 +45,10 @@ loading assets do not establish correct Xbox platform behavior.
   and many small packets whose fetched vertex words are zero, so the next
   check must classify fetch descriptors and rendering-unit payloads before
   changing vertex interpretation.
+- The previous runtime treated `RB_COLOR_MASK=0` as all channels enabled. Xenos
+  uses zero as a genuine no-write mask, including depth-only passes. The GPU
+  path now preserves the lower four mask bits for both Vulkan and the software
+  fallback, preventing setup/depth packets from contaminating the UI target.
 
 ## Work order and acceptance criteria
 

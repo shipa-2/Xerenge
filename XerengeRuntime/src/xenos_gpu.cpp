@@ -434,11 +434,7 @@ bool XenosGpu::ensureGraphicsPipeline(VkPrimitiveTopology topology)
     }
 
     const uint32_t blendControl = gpuRegisters_[0x2201u];
-    const uint32_t colorMask = gpuRegisters_[0x2104u] & 0xFu;
-    // The prototype's bootstrap packets leave RB_COLOR_MASK at zero while
-    // still issuing visible setup draws. Keep those draws observable until
-    // the complete render-target register mapping is implemented.
-    const uint32_t effectiveColorMask = colorMask == 0u ? 0xFu : colorMask;
+    const uint32_t effectiveColorMask = gpuRegisters_[0x2104u] & 0xFu;
     uint64_t key = activeVertexShaderHash_ ^
         (activePixelShaderHash_ + 0x9E3779B97F4A7C15ull +
             (activeVertexShaderHash_ << 6) + (activeVertexShaderHash_ >> 2));
@@ -674,8 +670,7 @@ bool XenosGpu::drawVulkanGeometry(const float* vertices, uint32_t vertexCount,
         !ensureGraphicsPipeline(topology) || !initializeDrawResources())
         return false;
     const uint32_t blendControl = gpuRegisters_[0x2201u];
-    const uint32_t colorMask = gpuRegisters_[0x2104u] & 0xFu;
-    const uint32_t effectiveColorMask = colorMask == 0u ? 0xFu : colorMask;
+    const uint32_t effectiveColorMask = gpuRegisters_[0x2104u] & 0xFu;
     uint64_t key = activeVertexShaderHash_ ^
         (activePixelShaderHash_ + 0x9E3779B97F4A7C15ull +
             (activeVertexShaderHash_ << 6) + (activeVertexShaderHash_ >> 2));
@@ -1451,8 +1446,7 @@ void XenosGpu::rasterizeDraw(uint8_t* guestBase, uint32_t initiator)
     constexpr uint32_t height = 720;
     if (edram_.size() != size_t(width) * height * 4)
         edram_.assign(size_t(width) * height * 4, 0);
-    const uint32_t colorMask = (gpuRegisters_[0x2104u] & 0xFu) == 0u
-        ? 0xFu : gpuRegisters_[0x2104u];
+    const uint32_t colorMask = gpuRegisters_[0x2104u] & 0xFu;
     auto writeColorMasked = [&](size_t pixel, const uint8_t* color)
     {
         for (uint32_t component = 0; component < 4; ++component)
