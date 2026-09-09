@@ -1410,8 +1410,8 @@ void XenosGpu::rasterizeDraw(uint8_t* guestBase, uint32_t initiator)
     const uint32_t primitive = initiator & 0x3Fu;
     const uint32_t source = (initiator >> 6) & 0x3u;
     const uint32_t count = initiator >> 16;
-    if ((primitive != 1u && primitive != 6u && primitive != 8u) ||
-        source != 2u || count == 0 ||
+    if ((primitive != 1u && primitive != 4u && primitive != 6u && primitive != 8u) ||
+        (source != 0u && source != 2u) || count == 0 ||
         gpuRegisters_[0x2318] != 0)
         return;
 
@@ -1490,15 +1490,38 @@ void XenosGpu::rasterizeDraw(uint8_t* guestBase, uint32_t initiator)
     }
     if (havePixelConstant)
         drawColor = constantColor;
+    const bool indexedTriangleList = primitive == 4u && source == 0u;
+    const uint32_t indexBase = gpuRegisters_[0x21FDu] & ~3u;
+    const uint32_t indexEndian = gpuRegisters_[0x21FEu] & 3u;
+    const bool index32 = ((initiator >> 11) & 1u) != 0u;
+    auto readIndex = [&](uint32_t i)
+    {
+        if (!indexedTriangleList)
+            return i;
+        const uint32_t encoded = indexBase + i * (index32 ? 4u : 2u);
+        if (index32)
+            return gpuSwap32(loadGuestBE(guestBase, encoded), indexEndian);
+        uint16_t value = 0;
+        std::memcpy(&value, guestBase + encoded, sizeof(value));
+        if (indexEndian == 1u)
+            value = static_cast<uint16_t>((value << 8) | (value >> 8));
+        else if (indexEndian == 2u)
+            value = static_cast<uint16_t>((value << 8) | (value >> 8));
+        return static_cast<uint32_t>(value);
+    };
+    std::vector<RasterVertex> listVertices;
+    if (indexedTriangleList)
+        listVertices.reserve(count);
     for (uint32_t i = 0; i < count; ++i)
     {
+        const uint32_t vertexIndex = readIndex(i);
         const uint32_t address = vertexAddress +
-            (firstIndex + i) * strideWords * sizeof(uint32_t);
+            (firstIndex + vertexIndex) * strideWords * sizeof(uint32_t);
         uint32_t bits[2]{};
         for (uint32_t component = 0; component < 2; ++component)
             bits[component] = loadGuestBE(guestBase, address + component * 4);
 
-        if ((primitive == 1u || primitive == 8u || primitive == 6u) &&
+        if ((primitive == 1u || primitive == 4u || primitive == 8u || primitive == 6u) &&
             std::getenv("XERENGE_XENOS_VERTEX_TRACE") != nullptr && i < 3)
         {
             std::cerr << "Xenos vertex i=" << i << " guest=0x" << std::hex << address
@@ -1574,7 +1597,11 @@ void XenosGpu::rasterizeDraw(uint8_t* guestBase, uint32_t initiator)
             triangle[i] = {{xNdc, yNdc, 0.0f}, uv, vertexColor};
         if (primitive == 8u)
             continue;
-        if (primitive == 6u)
+        if (primitive == 4u)
+        {
+            listVertices.push_back({{position[0], position[1], 0.0f}, uv, vertexColor});
+        }
+        else if (primitive == 6u)
         {
             // The captured pointer shaders fetch float2 position, float2 UV,
             // and optionally float4 colour. Keep position in guest space;
@@ -1637,7 +1664,8 @@ void XenosGpu::rasterizeDraw(uint8_t* guestBase, uint32_t initiator)
         return;
     }
 
-    if ((primitive == 8u && drawVertices == 3u) ||
+    if ((primitive == 4u && listVertices.size() >= 3u) ||
+        (primitive == 8u && drawVertices == 3u) ||
         (primitive == 6u && stripVertices.size() >= 3u))
     {
         if (primitive == 6u)
@@ -1942,7 +1970,10 @@ void XenosGpu::rasterizeDraw(uint8_t* guestBase, uint32_t initiator)
             v3.color[component] = v0.color[component] + v2.color[component] -
                 v1.color[component];
         std::vector<const RasterVertex*> nativeOrder;
-        if (primitive == 8u)
+        if (primitive == 4u)
+            for (const auto& vertex : listVertices)
+                nativeOrder.push_back(&vertex);
+        else if (primitive == 8u)
             nativeOrder = {&v0, &v1, &v2, &v0, &v2, &v3};
         else
             for (size_t vertex = 2; vertex < stripVertices.size(); ++vertex)
@@ -2038,7 +2069,13 @@ void XenosGpu::rasterizeDraw(uint8_t* guestBase, uint32_t initiator)
                     ? nativeTexture.data() : nullptr,
                 textureWidth, textureHeight, nativeTextureKey))
             return;
-        if (primitive == 6u)
+        if (primitive == 4u)
+        {
+            for (size_t vertex = 2; vertex < listVertices.size(); vertex += 3u)
+                fillTriangle(listVertices[vertex - 2u], listVertices[vertex - 1u],
+                    listVertices[vertex]);
+        }
+        else if (primitive == 6u)
         {
             for (size_t vertex = 2; vertex < stripVertices.size(); ++vertex)
             {
@@ -2481,6 +2518,14 @@ void XenosGpu::processBuffer(uint8_t* guestBase, uint32_t guestAddress,
                 // index buffer when the source isn't auto-indexed.
                 gpuRegisters_[0x21FC] = loadGuestBE(
                     guestBase, guestAddress + (offset + 2) * 4);
+                if (length >= 5 && offset + 4 < dwordCount &&
+                    ((gpuRegisters_[0x21FC] >> 6) & 3u) == 0u)
+                {
+                    gpuRegisters_[0x21FD] = loadGuestBE(
+                        guestBase, guestAddress + (offset + 3) * 4);
+                    gpuRegisters_[0x21FE] = loadGuestBE(
+                        guestBase, guestAddress + (offset + 4) * 4);
+                }
                 rasterizeDraw(guestBase, gpuRegisters_[0x21FC]);
             }
             if (opcode == 0x22u || opcode == 0x36u)
@@ -2795,6 +2840,12 @@ void XenosGpu::processRing(uint8_t* guestBase)
             if (opcode == 0x22u && length >= 3 && 2 < available)
             {
                 gpuRegisters_[0x21FC] = ringLoad(readPointer_ + 2);
+                if (length >= 5 && 4 < available &&
+                    ((gpuRegisters_[0x21FC] >> 6) & 3u) == 0u)
+                {
+                    gpuRegisters_[0x21FD] = ringLoad(readPointer_ + 3);
+                    gpuRegisters_[0x21FE] = ringLoad(readPointer_ + 4);
+                }
                 rasterizeDraw(guestBase, gpuRegisters_[0x21FC]);
             }
             if (opcode == 0x22u || opcode == 0x36u)
