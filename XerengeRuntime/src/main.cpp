@@ -1340,6 +1340,12 @@ public:
                 storeU32(base, threadIdAddress, threadId);
             if (handle != 0 && startAddress != 0)
             {
+                // CREATE_SUSPENDED is part of the Xbox thread contract. The
+                // title creates its bootstrap and resource workers before
+                // their contexts are ready, then resumes them explicitly.
+                // Starting them here races that initialization and leaves
+                // the frontend waiting forever for resource blocks 22/44.
+                threadSuspendCounts_[handle] = (ctx.r9.u32 & 1u) != 0 ? 1u : 0u;
                 // The title's resource-worker context is allocated from the
                 // zeroed guest heap, while the PPC constructor leaves its
                 // state field implicit. State 2 is the worker's documented
@@ -1353,7 +1359,7 @@ public:
                     std::cerr << "bootstrapped resource thread state object=0x"
                               << std::hex << startContext << " state=2" << std::dec << '\n';
                 }
-                launchGuestThread(base, ctx.r6.u32, startAddress, startContext, threadId);
+                launchGuestThread(base, ctx.r6.u32, startAddress, startContext, threadId, handle);
             }
             ctx.r3.u32 = handle != 0 ? 0 : 0xC0000017u;
             return;
@@ -3174,7 +3180,7 @@ private:
     }
 
     void launchGuestThread(uint8_t* base, uint32_t startupAddress, uint32_t startAddress,
-        uint32_t startContext, uint32_t threadId)
+        uint32_t startContext, uint32_t threadId, uint32_t threadHandle)
     {
         if (startAddress == 0x8238D6B8u)
         {
@@ -3183,8 +3189,17 @@ private:
             gGraphicsWaitEvent.store(startContext + 32u, std::memory_order_release);
             gGraphicsWaitEventSignaled.store(false, std::memory_order_release);
         }
-        std::thread([base, startupAddress, startAddress, startContext, threadId]
+        std::thread([this, base, startupAddress, startAddress, startContext, threadId, threadHandle]
         {
+            {
+                std::unique_lock lock(stateMutex_);
+                threadCondition_.wait(lock, [this, threadHandle]
+                {
+                    const auto it = threadSuspendCounts_.find(threadHandle);
+                    return it == threadSuspendCounts_.end() || it->second == 0;
+                });
+                threadSuspendCounts_.erase(threadHandle);
+            }
             PPCContext threadContext{};
             threadContext.r1.u32 = 0x81FC0000u - ((threadId & 0xFFu) * 0x10000u);
             initializeGuestPpcThread(threadContext, base, threadId);
