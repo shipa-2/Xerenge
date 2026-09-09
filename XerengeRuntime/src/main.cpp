@@ -1462,11 +1462,7 @@ public:
                         // system time. The runtime has no shared wall-clock
                         // epoch, so preserve the wait contract with a bounded
                         // host wait until the dispatcher state changes.
-                        // A few XDK wrappers pass the timeout value through
-                        // as the small sentinel 1 instead of a guest pointer.
-                        // Treat that as a short poll, but give the other
-                        // translated guest threads a scheduling slice.
-                        eventCondition_.wait_for(lock, std::chrono::milliseconds(5), ready);
+                        eventCondition_.wait_for(lock, std::chrono::milliseconds(1), ready);
                     }
                 }
             }
