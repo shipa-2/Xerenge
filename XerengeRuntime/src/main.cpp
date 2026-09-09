@@ -2579,28 +2579,9 @@ public:
             ++threadSuspendCounts_[thread];
             if (ctx.r4.u32 != 0)
                 storeU32(base, ctx.r4.u32, previous);
-            // The resource worker suspends itself through this wrapper after
-            // entering its idle state. Block the host thread until the title
-            // resumes the same Xbox thread handle; returning immediately
-            // leaves the worker spinning through the PPC dispatcher.
-            if (ctx.lr == 0x825AE504u)
-            {
-                if (gDeviceSelectorCompleted.exchange(false, std::memory_order_acq_rel))
-                {
-                    // The host completed the selector synchronously, so the
-                    // worker must not park waiting for a UI resume callback.
-                    --threadSuspendCounts_[thread];
-                    threadCondition_.notify_all();
-                }
-                else
-                {
-                threadCondition_.wait(lock, [&]
-                {
-                    const auto current = threadSuspendCounts_.find(thread);
-                    return current == threadSuspendCounts_.end() || current->second == 0;
-                });
-                }
-            }
+            // Keep suspension cooperative. The import return address is shared
+            // by all callers and cannot identify a self-suspend safely; blocking
+            // this host callback can park the main guest thread permanently.
             ctx.r3.u32 = 0;
             return;
         }
