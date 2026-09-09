@@ -534,6 +534,23 @@ extern "C" void PPCTraceFunction(uint32_t address, PPCContext& ctx, uint8_t* bas
                       << "\n";
         }
     }
+    if (frontendPrepareTraceEnabled &&
+        (address == 0x82114FA0u || address == 0x8211A280u))
+    {
+        static std::atomic<uint32_t> frontendUpdateTrace{0};
+        const uint32_t sample = frontendUpdateTrace.fetch_add(1, std::memory_order_relaxed);
+        if (sample < 32)
+        {
+            uint32_t flashMovie = 0;
+            std::memcpy(&flashMovie, base + 0x82A528B0u + 1012u, sizeof(flashMovie));
+            std::cerr << "Frontend update function=0x" << std::hex << address
+                      << " caller=0x" << static_cast<uint32_t>(ctx.lr)
+                      << " this=0x" << ctx.r3.u32 << " input=0x"
+                      << gGuestInputButtons.load(std::memory_order_relaxed)
+                      << " flashMovie=0x" << __builtin_bswap32(flashMovie)
+                      << std::dec << '\n';
+        }
+    }
     if (std::getenv("XERENGE_FLASH_TRACE") != nullptr &&
         (address == 0x821F6668u || address == 0x821F6718u ||
          address == 0x821FD610u || address == 0x821FD6C0u ||
@@ -613,6 +630,47 @@ extern "C" void PPCTraceFunction(uint32_t address, PPCContext& ctx, uint8_t* bas
                     std::cerr << " text='" << text << "'";
             }
             std::cerr << '\n';
+        }
+    }
+    if (std::getenv("XERENGE_APT_TICK_TRACE") != nullptr &&
+        (address == 0x82476938u || address == 0x8247BCD0u ||
+         address == 0x8247E498u || address == 0x8247E2E8u ||
+         address == 0x8247E0C8u || address == 0x8247E5A8u ||
+         address == 0x82478F78u))
+    {
+        static std::atomic<uint32_t> aptTickTraceCount{0};
+        const uint32_t sample = aptTickTraceCount.fetch_add(1, std::memory_order_relaxed);
+        if (sample < 128)
+            std::cerr << "Apt tick function=0x" << std::hex << address
+                      << " caller=0x" << static_cast<uint32_t>(ctx.lr)
+                      << " r3=0x" << ctx.r3.u32 << " r4=0x" << ctx.r4.u32
+                      << " r5=0x" << ctx.r5.u32 << std::dec << '\n';
+    }
+    if (std::getenv("XERENGE_APT_CORE_TRACE") != nullptr &&
+        (address == 0x82428048u || address == 0x82427F08u ||
+         address == 0x82426B48u))
+    {
+        static std::atomic<uint32_t> aptCoreTraceCount{0};
+        const uint32_t sample = aptCoreTraceCount.fetch_add(1, std::memory_order_relaxed);
+        if (sample < 96)
+        {
+            auto guestWord = [base](uint32_t guestAddress) {
+                uint32_t value = 0;
+                std::memcpy(&value, base + guestAddress, sizeof(value));
+                return __builtin_bswap32(value);
+            };
+            const uint32_t aptState = guestWord(0x82D397E0u);
+            const uint32_t aptQueue = guestWord(0x82D397DCu);
+            const uint32_t aptMode = guestWord(0x82D397E4u);
+            std::cerr << "Apt core function=0x" << std::hex << address
+                      << " caller=0x" << static_cast<uint32_t>(ctx.lr)
+                      << " r3=0x" << ctx.r3.u32
+                      << " state=0x" << aptState
+                      << " queue=0x" << aptQueue
+                      << " mode=0x" << aptMode;
+            if (aptState != 0)
+                std::cerr << " state+24=0x" << guestWord(aptState + 24);
+            std::cerr << std::dec << '\n';
         }
     }
     if (frontendPrepareTraceEnabled && address == 0x8210CEC0u)
