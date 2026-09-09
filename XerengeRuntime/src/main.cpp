@@ -669,7 +669,16 @@ extern "C" void PPCTraceFunction(uint32_t address, PPCContext& ctx, uint8_t* bas
                       << " queue=0x" << aptQueue
                       << " mode=0x" << aptMode;
             if (aptState != 0)
-                std::cerr << " state+24=0x" << guestWord(aptState + 24);
+            {
+                const uint32_t state24 = guestWord(aptState + 24);
+                const uint32_t state24Object = state24 != 0 ? guestWord(state24) : 0;
+                const uint32_t stateFlags = state24Object != 0 ? guestWord(state24Object + 80) : 0;
+                const uint32_t stateTypeFlags = stateFlags != 0 ? guestWord(stateFlags + 4) : 0;
+                std::cerr << " state+24=0x" << state24
+                          << " object=0x" << state24Object
+                          << " flags=0x" << stateFlags
+                          << " typeFlags=0x" << stateTypeFlags;
+            }
             std::cerr << std::dec << '\n';
         }
     }
