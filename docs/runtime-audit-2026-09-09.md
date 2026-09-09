@@ -136,3 +136,15 @@ screenshots. Keep generated game code, images and shader caches out of Git.
 - `XERENGE_APT_TRACE=1` shows the Apt rendering callbacks and manager flags;
   `XERENGE_XENOS_DRAW_TRACE=1 XERENGE_XENOS_VULKAN_TRACE=1` shows sustained
   Vulkan UI submission. Logs were kept in `/tmp` and are not repository data.
+- A 45-second run with media and frontend tracing opened the complete early
+  frontend set, including `FEMain.bin` and `stagehed.bin`, then reached
+  `Frontend menu function` with `CB4Game current=5`, `frontendState=28`, and
+  `stagehedDone=1`. The async loader remained drained afterwards. This moves
+  the active investigation from disk loading to menu framebuffer composition
+  and the later XMV request path.
+- The ISO contains real XMV entries; the second XDVDFS directory record for
+  `EA_FrP.xmv` resolves to a valid WMV9/WMAPro stream when extracted. The
+  runtime has not requested that file during the observed early boot window,
+  so adding a decoder before confirming the guest request would be premature.
+- The movie trace now covers the state-machine entry points and confirms that
+  the video object reaches state 55 before any decoder object is installed.

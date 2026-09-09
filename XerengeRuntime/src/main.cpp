@@ -507,12 +507,19 @@ extern "C" void PPCTraceFunction(uint32_t address, PPCContext& ctx, uint8_t* bas
         }
     }
     if (std::getenv("XERENGE_EALOGO_STATE_TRACE") != nullptr &&
-        (address == 0x821FF458u || address == 0x822030F8u ||
+        (address == 0x821F6610u || address == 0x821F6668u ||
+         address == 0x821F69F0u || address == 0x821F6FA0u ||
+         address == 0x821FF458u || address == 0x822030F8u ||
          address == 0x821FCFC0u || address == 0x821FD398u ||
-         address == 0x82426310u || address == 0x821FCB48u))
+         address == 0x82426310u || address == 0x821FCB48u ||
+         address == 0x821FCCE0u || address == 0x82203860u ||
+         address == 0x8220BC40u || address == 0x8210B000u ||
+         address == 0x8210B018u || address == 0x8259C290u))
     {
         static std::atomic<uint32_t> ealogoFlowTraceCount{0};
-        if (ealogoFlowTraceCount.fetch_add(1, std::memory_order_relaxed) < 128)
+        const uint32_t flowIndex = ealogoFlowTraceCount.fetch_add(1, std::memory_order_relaxed);
+        if ((address == 0x821FCCE0u && flowIndex < 24) ||
+            (address != 0x821FCCE0u && flowIndex < 512))
         {
             uint32_t encodedState = 0;
             std::memcpy(&encodedState, base + 0x82A5900Cu, sizeof(encodedState));
@@ -522,10 +529,18 @@ extern "C" void PPCTraceFunction(uint32_t address, PPCContext& ctx, uint8_t* bas
                       << " r5=0x" << ctx.r5.u32 << " global=0x"
                       << globalState << " readyByte="
                       << std::dec << unsigned(base[0x82A538A0u + 22401u]);
+            auto readGuest = [base](uint32_t a) { uint32_t v = 0;
+                std::memcpy(&v, base + a, sizeof(v)); return __builtin_bswap32(v); };
+            if (address == 0x821F69F0u || address == 0x821F6FA0u)
+                std::cerr << " args=" << std::hex << ctx.r3.u32 << "," << ctx.r4.u32
+                          << "," << ctx.r5.u32 << " r6=" << ctx.r6.u32
+                          << " r3obj760=" << readGuest(ctx.r3.u32 + 760u)
+                          << " r3obj764=" << readGuest(ctx.r3.u32 + 764u);
+            if (address == 0x8220BC40u)
+                std::cerr << " args=" << std::hex << ctx.r3.u32 << "," << ctx.r4.u32
+                          << "," << ctx.r5.u32 << "," << ctx.r6.u32 << "," << ctx.r7.u32;
             if (address == 0x821FD398u)
             {
-                auto readGuest = [base](uint32_t a) { uint32_t v = 0;
-                    std::memcpy(&v, base + a, sizeof(v)); return __builtin_bswap32(v); };
                 std::cerr << " playFields760=" << readGuest(0x82A528B0u + 760u)
                           << " 764=" << readGuest(0x82A528B0u + 764u)
                           << " 768=" << readGuest(0x82A528B0u + 768u);
@@ -554,10 +569,14 @@ extern "C" void PPCTraceFunction(uint32_t address, PPCContext& ctx, uint8_t* bas
     if (std::getenv("XERENGE_VIDEO_TRACE") != nullptr &&
         (address == 0x821FE8C8u || address == 0x821F8F58u ||
          address == 0x821F90D8u || address == 0x821F9180u ||
-         address == 0x821017D8u))
+         address == 0x821017D8u || address == 0x821FEAC0u ||
+         address == 0x8235ACD0u || address == 0x82357130u ||
+         address == 0x823571F0u))
     {
         static std::atomic<uint32_t> videoTraceCount{0};
-        if (videoTraceCount.fetch_add(1, std::memory_order_relaxed) < 96)
+        const uint32_t videoIndex = videoTraceCount.fetch_add(1, std::memory_order_relaxed);
+        if ((address == 0x821017D8u && videoIndex < 24) ||
+            (address != 0x821017D8u && videoIndex < 160))
         {
             auto guestWord = [base](uint32_t guestAddress) {
                 uint32_t value = 0;
