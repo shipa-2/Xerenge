@@ -3698,12 +3698,26 @@ extern "C" void PPCUnknownIndirectTrap(uint32_t address, PPCContext& ctx, uint8_
     if (ctx.lr == 0x8256424Cu)
     {
         // This wrapper invokes the platform input object's GetState method.
-        // Several early FE owners leave their optional input-device field
-        // uninitialized, so the virtual call resolves through random data.
-        // Report an idle device and initialize the byte consumed by both
-        // callers instead of allowing stack garbage to steer the FE state.
+        // The frontend consumes a compact one-byte button mask from this
+        // object, rather than the XINPUT_STATE layout returned by
+        // XamInputGetState. The old bring-up path always reported zero here,
+        // which discarded A/B/Start before the menu state machine saw it.
+        const uint16_t buttons = gInputButtons.load(std::memory_order_relaxed);
+        uint8_t frontendButtons = 0;
+        if ((buttons & 0x1000u) != 0u) frontendButtons |= 0x01u; // A
+        if ((buttons & 0x2000u) != 0u) frontendButtons |= 0x02u; // B
+        if ((buttons & 0x0010u) != 0u) frontendButtons |= 0x40u; // Start
+        if ((buttons & 0x0020u) != 0u) frontendButtons |= 0x20u; // Back
         if (ctx.r4.u32 >= 0x60000000u && ctx.r4.u32 < 0x80000000u)
-            base[ctx.r4.u32] = 0;
+            base[ctx.r4.u32] = frontendButtons;
+        if (std::getenv("XERENGE_INPUT_TRACE") != nullptr)
+        {
+            static std::atomic<uint32_t> frontendInputTraceCount = 0;
+            if (frontendInputTraceCount.fetch_add(1, std::memory_order_relaxed) < 32)
+                std::cerr << "frontend input state=0x" << std::hex
+                          << unsigned(frontendButtons) << " xinput=0x" << buttons
+                          << " output=0x" << ctx.r4.u32 << std::dec << '\n';
+        }
         ctx.r3.u32 = 0;
         return;
     }
