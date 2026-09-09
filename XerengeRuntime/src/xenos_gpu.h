@@ -28,6 +28,13 @@ public:
     void present(uint32_t width, uint32_t height);
     bool presentFromGuest(uint8_t* guestBase, uint32_t guestAddress, uint32_t width,
         uint32_t height, uint32_t sourcePitch = 0);
+    struct DisplayFrame
+    {
+        std::vector<uint8_t> pixels;
+        uint32_t width;
+        uint32_t height;
+    };
+    DisplayFrame displayFrameCopy() const;
     std::vector<uint8_t> framebufferCopy() const;
     uint64_t framebufferChecksum() const;
 

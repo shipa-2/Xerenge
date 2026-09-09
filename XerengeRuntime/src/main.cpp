@@ -5073,7 +5073,8 @@ int main(int argc, char** argv)
                     lastEntryTraceCalls = calls;
                     nextEntryTrace += std::chrono::seconds(1);
                 }
-                const auto pixels = gXenosGpu.framebufferCopy();
+                const auto frame = gXenosGpu.displayFrameCopy();
+                const auto& pixels = frame.pixels;
                 // Do not swap an uninitialized backbuffer while the guest is
                 // still preparing its first Xenos surface. Swapping it makes
                 // the window flash black between the loading and first real
@@ -5086,7 +5087,9 @@ int main(int argc, char** argv)
                         std::memory_order_relaxed);
                     continue;
                 }
-                glViewport(0, 0, 1280, 720);
+                int displayWidth = 0, displayHeight = 0;
+                glfwGetFramebufferSize(window, &displayWidth, &displayHeight);
+                glViewport(0, 0, displayWidth, displayHeight);
                 glClearColor(0.0f, 0.0f, 0.0f, 1.0f);
                 glClear(GL_COLOR_BUFFER_BIT);
                 // Xenos readback stores row zero at the top of the display
@@ -5094,22 +5097,35 @@ int main(int argc, char** argv)
                 // the lower-left. Draw from the upper-left with a negative
                 // Y zoom so scanout preserves guest orientation.
                 glRasterPos2f(-1.0f, 1.0f);
-                const float xScale = 1280.0f /
-                    static_cast<float>(gXenosGpu.lastFrameWidth());
-                const float yScale = 720.0f /
-                    static_cast<float>(gXenosGpu.lastFrameHeight());
+                const float xScale = static_cast<float>(displayWidth) /
+                    static_cast<float>(frame.width);
+                const float yScale = static_cast<float>(displayHeight) /
+                    static_cast<float>(frame.height);
                 glPixelZoom(xScale, -yScale);
-                glDrawPixels(static_cast<GLsizei>(gXenosGpu.lastFrameWidth()),
-                    static_cast<GLsizei>(gXenosGpu.lastFrameHeight()),
+                glDrawPixels(static_cast<GLsizei>(frame.width),
+                    static_cast<GLsizei>(frame.height),
                     GL_RGBA, GL_UNSIGNED_BYTE, pixels.data());
                 if (!readbackReported)
                 {
                     std::cout << "Xenos framebuffer readback: "
-                              << gXenosGpu.lastFrameWidth() << 'x'
-                              << gXenosGpu.lastFrameHeight() << " checksum=0x"
+                              << frame.width << 'x'
+                              << frame.height << " checksum=0x"
                               << std::hex << gXenosGpu.framebufferChecksum() << std::dec
                               << "\n" << std::flush;
                     readbackReported = true;
+                }
+                if (std::getenv("XERENGE_DISPLAY_TRACE") != nullptr)
+                {
+                    GLboolean rasterValid = GL_FALSE;
+                    glGetBooleanv(GL_CURRENT_RASTER_POSITION_VALID, &rasterValid);
+                    const GLenum error = glGetError();
+                    static uint32_t displaySample = 0;
+                    if (displaySample++ % 60u == 0 || error != GL_NO_ERROR || !rasterValid)
+                        std::cerr << "Display frame=" << frame.width << 'x' << frame.height
+                                  << " bytes=" << pixels.size()
+                                  << " window=" << displayWidth << 'x' << displayHeight
+                                  << " rasterValid=" << unsigned(rasterValid)
+                                  << " glError=" << error << '\n';
                 }
                 glfwSwapBuffers(window);
                 glfwPollEvents();
