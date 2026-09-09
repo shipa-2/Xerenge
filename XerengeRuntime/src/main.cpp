@@ -1032,13 +1032,8 @@ extern "C" void PPCTraceFunction(uint32_t address, PPCContext& ctx, uint8_t* bas
     if (address == 0x82380FE8 && ctx.r4.u32 != 0 && ctx.r5.u32 != 0 &&
         ctx.r5.u32 < 0x10000u)
     {
-        // AddCommandsToPrimaryBuffer copies r5 guest dwords from r4 into the
-        // primary ring. Inspect the source at the call boundary as well, so
-        // PM4 draw packets are visible before the generated copy advances the
-        // guest ring cursor.
-        gXenosGpu.processSubmittedBuffer(base, ctx.r4.u32, ctx.r5.u32);
-        if (gXenosGpu.takeInterruptPending())
-            dispatchGraphicsInterrupt(base);
+        // This is a CPU copy into the ring, not a GPU submission. Executing
+        // here reorders draws against ring commands (including clears).
         if (std::getenv("XERENGE_PPC_TRACE") != nullptr ||
             std::getenv("XERENGE_RESOURCE_TRACE") != nullptr)
         {
@@ -1951,8 +1946,11 @@ public:
             // This reservation contains the platform swap packet, not a
             // submitted title command stream. Publish once after processing
             // it; replaying its previous contents can reissue stale clears.
-            if (!gXenosGpu.presentFromGuest(base, frontbuffer, width, height))
-                gXenosGpu.present(width, height);
+            // The title alternates display swaps with bookkeeping swaps that
+            // carry no frontbuffer address. Preserve the last scanout for
+            // those calls instead of replacing every second frame with black.
+            if (frontbuffer != 0)
+                gXenosGpu.presentFromGuest(base, frontbuffer, width, height);
             if (std::getenv("XERENGE_PPC_TRACE") != nullptr)
             {
                 static std::atomic<uint32_t> swapTraceCount = 0;
@@ -2640,6 +2638,17 @@ public:
                 criticalSection->unlock();
             }
             ctx.r3.u32 = 0;
+            return;
+        }
+        if (service == "RtlTryEnterCriticalSection")
+        {
+            const uint32_t address = ctx.r3.u32;
+            auto& entry = criticalSections_[address];
+            if (!entry)
+                entry = std::make_shared<std::recursive_mutex>();
+            const auto criticalSection = entry;
+            lock.unlock();
+            ctx.r3.u32 = criticalSection->try_lock() ? 1u : 0u;
             return;
         }
         if (service == "KeTlsAlloc")
@@ -4275,6 +4284,34 @@ void sub_825C66EC(PPCContext& ctx, uint8_t* base)
 void sub_825C66FC(PPCContext& ctx, uint8_t* base)
 {
     gXboxServices.invoke("XamInputSetState", ctx, base);
+}
+
+// VdSwap is also emitted as a direct C++ call by the generated title code.
+// Without this strong definition it resolves to XenonRecomp's weak NOP and
+// the title never reaches the service layer that publishes the frontbuffer.
+void sub_825C685C(PPCContext& ctx, uint8_t* base)
+{
+    gXboxServices.invoke("VdSwap", ctx, base);
+}
+
+void sub_825C673C(PPCContext& ctx, uint8_t* base)
+{
+    gXboxServices.invoke("RtlLeaveCriticalSection", ctx, base);
+}
+
+void sub_825C674C(PPCContext& ctx, uint8_t* base)
+{
+    gXboxServices.invoke("RtlEnterCriticalSection", ctx, base);
+}
+
+void sub_825C675C(PPCContext& ctx, uint8_t* base)
+{
+    gXboxServices.invoke("RtlInitializeCriticalSection", ctx, base);
+}
+
+void sub_825C6A7C(PPCContext& ctx, uint8_t* base)
+{
+    gXboxServices.invoke("RtlTryEnterCriticalSection", ctx, base);
 }
 #endif
 

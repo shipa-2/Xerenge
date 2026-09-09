@@ -501,11 +501,23 @@ bool XenosGpu::ensureGraphicsPipeline(VkPrimitiveTopology topology)
         subpass.pipelineBindPoint = VK_PIPELINE_BIND_POINT_GRAPHICS;
         subpass.colorAttachmentCount = 1;
         subpass.pColorAttachments = &colorReference;
+        // Each draw uses a separate render pass with LOAD and blending.
+        // Make previous attachment writes visible to both operations.
+        VkSubpassDependency dependency{};
+        dependency.srcSubpass = VK_SUBPASS_EXTERNAL;
+        dependency.dstSubpass = 0;
+        dependency.srcStageMask = VK_PIPELINE_STAGE_COLOR_ATTACHMENT_OUTPUT_BIT;
+        dependency.dstStageMask = VK_PIPELINE_STAGE_COLOR_ATTACHMENT_OUTPUT_BIT;
+        dependency.srcAccessMask = VK_ACCESS_COLOR_ATTACHMENT_WRITE_BIT;
+        dependency.dstAccessMask = VK_ACCESS_COLOR_ATTACHMENT_READ_BIT |
+            VK_ACCESS_COLOR_ATTACHMENT_WRITE_BIT;
         VkRenderPassCreateInfo renderPassInfo{VK_STRUCTURE_TYPE_RENDER_PASS_CREATE_INFO};
         renderPassInfo.attachmentCount = 1;
         renderPassInfo.pAttachments = &attachment;
         renderPassInfo.subpassCount = 1;
         renderPassInfo.pSubpasses = &subpass;
+        renderPassInfo.dependencyCount = 1;
+        renderPassInfo.pDependencies = &dependency;
         if (vkCreateRenderPass(vulkanDevice_, &renderPassInfo, nullptr,
                 &vulkanRenderPass_) != VK_SUCCESS)
             return false;
@@ -1292,6 +1304,14 @@ void XenosGpu::loadPointerShader(uint8_t* guestBase, uint32_t address,
 
 void XenosGpu::rasterizeDraw(uint8_t* guestBase, uint32_t initiator)
 {
+    // EDRAM copy is a draw in RB_MODECONTROL kCopy mode. Cache flush
+    // events alone must not overwrite a resolved surface with later clears.
+    if ((gpuRegisters_[0x2208] & 7u) == 6u)
+    {
+        resolveToGuest(guestBase);
+        return;
+    }
+
     // Burnout uses auto-indexed point draws during bootstrap and three-vertex
     // primitive-8 draws for the first render-target geometry. Copy packets
     // remain separate from this raster path.
@@ -2290,8 +2310,7 @@ void XenosGpu::processBuffer(uint8_t* guestBase, uint32_t guestAddress,
             {
                 const uint32_t event = loadGuestBE(
                     guestBase, guestAddress + (offset + 1) * 4);
-                if (event == 6u)
-                    resolveToGuest(guestBase);
+                (void)event; // Cache events do not initiate an EDRAM copy.
                 interruptPending_ = true;
             }
             if ((opcode == 0x58u || opcode == 0x59u) && length >= 4 &&
@@ -2637,8 +2656,7 @@ void XenosGpu::processRing(uint8_t* guestBase)
             if (opcode == 0x46u && length >= 2 && 1 < available)
             {
                 const uint32_t event = ringLoad(readPointer_ + 1);
-                if (event == 6u)
-                    resolveToGuest(guestBase);
+                (void)event; // Cache events do not initiate an EDRAM copy.
                 interruptPending_ = true;
             }
             if ((opcode == 0x58u || opcode == 0x59u) && length >= 4 &&
