@@ -1777,16 +1777,33 @@ public:
         }
         if (service == "NtSetTimerEx" || service == "KeDelayExecutionThread")
         {
-            if (service == "NtSetTimerEx" && timers_.find(ctx.r3.u32) != timers_.end())
+            const bool timerObject = service == "NtSetTimerEx" &&
+                timers_.find(ctx.r3.u32) != timers_.end();
+            // NtSetTimerEx receives a relative 100 ns due time. Delay before
+            // signalling the dispatcher object; signalling first makes every
+            // translated waiter observe a false immediate timer tick.
+            std::chrono::nanoseconds delay{std::chrono::milliseconds(1)};
+            if (timerObject && ctx.r4.u32 != 0)
+            {
+                uint64_t encoded = 0;
+                std::memcpy(&encoded, base + ctx.r4.u32, sizeof(encoded));
+                const int64_t due100ns = static_cast<int64_t>(__builtin_bswap64(encoded));
+                if (due100ns < 0)
+                {
+                    const uint64_t ticks = static_cast<uint64_t>(-due100ns);
+                    delay = std::chrono::nanoseconds(
+                        std::min<uint64_t>(ticks * 100u,
+                            static_cast<uint64_t>(std::chrono::milliseconds(100).count() * 1000000ll)));
+                }
+            }
+            lock.unlock();
+            std::this_thread::sleep_for(delay);
+            lock.lock();
+            if (timerObject)
             {
                 events_[ctx.r3.u32] = true;
                 eventCondition_.notify_all();
             }
-            // These calls are used by the title's timer worker. A short host
-            // delay preserves pacing while the signalled timer event lets the
-            // matching wait return STATUS_SUCCESS.
-            lock.unlock();
-            std::this_thread::sleep_for(std::chrono::milliseconds(1));
             ctx.r3.u32 = 0;
             return;
         }
