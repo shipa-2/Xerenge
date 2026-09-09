@@ -1116,12 +1116,13 @@ bool XenosGpu::presentFromGuest(uint8_t* guestBase, uint32_t guestAddress,
             guestNonzeroRgbPixels += (row[x * 4] | row[x * 4 + 1] |
                 row[x * 4 + 2]) != 0;
     }
-    // VdSwap commonly publishes the guest surface before the asynchronous
-    // Xenos copy packet has made its pixels visible there.  Do not preserve
-    // the previous desktop frame at this point: the current Vulkan image is
-    // the completed render target for this swap and must be scanned out.
-    const bool useVulkanReadback = guestNonzeroRgbPixels < 8 &&
-        vulkanImagesInitialized_ && edram_.size() >= byteCount;
+    // VdSwap publishes a guest surface, but the current Xenos path completes
+    // the render in the Vulkan color image and resolves it asynchronously.
+    // A non-empty guest surface can therefore still be an older/incomplete
+    // frame. Prefer the completed Vulkan image whenever it exists; resolveToGuest
+    // has already merged CPU raster pixels for areas Vulkan left untouched.
+    const bool useVulkanReadback = vulkanImagesInitialized_ &&
+        edram_.size() >= byteCount;
     if (useVulkanReadback)
     {
         const size_t rowBytes = static_cast<size_t>(width) * 4;
