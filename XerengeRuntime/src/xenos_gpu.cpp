@@ -2034,7 +2034,12 @@ void XenosGpu::rasterizeDraw(uint8_t* guestBase, uint32_t initiator)
 
 void XenosGpu::resolveToGuest(uint8_t* guestBase)
 {
-    readbackVulkanFrame();
+    // Small bootstrap point packets use the local EDRAM raster path.  A
+    // Vulkan readback with no submitted Vulkan draw returns the initially
+    // cleared image and would overwrite those valid CPU-rasterized pixels
+    // just before the resolve is copied to guest memory.
+    if (vulkanDrawCount_ != 0)
+        readbackVulkanFrame();
     const uint32_t physicalDestination = gpuRegisters_[0x2319];
     if (physicalDestination == 0)
         return;
