@@ -550,6 +550,24 @@ extern "C" void PPCTraceFunction(uint32_t address, PPCContext& ctx, uint8_t* bas
                       << " r3=0x" << ctx.r3.u32 << " r4=0x" << ctx.r4.u32
                       << " r5=0x" << ctx.r5.u32 << " r6=0x" << ctx.r6.u32
                       << std::dec << '\n';
+            if ((address == 0x821FD610u || address == 0x82200778u) &&
+                ctx.r3.u32 >= 0x82000000u && ctx.r3.u32 < 0x83000000u)
+            {
+                auto read32 = [base](uint32_t guestAddress) {
+                    uint32_t value = 0;
+                    std::memcpy(&value, base + guestAddress, sizeof(value));
+                    return __builtin_bswap32(value);
+                };
+                std::cerr << " Flash fields state=" << read32(ctx.r3.u32 + 584u)
+                          << " movie=" << read32(ctx.r3.u32 + 1012u)
+                          << " previousMovie=" << read32(ctx.r3.u32 + 1008u)
+                          << " slotState=" << unsigned(base[ctx.r3.u32 + 724u])
+                          << " loaded=" << unsigned(base[ctx.r3.u32 + 755u])
+                          << " frame=" << read32(ctx.r3.u32 + 760u)
+                          << " collection=" << read32(ctx.r3.u32 + 1044u)
+                          << " request=" << read32(ctx.r3.u32 + 1048u)
+                          << '\n';
+            }
         }
     }
     if (aptTraceEnabled &&
