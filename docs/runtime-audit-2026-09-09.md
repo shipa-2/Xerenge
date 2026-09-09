@@ -67,22 +67,25 @@ loading assets do not establish correct Xbox platform behavior.
   only 2-3 nonzero framebuffer pixels, while the default Vulkan path produces
   about 22,000. The GPU path is therefore the useful rendering path; the
   software switch is retained only for diagnostics and is disabled by default.
+- A frontend audit confirms that `FEMain.bin` is read to completion: its
+  completion byte at `0x8287C6E1` becomes `1`, and the Flash manager observes
+  `loaded=1`. The previous resource-queue hypothesis is therefore rejected;
+  the remaining issue is in the Flash rendering path or its Xenos draw state.
 
 ## Work order and acceptance criteria
 
-1. Capture the *current* frontend state and guest call stack after loading,
-   together with the resource worker state and pending requests. The 30-second
-   audit run repeatedly executes 0x82104DD0; frequency alone does not prove
-   this worker is the main-thread blocker. Locate the unmet condition and its
-   actual producer before modifying either.
+1. Capture the current frontend draw state after loading: movie/render-unit
+   identity, vertex bounds, active shader pair, texture descriptor and resolved
+   framebuffer bounds. Use that correlation to identify the first missing or
+   clipped menu batch.
 2. Correct the kernel object/thread contract. Separate handles and guest object
    addresses, validate object types and lifetime, implement suspended startup
    and wait/signalling consistently. Audit the existing resource-worker bypass,
    forced context state=2, and device-selector resumption of unrelated threads.
    Remove each workaround only alongside a verified replacement.
-3. Trace asynchronous file completion through guest queue consumption and its
-   callback. Replace the forced resource-ready byte at 0x82D40F09 with the real
-   service completion. Validate data, completion status and wakeup order.
+3. Keep asynchronous file completion evidence-backed. The current audit shows
+   the FEMain completion callback is already delivered; remove or narrow any
+   remaining workaround only after the same callback path remains verified.
 4. Once the actual wait is known, implement the implicated audio/movie/XAM
    service contract. Do not assume sound or a logo movie is the blocker merely
    from a black frame.

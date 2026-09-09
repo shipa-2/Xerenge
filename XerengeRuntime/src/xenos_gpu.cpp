@@ -2187,6 +2187,10 @@ void XenosGpu::resolveToGuest(uint8_t* guestBase)
         size_t whiteRgbPixels = 0;
         size_t topHalfRgbPixels = 0;
         size_t bottomHalfRgbPixels = 0;
+        uint32_t minX = width;
+        uint32_t minY = height;
+        uint32_t maxX = 0;
+        uint32_t maxY = 0;
         uint32_t firstNonzeroPixel = 0;
         uint32_t firstPixel = 0;
         uint32_t differentPixels = 0;
@@ -2196,6 +2200,11 @@ void XenosGpu::resolveToGuest(uint8_t* guestBase)
             if ((edram_[i] | edram_[i + 1] | edram_[i + 2]) != 0)
             {
                 const size_t y = (i / 4) / width;
+                const uint32_t x = static_cast<uint32_t>((i / 4) % width);
+                minX = std::min(minX, x);
+                minY = std::min(minY, static_cast<uint32_t>(y));
+                maxX = std::max(maxX, x);
+                maxY = std::max(maxY, static_cast<uint32_t>(y));
                 (y < height / 2 ? topHalfRgbPixels : bottomHalfRgbPixels)++;
             }
             nonzeroAlphaPixels += edram_[i + 3] != 0;
@@ -2219,6 +2228,12 @@ void XenosGpu::resolveToGuest(uint8_t* guestBase)
                   << " whiteRgbPixels=" << whiteRgbPixels
                   << " topHalfRgbPixels=" << topHalfRgbPixels
                   << " bottomHalfRgbPixels=" << bottomHalfRgbPixels
+                  << " bounds=";
+        if (nonzeroPixels != 0)
+            std::cerr << minX << ',' << minY << ".." << maxX << ',' << maxY;
+        else
+            std::cerr << "empty";
+        std::cerr
                   << " firstNonzeroPixel=0x" << std::hex << firstNonzeroPixel << std::dec
                   << " differentFromFirst=" << differentPixels
                   << " firstPixel=0x" << std::hex << firstPixel << std::dec << '\n';

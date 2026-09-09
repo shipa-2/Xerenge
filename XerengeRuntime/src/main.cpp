@@ -516,6 +516,22 @@ extern "C" void PPCTraceFunction(uint32_t address, PPCContext& ctx, uint8_t* bas
             std::cerr << "Frontend menu function=0x" << std::hex << address
                       << " caller=0x" << static_cast<uint32_t>(ctx.lr)
                       << " this=0x" << ctx.r3.u32 << std::dec << '\n';
+        if (address == 0x82103D28u && (sample == 32 || (sample > 32 && sample % 256u == 0)))
+        {
+            auto read32 = [base](uint32_t guestAddress) {
+                uint32_t value = 0;
+                std::memcpy(&value, base + guestAddress, sizeof(value));
+                return __builtin_bswap32(value);
+            };
+            constexpr uint32_t frontend = 0x8287C698u;
+            constexpr uint32_t flash = 0x82A528B0u;
+            std::cerr << "Frontend render audit count=" << sample
+                      << " state=" << read32(frontend + 584u)
+                      << " loaded=" << unsigned(base[flash + 755u])
+                      << " movie=" << read32(flash + 1012u)
+                      << " callbackByte=" << unsigned(base[0x8287C6E1u])
+                      << "\n";
+        }
     }
     if (std::getenv("XERENGE_FLASH_TRACE") != nullptr &&
         (address == 0x821F6668u || address == 0x821F6718u ||
