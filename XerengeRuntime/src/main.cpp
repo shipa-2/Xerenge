@@ -514,7 +514,9 @@ extern "C" void PPCTraceFunction(uint32_t address, PPCContext& ctx, uint8_t* bas
          address == 0x82426310u || address == 0x821FCB48u ||
          address == 0x821FCCE0u || address == 0x82203860u ||
          address == 0x8220BC40u || address == 0x8210B000u ||
-         address == 0x8210B018u || address == 0x8259C290u))
+         address == 0x8210B018u || address == 0x8259C290u ||
+         address == 0x821FF308u || address == 0x821FF3C0u ||
+         address == 0x821F8F58u))
     {
         static std::atomic<uint32_t> ealogoFlowTraceCount{0};
         const uint32_t flowIndex = ealogoFlowTraceCount.fetch_add(1, std::memory_order_relaxed);

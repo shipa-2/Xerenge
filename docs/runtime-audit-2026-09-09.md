@@ -148,3 +148,10 @@ screenshots. Keep generated game code, images and shader caches out of Git.
   so adding a decoder before confirming the guest request would be premature.
 - The movie trace now covers the state-machine entry points and confirms that
   the video object reaches state 55 before any decoder object is installed.
+- A focused run at the loading-to-frontend boundary shows the remaining
+  mismatch: the callback list invokes `8220BC40` once with event `0`, which
+  is a no-op in the recompiled state machine. No calls to `821FEAC0`,
+  `821F8F58`, or `8235ACD0` follow, while the video object remains in state
+  55. The title then advances to `current=5` and renders the frontend. This
+  identifies the missing logo transition as a callback/event dispatch gap,
+  rather than an XDVDFS read failure.
