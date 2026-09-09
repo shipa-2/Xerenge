@@ -3227,7 +3227,12 @@ private:
     {
         constexpr uint32_t alignment = 0x1000u;
         heapCursor_ = (heapCursor_ + alignment - 1) & ~(alignment - 1);
-        return allocate(size, base);
+        // The guest address space is an anonymous MAP_PRIVATE|MAP_ANONYMOUS
+        // reservation. Fresh pages are already zero-filled by the host, and
+        // this monotonic physical heap never reuses an address, so touching
+        // every page here only turns large Xenon video allocations into a
+        // slow host-side memset.
+        return allocate(size, base, false);
     }
 
     void launchGuestThread(uint8_t* base, uint32_t startupAddress, uint32_t startAddress,
@@ -3287,7 +3292,7 @@ private:
         }).detach();
     }
 
-    uint32_t allocate(uint32_t size, uint8_t* base)
+    uint32_t allocate(uint32_t size, uint8_t* base, bool clear = true)
     {
         constexpr uint32_t alignment = 16;
         const uint32_t alignedSize = (size + alignment - 1) & ~(alignment - 1);
@@ -3296,7 +3301,8 @@ private:
         const uint32_t address = heapCursor_;
         heapCursor_ += alignedSize;
         allocations_.emplace(address, alignedSize);
-        std::memset(base + address, 0, alignedSize);
+        if (clear)
+            std::memset(base + address, 0, alignedSize);
         return address;
     }
 
