@@ -8,6 +8,7 @@
 #include <atomic>
 #include <chrono>
 #include <condition_variable>
+#include <cmath>
 #include <cstring>
 #include <cstdint>
 #include <deque>
@@ -250,6 +251,12 @@ std::atomic<bool> gResourceBootstrapReady = false;
 std::atomic<uint32_t> gPpcBootTraceThreadIds = 0;
 std::atomic<uint16_t> gInputButtons = 0;
 std::atomic<uint16_t> gKeyboardButtons = 0;
+std::atomic<int16_t> gGamepadLeftX = 0;
+std::atomic<int16_t> gGamepadLeftY = 0;
+std::atomic<int16_t> gGamepadRightX = 0;
+std::atomic<int16_t> gGamepadRightY = 0;
+std::atomic<uint8_t> gGamepadLeftTrigger = 0;
+std::atomic<uint8_t> gGamepadRightTrigger = 0;
 std::atomic<uint16_t> gGuestInputButtons = 0;
 
 uint16_t inputButtonForKey(int key)
@@ -283,7 +290,34 @@ uint16_t pollGamepadButtons()
 {
     GLFWgamepadstate state{};
     if (!glfwGetGamepadState(GLFW_JOYSTICK_1, &state))
+    {
+        gGamepadLeftX.store(0, std::memory_order_relaxed);
+        gGamepadLeftY.store(0, std::memory_order_relaxed);
+        gGamepadRightX.store(0, std::memory_order_relaxed);
+        gGamepadRightY.store(0, std::memory_order_relaxed);
+        gGamepadLeftTrigger.store(0, std::memory_order_relaxed);
+        gGamepadRightTrigger.store(0, std::memory_order_relaxed);
         return 0;
+    }
+    const auto axis = [](float value)
+    {
+        return static_cast<int16_t>(std::lround(std::clamp(value, -1.0f, 1.0f) * 32767.0f));
+    };
+    const auto trigger = [](float value)
+    {
+        return static_cast<uint8_t>(std::lround(
+            std::clamp((value + 1.0f) * 0.5f, 0.0f, 1.0f) * 255.0f));
+    };
+    gGamepadLeftX.store(axis(state.axes[GLFW_GAMEPAD_AXIS_LEFT_X]), std::memory_order_relaxed);
+    gGamepadLeftY.store(static_cast<int16_t>(-axis(state.axes[GLFW_GAMEPAD_AXIS_LEFT_Y])),
+        std::memory_order_relaxed);
+    gGamepadRightX.store(axis(state.axes[GLFW_GAMEPAD_AXIS_RIGHT_X]), std::memory_order_relaxed);
+    gGamepadRightY.store(static_cast<int16_t>(-axis(state.axes[GLFW_GAMEPAD_AXIS_RIGHT_Y])),
+        std::memory_order_relaxed);
+    gGamepadLeftTrigger.store(trigger(state.axes[GLFW_GAMEPAD_AXIS_LEFT_TRIGGER]),
+        std::memory_order_relaxed);
+    gGamepadRightTrigger.store(trigger(state.axes[GLFW_GAMEPAD_AXIS_RIGHT_TRIGGER]),
+        std::memory_order_relaxed);
     uint16_t buttons = 0;
     if (state.buttons[GLFW_GAMEPAD_BUTTON_DPAD_UP] == GLFW_PRESS) buttons |= 0x0001u;
     if (state.buttons[GLFW_GAMEPAD_BUTTON_DPAD_DOWN] == GLFW_PRESS) buttons |= 0x0002u;
@@ -2880,6 +2914,16 @@ public:
             storeU32(base, state, packet);
             gGuestInputButtons.store(buttons, std::memory_order_relaxed);
             storeU16(base, state + 4, buttons);
+            base[state + 6] = gGamepadLeftTrigger.load(std::memory_order_relaxed);
+            base[state + 7] = gGamepadRightTrigger.load(std::memory_order_relaxed);
+            storeU16(base, state + 8, static_cast<uint16_t>(
+                gGamepadLeftX.load(std::memory_order_relaxed)));
+            storeU16(base, state + 10, static_cast<uint16_t>(
+                gGamepadLeftY.load(std::memory_order_relaxed)));
+            storeU16(base, state + 12, static_cast<uint16_t>(
+                gGamepadRightX.load(std::memory_order_relaxed)));
+            storeU16(base, state + 14, static_cast<uint16_t>(
+                gGamepadRightY.load(std::memory_order_relaxed)));
             if (std::getenv("XERENGE_INPUT_TRACE") != nullptr)
             {
                 static std::atomic<uint32_t> inputTraceCount = 0;
