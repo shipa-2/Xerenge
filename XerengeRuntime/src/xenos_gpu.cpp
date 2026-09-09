@@ -1447,6 +1447,28 @@ void XenosGpu::rasterizeDraw(uint8_t* guestBase, uint32_t initiator)
     if (edram_.size() != size_t(width) * height * 4)
         edram_.assign(size_t(width) * height * 4, 0);
     const uint32_t colorMask = gpuRegisters_[0x2104u] & 0xFu;
+    if (std::getenv("XERENGE_XENOS_CONSTANT_TRACE") != nullptr &&
+        activeVertexShaderHash_ == 0xBCEC88072A5F344Dull)
+    {
+        static std::atomic<uint32_t> constantTraceCount = 0;
+        if (constantTraceCount.fetch_add(1, std::memory_order_relaxed) < 12)
+        {
+            auto asFloat = [this](uint32_t registerIndex, uint32_t component)
+            {
+                float value = 0.0f;
+                const uint32_t raw = gpuRegisters_[0x4000u + registerIndex * 4u + component];
+                std::memcpy(&value, &raw, sizeof(value));
+                return value;
+            };
+            std::cerr << "Xenos frontend constants c0="
+                      << asFloat(0, 0) << ',' << asFloat(0, 1) << ','
+                      << asFloat(0, 2) << ',' << asFloat(0, 3)
+                      << " c1=" << asFloat(1, 0) << ',' << asFloat(1, 1) << ','
+                      << asFloat(1, 2) << ',' << asFloat(1, 3)
+                      << " c2=" << asFloat(2, 0) << ',' << asFloat(2, 1) << ','
+                      << asFloat(2, 2) << ',' << asFloat(2, 3) << '\n';
+        }
+    }
     auto writeColorMasked = [&](size_t pixel, const uint8_t* color)
     {
         for (uint32_t component = 0; component < 4; ++component)

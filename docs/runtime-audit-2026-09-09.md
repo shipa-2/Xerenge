@@ -71,6 +71,9 @@ loading assets do not establish correct Xbox platform behavior.
   completion byte at `0x8287C6E1` becomes `1`, and the Flash manager observes
   `loaded=1`. The previous resource-queue hypothesis is therefore rejected;
   the remaining issue is in the Flash rendering path or its Xenos draw state.
+- The frontend vertex shader constant audit reports the expected transform
+  (`c0=(-1,1,0,1)`, `c1=(1/480,-1/360,0,0)`) and valid `c2` colors. Constant
+  buffer endian conversion is therefore not the cause of the missing menu.
 
 ## Work order and acceptance criteria
 
