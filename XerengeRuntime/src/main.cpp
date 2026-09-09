@@ -1345,7 +1345,10 @@ public:
                 // their contexts are ready, then resumes them explicitly.
                 // Starting them here races that initialization and leaves
                 // the frontend waiting forever for resource blocks 22/44.
-                threadSuspendCounts_[handle] = (ctx.r9.u32 & 1u) != 0 ? 1u : 0u;
+                {
+                    std::lock_guard lock(stateMutex_);
+                    threadSuspendCounts_[handle] = (ctx.r9.u32 & 1u) != 0 ? 1u : 0u;
+                }
                 // The title's resource-worker context is allocated from the
                 // zeroed guest heap, while the PPC constructor leaves its
                 // state field implicit. State 2 is the worker's documented
@@ -1423,12 +1426,19 @@ public:
         if (service == "NtResumeThread")
         {
             const uint32_t thread = ctx.r3.u32;
-            const auto it = threadSuspendCounts_.find(thread);
-            if (it != threadSuspendCounts_.end() && it->second != 0)
-                --it->second;
+            uint32_t previous = 0;
+            {
+                std::lock_guard lock(stateMutex_);
+                const auto it = threadSuspendCounts_.find(thread);
+                if (it != threadSuspendCounts_.end())
+                {
+                    previous = it->second;
+                    if (it->second != 0)
+                        --it->second;
+                }
+            }
             if (ctx.r4.u32 != 0)
-                storeU32(base, ctx.r4.u32,
-                    it == threadSuspendCounts_.end() ? 0u : it->second);
+                storeU32(base, ctx.r4.u32, previous);
             threadCondition_.notify_all();
             ctx.r3.u32 = 0;
             return;
@@ -2531,10 +2541,13 @@ public:
             // XAM resumes the resource worker when its modal UI is dismissed;
             // without that UI there is no later user-driven resume call, so
             // release the thread suspension created by the selector path.
-            for (auto& [thread, suspendCount] : threadSuspendCounts_)
             {
-                if (suspendCount != 0)
-                    suspendCount = 0;
+                std::lock_guard lock(stateMutex_);
+                for (auto& [thread, suspendCount] : threadSuspendCounts_)
+                {
+                    if (suspendCount != 0)
+                        suspendCount = 0;
+                }
             }
             threadCondition_.notify_all();
             ctx.r3.u32 = 0;
@@ -2588,8 +2601,12 @@ public:
         if (service == "NtSuspendThread")
         {
             const uint32_t thread = ctx.r3.u32;
-            const uint32_t previous = threadSuspendCounts_[thread];
-            ++threadSuspendCounts_[thread];
+            uint32_t previous = 0;
+            {
+                std::lock_guard lock(stateMutex_);
+                previous = threadSuspendCounts_[thread];
+                ++threadSuspendCounts_[thread];
+            }
             if (ctx.r4.u32 != 0)
                 storeU32(base, ctx.r4.u32, previous);
             // Keep suspension cooperative. The import return address is shared
