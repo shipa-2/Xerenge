@@ -1522,6 +1522,27 @@ void XenosGpu::rasterizeDraw(uint8_t* guestBase, uint32_t initiator)
         for (uint32_t component = 0; component < 2; ++component)
             bits[component] = loadGuestBE(guestBase, address + component * 4);
 
+        // A few Flash-generated draw packets retain unused vertex slots as a
+        // zeroed record. Xenos does not turn such records into visible
+        // geometry, while treating them as a real triangle corner here can
+        // create degenerate origin primitives and pollute the bootstrap UI.
+        // Keep point packets unchanged: a zero-valued point can still be a
+        // deliberate origin marker.
+        if (primitive != 1u)
+        {
+            bool anyVertexData = false;
+            for (uint32_t word = 0; word < strideWords; ++word)
+            {
+                if (loadGuestBE(guestBase, address + word * 4u) != 0u)
+                {
+                    anyVertexData = true;
+                    break;
+                }
+            }
+            if (!anyVertexData)
+                continue;
+        }
+
         if ((primitive == 1u || primitive == 4u || primitive == 8u || primitive == 6u) &&
             std::getenv("XERENGE_XENOS_VERTEX_TRACE") != nullptr && i < 3)
         {
