@@ -59,6 +59,10 @@ loading assets do not establish correct Xbox platform behavior.
   64x64 resource at guest `0x6A985000` has valid RGB565 endpoints and index
   data, so the current artifact is not caused by an empty ISO/XDVDFS texture
   read. The payload trace is diagnostic-only and remains disabled by default.
+- A 20-second run with `XERENGE_HOLD_A=1` reaches and stays in `CB4Game`
+  state 5 with `frontendState=28` and repeatedly calls `CB4FrontEnd::Render`.
+  The input service receives the button, but no state transition follows;
+  this makes the remaining issue reproducible in the guest frontend path.
 
 ## Work order and acceptance criteria
 
