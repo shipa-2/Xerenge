@@ -507,6 +507,32 @@ extern "C" void PPCTraceFunction(uint32_t address, PPCContext& ctx, uint8_t* bas
         }
     }
     if (std::getenv("XERENGE_EALOGO_STATE_TRACE") != nullptr &&
+        (address == 0x8259D190u || address == 0x8259D180u || address == 0x8259C290u || address == 0x821FD048u) &&
+        static_cast<uint32_t>(ctx.lr) >= 0x821FF530u &&
+        static_cast<uint32_t>(ctx.lr) <= 0x821FF644u)
+    {
+        static thread_local uint32_t argumentSamples = 0;
+        if (argumentSamples++ < 120)
+        {
+            auto textAt = [base](uint32_t a) {
+                std::string text;
+                if (!a) return std::string("<null>");
+                for (size_t i = 0; i < 96 && uint64_t(a) + i < 0x90000000ull; ++i) {
+                    const auto c = base[a + i];
+                    if (!c) break;
+                    if (c < 32 || c > 126) return std::string("<binary>");
+                    text.push_back(static_cast<char>(c));
+                }
+                return text;
+            };
+            std::cerr << "Movie argument function=0x" << std::hex << address
+                      << " lr=0x" << static_cast<uint32_t>(ctx.lr)
+                      << " a=\"" << textAt(ctx.r3.u32)
+                      << "\" b=\"" << textAt(ctx.r4.u32) << "\"";
+            std::cerr << std::dec << '\n';
+        }
+    }
+    if (std::getenv("XERENGE_EALOGO_STATE_TRACE") != nullptr &&
         (address == 0x821F6610u || address == 0x821F6668u ||
          address == 0x821F69F0u || address == 0x821F6FA0u ||
          address == 0x821FF458u || address == 0x822030F8u ||
@@ -518,8 +544,8 @@ extern "C" void PPCTraceFunction(uint32_t address, PPCContext& ctx, uint8_t* bas
          address == 0x821FF308u || address == 0x821FF3C0u ||
          address == 0x821F8F58u))
     {
-        static std::atomic<uint32_t> ealogoFlowTraceCount{0};
-        const uint32_t flowIndex = ealogoFlowTraceCount.fetch_add(1, std::memory_order_relaxed);
+        static thread_local std::unordered_map<uint32_t, uint32_t> ealogoFlowTraceCounts;
+        const uint32_t flowIndex = ealogoFlowTraceCounts[address]++;
         if ((address == 0x821FCCE0u && flowIndex < 24) ||
             (address != 0x821FCCE0u && flowIndex < 512))
         {
@@ -530,7 +556,7 @@ extern "C" void PPCTraceFunction(uint32_t address, PPCContext& ctx, uint8_t* bas
                       << " r3=0x" << ctx.r3.u32 << " r4=0x" << ctx.r4.u32
                       << " r5=0x" << ctx.r5.u32 << " global=0x"
                       << globalState << " readyByte="
-                      << std::dec << unsigned(base[0x82A538A0u + 22401u]);
+                      << std::dec << unsigned(base[0x82A538C0u + 22401u]);
             auto readGuest = [base](uint32_t a) { uint32_t v = 0;
                 std::memcpy(&v, base + a, sizeof(v)); return __builtin_bswap32(v); };
             if (address == 0x821F69F0u || address == 0x821F6FA0u)
@@ -547,7 +573,7 @@ extern "C" void PPCTraceFunction(uint32_t address, PPCContext& ctx, uint8_t* bas
                           << " 764=" << readGuest(0x82A528B0u + 764u)
                           << " 768=" << readGuest(0x82A528B0u + 768u);
             }
-            if (address == 0x82426310u)
+            if (address == 0x82426310u || address == 0x821FF458u)
             {
                 auto readText = [base](uint32_t a) {
                     std::string value;
@@ -562,6 +588,8 @@ extern "C" void PPCTraceFunction(uint32_t address, PPCContext& ctx, uint8_t* bas
                 };
                 std::cerr << " asset=\"" << readText(ctx.r3.u32)
                           << "\" name=\"" << readText(ctx.r4.u32) << "\"";
+                if (address == 0x821FF458u)
+                    std::cerr << " lookupVideo1=\"" << readText(0x82A52BCCu) << "\"";
             }
             std::cerr
                       << " lr=0x" << std::hex
@@ -575,8 +603,8 @@ extern "C" void PPCTraceFunction(uint32_t address, PPCContext& ctx, uint8_t* bas
          address == 0x8235ACD0u || address == 0x82357130u ||
          address == 0x823571F0u))
     {
-        static std::atomic<uint32_t> videoTraceCount{0};
-        const uint32_t videoIndex = videoTraceCount.fetch_add(1, std::memory_order_relaxed);
+        static thread_local std::unordered_map<uint32_t, uint32_t> videoTraceCounts;
+        const uint32_t videoIndex = videoTraceCounts[address]++;
         if ((address == 0x821017D8u && videoIndex < 24) ||
             (address != 0x821017D8u && videoIndex < 160))
         {
@@ -4875,7 +4903,7 @@ void sub_825C6A7C(PPCContext& ctx, uint8_t* base)
     gXboxServices.invoke("RtlTryEnterCriticalSection", ctx, base);
 }
 
-// The generated body calls these video imports directly. Keep that path
+// The generated body calls these imports directly. Keep that path
 // equivalent to calls through ppc_import_stubs.cpp, whose names are routed by
 // PPCImportedServiceTrap.
 #define XERENGE_DIRECT_IMPORT(symbol, service) \
@@ -4903,6 +4931,12 @@ XERENGE_DIRECT_IMPORT(sub_825C69FC, "KeEnterCriticalRegion")
 XERENGE_DIRECT_IMPORT(sub_825C6A0C, "VdQueryVideoFlags")
 XERENGE_DIRECT_IMPORT(sub_825C6A1C, "VdCallGraphicsNotificationRoutines")
 XERENGE_DIRECT_IMPORT(sub_825C6A2C, "VdInitializeScalerCommandBuffer")
+// CRT strtok keeps its continuation pointer in guest TLS. These direct
+// thunks must reach the same service as their named import counterparts.
+XERENGE_DIRECT_IMPORT(sub_825C6B6C, "KeTlsAlloc")
+XERENGE_DIRECT_IMPORT(sub_825C6B7C, "KeTlsFree")
+XERENGE_DIRECT_IMPORT(sub_825C6B8C, "KeTlsSetValue")
+XERENGE_DIRECT_IMPORT(sub_825C6B9C, "KeTlsGetValue")
 #undef XERENGE_DIRECT_IMPORT
 #endif
 

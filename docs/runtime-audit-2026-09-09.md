@@ -148,10 +148,33 @@ screenshots. Keep generated game code, images and shader caches out of Git.
   so adding a decoder before confirming the guest request would be premature.
 - The movie trace now covers the state-machine entry points and confirms that
   the video object reaches state 55 before any decoder object is installed.
-- A focused run at the loading-to-frontend boundary shows the remaining
-  mismatch: the callback list invokes `8220BC40` once with event `0`, which
-  is a no-op in the recompiled state machine. No calls to `821FEAC0`,
-  `821F8F58`, or `8235ACD0` follow, while the video object remains in state
-  55. The title then advances to `current=5` and renders the frontend. This
-  identifies the missing logo transition as a callback/event dispatch gap,
-  rather than an XDVDFS read failure.
+- The earlier conclusion that a missing callback dispatch blocked the logo
+  was invalid: a shared trace limit was exhausted by generic string calls.
+  Event 0 at `8220BC40` is constructor initialization, not evidence that
+  subsequent movie commands are absent.
+
+## Logo startup correction, 2026-09-10
+
+- The user confirmed that the display snapshot correction removed flickering.
+  Pixels and dimensions are published together; PM4 swap metadata no longer
+  resizes previously published pixels. No window screenshots were taken.
+- Independent per-function trace limits reveal repeated `821FF458` movie
+  commands with both gates enabled. The ready byte is at
+  `0x82A538C0 + 22401`; the earlier diagnostic used a base 32 bytes too low.
+- The command contains `_name=#lookupVideo1`, and the title's lookup table
+  already contains `EA_FrP`. Before the fix, `strtok` returned null for the
+  value following `_SizeY`, leaving the movie name as `none`.
+- The generated direct thunks at `825C6B6C` through `825C6B9C` were NOP bodies,
+  bypassing the implemented KeTls services. Route all four direct TLS calls
+  through the same service used by named imports. The guest CRT now retains
+  its tokenizer continuation across calls.
+- Runtime validation after this fix parsed every parameter, called `821FEAC0`
+  and `8235ACD0`, and opened `D:\ovid\EA_FrP.xmv`. Reads reached offsets 0,
+  0x20000, 0x40000, 0x60000, and 0x80000. This proves movie startup/file access,
+  not successful decoding, presentation, or arrival at the interactive menu.
+- The mounted directory tree resolves that file to sector `0x18A91C`, size
+  `0x6EBF8`. ffprobe identifies WMV3 1280x720 with WMAv2 audio, duration
+  4.033 seconds. The earlier 15.4-second candidate came from a different raw
+  directory record and is not the file opened by this runtime.
+- Remaining work: follow execution after the movie reads, validate decoder
+  and completion behavior, and then verify the logo-to-menu transition.
