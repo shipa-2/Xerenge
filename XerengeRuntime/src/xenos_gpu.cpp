@@ -1571,7 +1571,13 @@ void XenosGpu::rasterizeDraw(uint8_t* guestBase, uint32_t initiator)
 
     if (primitive == 1u && !pointVertices.empty())
     {
-        if (drawVulkanGeometry(pointVertices.data(), pointVertices.size() / 12u,
+        // The bootstrap command stream emits one point per glyph/marker. A
+        // synchronous Vulkan submit for every single point serializes the
+        // guest and display threads and can take minutes before the frontend
+        // advances. Keep real batches on the GPU; rasterize singleton point
+        // packets locally until the point-sprite batcher is implemented.
+        if (pointVertices.size() / 12u >= 32u &&
+            drawVulkanGeometry(pointVertices.data(), pointVertices.size() / 12u,
                 VK_PRIMITIVE_TOPOLOGY_POINT_LIST, nullptr, 1, 1, 0))
             return;
 
