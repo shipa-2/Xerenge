@@ -2832,8 +2832,6 @@ public:
             // state. Expose pad 0 as connected and idle until host input is
             // wired into these fields.
             clear(base, state, 16);
-            const uint32_t packet = inputPacketNumber_++;
-            storeU32(base, state, packet);
             uint16_t buttons = gInputButtons.load(std::memory_order_relaxed);
             const bool holdStart = std::getenv("XERENGE_HOLD_START") != nullptr;
             const bool holdA = std::getenv("XERENGE_HOLD_A") != nullptr;
@@ -2842,14 +2840,22 @@ public:
             const uint32_t autoStartAfter = autoStartAfterText != nullptr
                 ? static_cast<uint32_t>(std::strtoul(autoStartAfterText, nullptr, 0))
                 : (lateAutoStart ? 300u : 0u);
+            const uint32_t poll = inputPollNumber_++;
             const bool autoStartPulse = std::getenv("XERENGE_AUTO_START") != nullptr &&
-                packet >= autoStartAfter && packet % 300u >= 20u && packet % 300u < 24u;
+                poll >= autoStartAfter && poll % 300u >= 20u && poll % 300u < 24u;
             const bool autoAPulse = std::getenv("XERENGE_AUTO_A") != nullptr &&
-                packet >= autoStartAfter && packet % 300u >= 20u && packet % 300u < 24u;
+                poll >= autoStartAfter && poll % 300u >= 20u && poll % 300u < 24u;
             if (holdStart || autoStartPulse)
                 buttons |= 0x0010u;
             if (holdA || autoAPulse)
                 buttons |= 0x1000u;
+            if (buttons != inputButtons_)
+            {
+                inputButtons_ = buttons;
+                ++inputPacketNumber_;
+            }
+            const uint32_t packet = inputPacketNumber_;
+            storeU32(base, state, packet);
             gGuestInputButtons.store(buttons, std::memory_order_relaxed);
             storeU16(base, state + 4, buttons);
             if (std::getenv("XERENGE_INPUT_TRACE") != nullptr)
@@ -3728,6 +3734,8 @@ private:
     std::array<bool, 64> tlsUsed_{};
     std::atomic<uint32_t> nextThreadId_{1};
     uint32_t inputPacketNumber_ = 1;
+    uint32_t inputPollNumber_ = 0;
+    uint16_t inputButtons_ = 0;
     XAudioBackend xaudio_;
     // A service call owns this mutex for its state mutation. Event waits pass
     // this lock to condition_variable_any, so it must be fully releasable;
