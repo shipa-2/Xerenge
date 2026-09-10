@@ -4,6 +4,10 @@
 #include <array>
 #include <cctype>
 #include <cstring>
+#include <filesystem>
+#include <system_error>
+#include <utility>
+#include <vector>
 
 namespace
 {
@@ -33,6 +37,19 @@ bool XboxMedia::open(const std::string& path)
     image_.clear();
     entries_.clear();
     openFiles_.clear();
+    directoryMode_ = false;
+    root_.clear();
+
+    std::error_code ec;
+    if (std::filesystem::is_directory(path, ec))
+    {
+        directoryMode_ = true;
+        root_ = path;
+        while (!root_.empty() && (root_.back() == '/' || root_.back() == '\\'))
+            root_.pop_back();
+        return true;
+    }
+
     image_.open(path, std::ios::binary);
     if (!image_)
         return false;
@@ -68,7 +85,41 @@ bool XboxMedia::open(const std::string& path)
 bool XboxMedia::isOpen() const
 {
     std::lock_guard lock(mutex_);
-    return image_.is_open();
+    return directoryMode_ || image_.is_open();
+}
+
+bool XboxMedia::extractTo(const std::string& outDir) const
+{
+    std::lock_guard lock(mutex_);
+    if (!image_.is_open())
+        return false;
+    std::error_code ec;
+    std::filesystem::create_directories(outDir, ec);
+
+    std::vector<char> buffer;
+    size_t written = 0;
+    for (const auto& [path, entry] : entries_)
+    {
+        if (entry.directory || path.empty())
+            continue;
+        const std::filesystem::path target =
+            std::filesystem::path(outDir) / std::filesystem::path(path);
+        std::filesystem::create_directories(target.parent_path(), ec);
+
+        std::ofstream out(target, std::ios::binary | std::ios::trunc);
+        if (!out)
+            return false;
+        buffer.assign(entry.size, 0);
+        if (entry.size != 0 &&
+            !readAt(static_cast<uint64_t>(entry.startSector) * kSectorSize,
+                    buffer.data(), entry.size))
+            return false;
+        out.write(buffer.data(), static_cast<std::streamsize>(entry.size));
+        if (!out)
+            return false;
+        ++written;
+    }
+    return written != 0;
 }
 
 bool XboxMedia::readAt(uint64_t offset, void* destination, size_t size) const
@@ -99,14 +150,11 @@ std::string XboxMedia::normalize(std::string path)
 bool XboxMedia::parseDirectory(uint32_t startSector, uint32_t size, const std::string& prefix)
 {
     const uint64_t tableOffset = static_cast<uint64_t>(startSector) * kSectorSize;
-    // Only the volume root has the synthetic first node whose name is the
-    // disc label.  Every child directory starts with a normal directory-tree
-    // node and must retain that node's name in the guest path.
     return parseNode(tableOffset, size, 0, prefix, prefix.empty());
 }
 
 bool XboxMedia::parseNode(uint64_t tableOffset, uint32_t tableSize, uint64_t nodeOffset,
-    const std::string& prefix, bool rootNode)
+    const std::string& prefix, bool /*rootNode*/)
 {
     if (nodeOffset + 14 > tableSize || (nodeOffset & 3) != 0)
         return false;
@@ -130,11 +178,13 @@ bool XboxMedia::parseNode(uint64_t tableOffset, uint32_t tableSize, uint64_t nod
         prefix, false))
         return false;
 
-    const std::string path = rootNode ? prefix : prefix + normalize(name);
-    if (!rootNode && !path.empty())
+    // Every node in an XDVDFS directory tree - including node 0 of the volume
+    // root - is a real entry; there is no synthetic disc-label node to skip.
+    const std::string path = prefix + normalize(name);
+    if (!path.empty() && path.back() != '/')
         entries_[path] = entry;
-    if (entry.directory && entry.size != 0 &&
-        !parseDirectory(entry.startSector, entry.size, rootNode ? prefix : path + "/"))
+    if (entry.directory && entry.size != 0 && !path.empty() && path.back() != '/' &&
+        !parseDirectory(entry.startSector, entry.size, path + "/"))
         return false;
 
     if (right != 0 && !parseNode(tableOffset, tableSize, static_cast<uint64_t>(right) * 4,
@@ -146,14 +196,45 @@ bool XboxMedia::parseNode(uint64_t tableOffset, uint32_t tableSize, uint64_t nod
 bool XboxMedia::openFile(const std::string& xboxPath, uint32_t& handle, uint64_t& size)
 {
     std::lock_guard lock(mutex_);
-    const auto it = entries_.find(normalize(xboxPath));
-    if (it == entries_.end() || it->second.directory)
-        return false;
+    const std::string key = normalize(xboxPath);
+
+    OpenFile open{};
+    if (directoryMode_)
+    {
+        if (key.empty())
+        {
+            // Keep the sound-bank probe (empty object name) valid, matching
+            // the disc path: a zero-byte file the async state machine can
+            // complete instead of reading the invalid-handle sentinel.
+            open.hostFile = std::make_shared<std::ifstream>();
+            open.hostSize = 0;
+        }
+        else
+        {
+            auto stream = std::make_shared<std::ifstream>(
+                root_ + "/" + key, std::ios::binary);
+            if (!*stream)
+                return false;
+            stream->seekg(0, std::ios::end);
+            open.hostSize = static_cast<uint64_t>(stream->tellg());
+            stream->seekg(0, std::ios::beg);
+            open.hostFile = std::move(stream);
+        }
+        size = open.hostSize;
+    }
+    else
+    {
+        const auto it = entries_.find(key);
+        if (it == entries_.end() || it->second.directory)
+            return false;
+        open.entry = it->second;
+        size = it->second.size;
+    }
+
     handle = nextHandle_++;
     if (handle == 0)
         handle = nextHandle_++;
-    openFiles_[handle] = OpenFile{it->second, 0};
-    size = it->second.size;
+    openFiles_[handle] = std::move(open);
     return true;
 }
 
@@ -163,16 +244,29 @@ bool XboxMedia::readFile(uint32_t handle, void* destination, uint32_t size, uint
     const auto it = openFiles_.find(handle);
     if (it == openFiles_.end())
         return false;
-    const uint64_t remaining = it->second.entry.size > it->second.position
-        ? it->second.entry.size - it->second.position : 0;
+    OpenFile& file = it->second;
+    const uint64_t total = file.hostFile ? file.hostSize : file.entry.size;
+    const uint64_t remaining = total > file.position ? total - file.position : 0;
     bytesRead = static_cast<uint32_t>(std::min<uint64_t>(size, remaining));
     if (bytesRead == 0)
         return true;
-    const uint64_t offset = static_cast<uint64_t>(it->second.entry.startSector) * kSectorSize +
-        it->second.position;
-    if (!readAt(offset, destination, bytesRead))
-        return false;
-    it->second.position += bytesRead;
+
+    if (file.hostFile)
+    {
+        file.hostFile->clear();
+        file.hostFile->seekg(static_cast<std::streamoff>(file.position));
+        file.hostFile->read(static_cast<char*>(destination), bytesRead);
+        if (file.hostFile->gcount() != static_cast<std::streamsize>(bytesRead))
+            return false;
+    }
+    else
+    {
+        const uint64_t offset =
+            static_cast<uint64_t>(file.entry.startSector) * kSectorSize + file.position;
+        if (!readAt(offset, destination, bytesRead))
+            return false;
+    }
+    file.position += bytesRead;
     return true;
 }
 
@@ -182,9 +276,11 @@ bool XboxMedia::seekFile(uint32_t handle, int64_t distance, uint32_t method, uin
     const auto it = openFiles_.find(handle);
     if (it == openFiles_.end())
         return false;
+    const OpenFile& file = it->second;
+    const uint64_t total = file.hostFile ? file.hostSize : file.entry.size;
     const int64_t base = method == 0 ? 0 : method == 1
-        ? static_cast<int64_t>(it->second.position)
-        : static_cast<int64_t>(it->second.entry.size);
+        ? static_cast<int64_t>(file.position)
+        : static_cast<int64_t>(total);
     const int64_t next = base + distance;
     if (next < 0)
         return false;
@@ -209,7 +305,7 @@ bool XboxMedia::fileSize(uint32_t handle, uint64_t& size) const
     const auto it = openFiles_.find(handle);
     if (it == openFiles_.end())
         return false;
-    size = it->second.entry.size;
+    size = it->second.hostFile ? it->second.hostSize : it->second.entry.size;
     return true;
 }
 

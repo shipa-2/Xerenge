@@ -5001,6 +5001,29 @@ int main(int argc, char** argv)
         return info && mapAndPrintImage(argv[2], *info) ? 0 : 1;
     }
 
+    if (argc > 1 && std::string(argv[1]) == "--extract-game")
+    {
+        if (argc != 4)
+        {
+            std::cerr << "usage: xerenge-runtime --extract-game <disc.iso> <output-dir>\n";
+            return 2;
+        }
+        XboxMedia disc;
+        if (!disc.open(argv[2]))
+        {
+            std::cerr << "could not mount XDVDFS image: " << argv[2] << '\n';
+            return 1;
+        }
+        if (!disc.extractTo(argv[3]))
+        {
+            std::cerr << "extraction failed\n";
+            return 1;
+        }
+        std::cout << "game files extracted to " << argv[3]
+                  << "\nrun with this directory in place of the .iso\n";
+        return 0;
+    }
+
     if (argc > 1 && (std::string(argv[1]) == "--ppc-prepare" || std::string(argv[1]) == "--ppc-entry"))
     {
         if (argc < 3 || argc > 4)
