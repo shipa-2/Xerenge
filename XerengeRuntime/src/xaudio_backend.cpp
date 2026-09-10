@@ -59,30 +59,51 @@ void XAudioBackend::start()
     const char* enabled = std::getenv("XERENGE_AUDIO");
     if (enabled != nullptr && std::strcmp(enabled, "0") == 0)
         return;
-    const char* device = std::getenv("XERENGE_AUDIO_DEVICE");
-    if (device == nullptr)
-        device = "default";
-    if (snd_pcm_open(&state_->pcm, device, SND_PCM_STREAM_PLAYBACK,
-                     SND_PCM_NONBLOCK) < 0)
-        return;
-
-    snd_pcm_hw_params_t* params = nullptr;
-    snd_pcm_hw_params_malloc(&params);
-    snd_pcm_hw_params_any(state_->pcm, params);
-    snd_pcm_hw_params_set_access(state_->pcm, params, SND_PCM_ACCESS_RW_INTERLEAVED);
-    snd_pcm_hw_params_set_format(state_->pcm, params, SND_PCM_FORMAT_FLOAT_LE);
-    snd_pcm_hw_params_set_channels(state_->pcm, params, 2);
-    unsigned rate = kRate;
-    int direction = 0;
-    snd_pcm_hw_params_set_rate_near(state_->pcm, params, &rate, &direction);
-    snd_pcm_uframes_t period = kFrames;
-    snd_pcm_hw_params_set_period_size_near(state_->pcm, params, &period, &direction);
-    const int result = snd_pcm_hw_params(state_->pcm, params);
-    snd_pcm_hw_params_free(params);
-    if (result < 0 || rate != kRate)
+    // Try the caller's device first, then a fallback chain. On PipeWire/Pulse
+    // systems the ALSA "default" PCM often routes through dmix to a busy or
+    // absent hardware card and fails to open ("unable to open slave"), which
+    // previously left the title silent. The "pipewire" and "pulse" plugins
+    // reach the running sound server directly.
+    const char* requested = std::getenv("XERENGE_AUDIO_DEVICE");
+    const char* candidates[] = {
+        requested, "default", "pipewire", "pulse", "sysdefault", "plughw:0,0"};
+    const char* openedDevice = nullptr;
+    for (const char* device : candidates)
     {
-        snd_pcm_close(state_->pcm);
-        state_->pcm = nullptr;
+        if (device == nullptr || *device == '\0')
+            continue;
+        if (snd_pcm_open(&state_->pcm, device, SND_PCM_STREAM_PLAYBACK,
+                         SND_PCM_NONBLOCK) < 0)
+        {
+            state_->pcm = nullptr;
+            continue;
+        }
+
+        snd_pcm_hw_params_t* params = nullptr;
+        snd_pcm_hw_params_malloc(&params);
+        snd_pcm_hw_params_any(state_->pcm, params);
+        snd_pcm_hw_params_set_access(state_->pcm, params, SND_PCM_ACCESS_RW_INTERLEAVED);
+        snd_pcm_hw_params_set_format(state_->pcm, params, SND_PCM_FORMAT_FLOAT_LE);
+        snd_pcm_hw_params_set_channels(state_->pcm, params, 2);
+        unsigned rate = kRate;
+        int direction = 0;
+        snd_pcm_hw_params_set_rate_near(state_->pcm, params, &rate, &direction);
+        snd_pcm_uframes_t period = kFrames;
+        snd_pcm_hw_params_set_period_size_near(state_->pcm, params, &period, &direction);
+        const int result = snd_pcm_hw_params(state_->pcm, params);
+        snd_pcm_hw_params_free(params);
+        if (result < 0 || rate != kRate)
+        {
+            snd_pcm_close(state_->pcm);
+            state_->pcm = nullptr;
+            continue;
+        }
+        openedDevice = device;
+        break;
+    }
+    if (openedDevice == nullptr)
+    {
+        std::cerr << "XAudio: no usable ALSA playback device; title runs silent\n";
         return;
     }
     snd_pcm_prepare(state_->pcm);
@@ -127,7 +148,7 @@ void XAudioBackend::start()
             }
         }
     });
-    std::cerr << "XAudio ALSA sink ready device=" << device
+    std::cerr << "XAudio ALSA sink ready device=" << openedDevice
               << " rate=48000 channels=2\n";
 }
 
