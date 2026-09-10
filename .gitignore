@@ -3,6 +3,8 @@
 *.xex
 extract/
 work/
+game/
+game-*/
 
 # Local builds and generated shader outputs
 build/
