@@ -2019,6 +2019,36 @@ public:
     // signal consumed like an auto-reset one, and the next waiter - the
     // movie player's shutdown join, in the case that surfaced this - waits for
     // a wakeup that has already been thrown away.
+    // Follow one event through every operation. A wait that does not complete
+    // on an event that was signalled means something cleared it in between, and
+    // only the order of the operations says what.
+    bool watchedEvent(uint32_t object) const
+    {
+        static const std::vector<uint32_t> watched = [] {
+            std::vector<uint32_t> parsed;
+            const char* list = std::getenv("XERENGE_WATCH_EVENTS");
+            for (const char* cursor = list != nullptr ? list : ""; *cursor != '\0';)
+            {
+                char* end = nullptr;
+                const unsigned long address = std::strtoul(cursor, &end, 0);
+                if (end == cursor)
+                    break;
+                parsed.push_back(uint32_t(address));
+                cursor = (*end == '\0') ? end : end + 1;
+            }
+            return parsed;
+        }();
+        return std::find(watched.begin(), watched.end(), object) != watched.end();
+    }
+
+    void reportEvent(const char* what, uint32_t object, uint64_t lr) const
+    {
+        if (watchedEvent(object))
+            std::cerr << "event 0x" << std::hex << object << ' ' << what << " from 0x"
+                      << static_cast<uint32_t>(lr) << std::dec
+                      << " thread=" << std::this_thread::get_id() << '\n';
+    }
+
     bool isManualResetEvent(uint32_t object) const
     {
         const auto mode = manualResetEvents_.find(object);
@@ -2297,6 +2327,7 @@ public:
             const uint32_t timeoutPointer = service == "NtWaitForSingleObjectEx"
                 ? ctx.r5.u32 : ctx.r7.u32;
             adoptInlineEventResetMode(object, base);
+            reportEvent("wait begins", object, ctx.lr);
             const auto ready = [&]
             {
                 if (object == gGraphicsWaitEvent.load(std::memory_order_acquire))
@@ -2397,6 +2428,7 @@ public:
                 const bool timerObject = timers_.find(object) != timers_.end();
                 if (object == gGraphicsWaitEvent.load(std::memory_order_acquire))
                     gGraphicsWaitEventSignaled.store(false, std::memory_order_release);
+                reportEvent("wait satisfied", object, ctx.lr);
                 const auto event = events_.find(object);
                 if (event != events_.end() && !isManualResetEvent(object))
                     event->second = false;
@@ -2444,6 +2476,7 @@ public:
                 ++eventSignalCounts_[ctx.r3.u32];
                 eventSignalCallers_[ctx.r3.u32] = static_cast<uint32_t>(ctx.lr);
             }
+            reportEvent(set ? "set" : "reset", ctx.r3.u32, ctx.lr);
             if (service == "NtSetEvent" && ctx.r4.u32 != 0)
                 storeU32(base, ctx.r4.u32, previous ? 1u : 0u);
             if (set)
@@ -2460,6 +2493,7 @@ public:
             if (ctx.r3.u32 == gGraphicsWaitEvent.load(std::memory_order_acquire))
                 gGraphicsWaitEventSignaled.store(false, std::memory_order_release);
             events_[ctx.r3.u32] = false;
+            reportEvent("cleared", ctx.r3.u32, ctx.lr);
             ctx.r3.u32 = 0;
             return;
         }
@@ -5922,6 +5956,27 @@ void sub_821FEBC0(PPCContext& ctx, uint8_t* base)
     __imp__sub_821FEBC0(ctx, base);
 }
 
+// The movie player's status lives in one field, written only through this
+// setter (retail 0x8248D398, reached through the vtable). The intro's frame
+// pump spins forever when it reads zero there, so the transition that leaves it
+// zero - or the absence of one - is what decides whether the sequence advances.
+extern "C" void __imp__sub_8248D398(PPCContext& ctx, uint8_t* base);
+void sub_8248D398(PPCContext& ctx, uint8_t* base)
+{
+    static const bool trace = std::getenv("XERENGE_VIDEO_TRACE") != nullptr;
+    if (trace)
+    {
+        uint32_t previous = 0;
+        std::memcpy(&previous, base + ctx.r3.u32 + 0xD8, sizeof(previous));
+        previous = __builtin_bswap32(previous);
+        if (previous != ctx.r4.u32)
+            std::cerr << "movie player status " << previous << " -> " << ctx.r4.u32
+                      << " player=0x" << std::hex << ctx.r3.u32 << " from 0x"
+                      << static_cast<uint32_t>(ctx.lr) << std::dec << '\n';
+    }
+    __imp__sub_8248D398(ctx, base);
+}
+
 // CCalMoviePlayer::GetStatus (retail 0x8248CC20) reports the player's state
 // through three out parameters. Its caller forwards only one of them, and only
 // when the second says the first is meaningful, so the value the intro loop
@@ -5931,6 +5986,7 @@ void sub_8248CC20(PPCContext& ctx, uint8_t* base)
 {
     static const bool trace = std::getenv("XERENGE_VIDEO_TRACE") != nullptr;
     const uint32_t outs[3] = {ctx.r4.u32, ctx.r5.u32, ctx.r6.u32};
+    const uint32_t player = ctx.r3.u32;  // r3 carries the result back
     __imp__sub_8248CC20(ctx, base);
     if (!trace)
         return;
@@ -5940,6 +5996,13 @@ void sub_8248CC20(PPCContext& ctx, uint8_t* base)
             std::memcpy(&value, base + address, sizeof(value));
         return __builtin_bswap32(value);
     };
+    static std::atomic<bool> namedGetters{false};
+    if (!namedGetters.exchange(true, std::memory_order_relaxed))
+    {
+        const uint32_t vtable = read(player);
+        std::cerr << "movie player getters: state=0x" << std::hex << read(vtable + 0xF0)
+                  << " secondary=0x" << read(vtable + 0xF4) << std::dec << '\n';
+    }
     static std::atomic<uint64_t> last{~0ull};
     const uint64_t combined = (uint64_t(read(outs[0])) << 32) | read(outs[1]);
     if (last.exchange(combined, std::memory_order_relaxed) != combined)
