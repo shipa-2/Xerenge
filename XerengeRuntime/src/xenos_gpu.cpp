@@ -1618,8 +1618,36 @@ void XenosGpu::rasterizeDraw(uint8_t* guestBase, uint32_t initiator)
                       << std::dec << '\n';
         }
     }
+    // Alpha blending, from the guest's own blend state. A font atlas carries
+    // the glyph shape in its alpha channel, so writing every texel of a glyph
+    // quad opaquely turns each letter into a solid block - which is exactly
+    // how the language-select text rendered. Honour the common
+    // SRC_ALPHA / ONE_MINUS_SRC_ALPHA setup (Xenos factors 6 and 7) and leave
+    // every other combination writing as before.
+    const uint32_t softwareBlendControl = gpuRegisters_[0x2201u];
+    const bool blendSourceAlpha =
+#if defined(XERENGE_TARGET_BETA5) && XERENGE_TARGET_BETA5
+        false;
+#else
+        (softwareBlendControl & 0x1Fu) == 6u &&
+        ((softwareBlendControl >> 8) & 0x1Fu) == 7u &&
+        ((softwareBlendControl >> 5) & 0x7u) == 0u;
+#endif
     auto writeColorMasked = [&](size_t pixel, const uint8_t* color)
     {
+        if (blendSourceAlpha)
+        {
+            const float sourceAlpha = color[3] / 255.0f;
+            for (uint32_t component = 0; component < 4; ++component)
+                if ((colorMask & (1u << component)) != 0u)
+                {
+                    const float blended = color[component] * sourceAlpha +
+                        edram_[pixel + component] * (1.0f - sourceAlpha);
+                    edram_[pixel + component] =
+                        static_cast<uint8_t>(std::clamp(blended, 0.0f, 255.0f));
+                }
+            return;
+        }
         for (uint32_t component = 0; component < 4; ++component)
             if ((colorMask & (1u << component)) != 0u)
                 edram_[pixel + component] = color[component];
