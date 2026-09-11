@@ -1522,6 +1522,35 @@ extern "C" void PPCTraceFunction(uint32_t address, PPCContext& ctx, uint8_t* bas
     }
 }
 
+// Guest stores of widths other than 32 bits do not funnel through
+// PPCGuestStoreU32, so a stray 8/16/64-bit write is invisible to the
+// XERENGE_WATCH_STORE funnel. The generated ppc_context.h routes those
+// widths through this hook so a diagnostic build can observe every guest
+// write to a watched range, whatever its width.
+extern "C" void PPCGuestStoreWatch(uint32_t address, uint32_t size)
+{
+    static const uint32_t watchBase = [] {
+        const char* text = std::getenv("XERENGE_WATCH_STORE");
+        return text != nullptr ? static_cast<uint32_t>(std::strtoul(text, nullptr, 0)) : 0u;
+    }();
+    if (watchBase == 0)
+        return;
+    static const uint32_t watchSize = [] {
+        const char* text = std::getenv("XERENGE_WATCH_STORE");
+        const char* colon = text != nullptr ? std::strchr(text, ':') : nullptr;
+        return colon != nullptr
+            ? static_cast<uint32_t>(std::strtoul(colon + 1, nullptr, 0)) : 4u;
+    }();
+    if (address + size <= watchBase || address >= watchBase + watchSize)
+        return;
+    static std::atomic<uint32_t> hits{0};
+    if (hits.fetch_add(1, std::memory_order_relaxed) < 32)
+        std::cerr << "WATCHSTORE" << (size * 8) << " address=0x" << std::hex << address
+                  << std::dec << " size=" << size
+                  << " guestFn=0x" << std::hex << gPpcCurrentFunction
+                  << " guestCaller=0x" << gPpcCurrentCaller << std::dec << '\n';
+}
+
 extern "C" uint32_t PPCGuestClock()
 {
     static std::atomic<uint32_t> guestClock = 0;
@@ -1601,6 +1630,41 @@ extern "C" void PPCGuestStoreU32(uint8_t* base, uint32_t address, uint32_t value
             std::cerr << "async loader writeIndex store value=0x" << std::hex
                       << value << " function=0x" << gPpcCurrentFunction
                       << " caller=0x" << gPpcCurrentCaller << std::dec << '\n';
+    }
+    // General-purpose guest-store watch: XERENGE_WATCH_STORE=0xADDRESS[:BYTES]
+    // reports every 32-bit store landing in that range together with the
+    // recompiled function that issued it (resolved from the native return
+    // address). Every PPC_STORE_U32 in the generated code funnels through
+    // here, so this catches a stray writer without needing a hardware
+    // watchpoint.
+    static const uint32_t watchStoreBase = [] {
+        const char* text = std::getenv("XERENGE_WATCH_STORE");
+        return text != nullptr ? static_cast<uint32_t>(std::strtoul(text, nullptr, 0)) : 0u;
+    }();
+    if (watchStoreBase != 0)
+    {
+        static const uint32_t watchStoreSize = [] {
+            const char* text = std::getenv("XERENGE_WATCH_STORE");
+            const char* colon = text != nullptr ? std::strchr(text, ':') : nullptr;
+            return colon != nullptr
+                ? static_cast<uint32_t>(std::strtoul(colon + 1, nullptr, 0)) : 4u;
+        }();
+        if (address >= watchStoreBase && address < watchStoreBase + watchStoreSize)
+        {
+            static std::atomic<uint32_t> watchCount{0};
+            if (watchCount.fetch_add(1, std::memory_order_relaxed) < 64)
+            {
+                void* returnAddress = __builtin_return_address(0);
+                Dl_info symbol{};
+                const char* name = dladdr(returnAddress, &symbol) != 0 && symbol.dli_sname != nullptr
+                    ? symbol.dli_sname : "?";
+                std::cerr << "WATCHSTORE address=0x" << std::hex << address
+                          << " value=0x" << value
+                          << " by=" << name
+                          << " guestFn=0x" << gPpcCurrentFunction
+                          << " guestCaller=0x" << gPpcCurrentCaller << std::dec << '\n';
+            }
+        }
     }
     const uint32_t watchedResourceState =
         gResourceStateWatchAddress.load(std::memory_order_relaxed);
@@ -2290,8 +2354,66 @@ public:
             }
             // The title's wrapper passes the destination and byte count in
             // the preserved r8/r9 pair; r7 is its IO request structure.
+            // EXPERIMENT (XERENGE_PROTECT_DISPLAY_OBJECT): a 1 MB streaming
+            // load is issued in eight 128 KB chunks across
+            // 0x825eace8..0x8270ace8, which straddles the title's static
+            // display object at 0x82697100 - the one holding the swap-chain
+            // buffer descriptors. Overwriting it is what permanently kills
+            // presentation 36 frames in. Two static objects cannot genuinely
+            // overlap, so the streaming destination is wrong for reasons not
+            // yet traced; preserve the object across the read to confirm that
+            // this corruption is the only thing standing between the release
+            // build and a visible frame.
+            constexpr uint32_t kDisplayObject = 0x82697100u;
+            constexpr uint32_t kDisplayObjectSize = 0x300u;
+            static const bool protectDisplayObject =
+                std::getenv("XERENGE_PROTECT_DISPLAY_OBJECT") != nullptr;
+            const bool overlapsDisplayObject = protectDisplayObject &&
+                ctx.r8.u32 < kDisplayObject + kDisplayObjectSize &&
+                kDisplayObject < ctx.r8.u32 + ctx.r9.u32;
+            std::array<uint8_t, kDisplayObjectSize> preservedDisplayObject{};
+            if (overlapsDisplayObject)
+                std::memcpy(preservedDisplayObject.data(), base + kDisplayObject,
+                    preservedDisplayObject.size());
             const bool ok = gXboxMedia.readFile(ctx.r3.u32, base + ctx.r8.u32,
                 ctx.r9.u32, bytesRead);
+            if (overlapsDisplayObject)
+            {
+                std::memcpy(base + kDisplayObject, preservedDisplayObject.data(),
+                    preservedDisplayObject.size());
+                std::cerr << "preserved display object across media read buffer=0x"
+                          << std::hex << ctx.r8.u32 << " size=0x" << ctx.r9.u32
+                          << std::dec << '\n';
+            }
+            if (std::getenv("XERENGE_MEDIA_TRACE") != nullptr)
+                std::cerr << "media read done handle=0x" << std::hex << ctx.r3.u32
+                          << " buffer=0x" << ctx.r8.u32 << " requested=0x" << ctx.r9.u32
+                          << " actuallyWrote=0x" << bytesRead << std::dec
+                          << " ok=" << ok << '\n';
+            // A read whose destination lands inside the loaded image's own
+            // static data is writing over the title's globals rather than
+            // into a resource buffer. Report the recompiled call chain that
+            // produced it - each guest function is a native function here, so
+            // the native backtrace mirrors the guest one.
+            if (std::getenv("XERENGE_MEDIA_BADDEST_TRACE") != nullptr &&
+                ctx.r8.u32 >= 0x82000000u && ctx.r8.u32 < 0x83000000u)
+            {
+                static std::atomic<uint32_t> reported{0};
+                if (reported.fetch_add(1, std::memory_order_relaxed) < 2)
+                {
+                    std::cerr << "media read into IMAGE DATA buffer=0x" << std::hex
+                              << ctx.r8.u32 << " size=0x" << ctx.r9.u32 << std::dec << '\n';
+                    void* frames[24];
+                    const int count = backtrace(frames, 24);
+                    char** names = backtrace_symbols(frames, count);
+                    if (names != nullptr)
+                    {
+                        for (int i = 0; i < count; ++i)
+                            std::cerr << "  " << names[i] << '\n';
+                        std::free(names);
+                    }
+                }
+            }
             const uint32_t status = ok
                 ? (bytesRead == 0 && ctx.r9.u32 != 0 ? 0xC0000011u : 0u)
                 : 0xC0000008u;
@@ -2558,6 +2680,7 @@ public:
             storeU32(base, buffer + 44, height);
             for (uint32_t i = 12; i < 64; ++i)
                 storeU32(base, buffer + i * 4, 0x80000000u);
+            bool presented = false;
             if (frontbuffer != 0)
             {
                 // This reservation contains the platform swap packet, not a
@@ -2565,8 +2688,31 @@ public:
                 // when it carries a real surface. Bookkeeping swaps have no
                 // frontbuffer and must preserve the last scanout dimensions.
                 gXenosGpu.processSubmittedBuffer(base, buffer, 64);
-                gXenosGpu.presentFromGuest(base, frontbuffer, width, height,
+                presented = gXenosGpu.presentFromGuest(base, frontbuffer, width, height,
                     fallbackWidth);
+            }
+            static const bool swapTraceEnabled2 = std::getenv("XERENGE_SWAP_TRACE") != nullptr;
+            if (swapTraceEnabled2)
+            {
+                // Report what the swap actually carried, not just the pointer
+                // slot it came from: a rejected frontbuffer (or one that never
+                // materialises) is the difference between a presented frame and
+                // a silently dropped one.
+                static std::atomic<uint32_t> sd{0};
+                static std::atomic<int> lastPresented{-1};
+                const uint32_t n = sd.fetch_add(1, std::memory_order_relaxed);
+                const int nowPresented = presented ? 1 : 0;
+                const bool changed =
+                    lastPresented.exchange(nowPresented, std::memory_order_relaxed) != nowPresented;
+                if (n < 40 || changed || n % 600u == 0)
+                    std::cerr << "VdSwapDetail #" << n << " frontbuffer=0x" << std::hex
+                              << frontbuffer << std::dec << " " << width << 'x' << height
+                              << " presented=" << presented
+                              << (changed ? "  <== STATE CHANGE" : "")
+                              << " r8ptr=0x" << std::hex << ctx.r8.u32
+                              << " fetchptr=0x" << ctx.r4.u32
+                              << " fetch2=0x" << fetch2
+                              << " caller=0x" << static_cast<uint32_t>(ctx.lr) << std::dec << '\n';
             }
             if (std::getenv("XERENGE_PPC_TRACE") != nullptr)
             {
@@ -5369,6 +5515,102 @@ void sub_823483F8(PPCContext& ctx, uint8_t* base)
         ctx.ctr.u32 = method;
         PPCDispatchIndirect(ctx, base, method);
     }
+}
+
+// sub_825861E8 is the retail release's X3DAudio per-emitter calculation
+// (r3=listener, r4=emitter, r5=flags, r6=DSP settings - it writes the
+// emitter-to-listener angle to settings+32, and its inner helper stores
+// results through the settings' own output pointers).
+//
+// Burnout's audio code can hand this a DSP settings record whose output
+// pointers - pMatrixCoefficients at +0, pDelayTimes at +4 - are stale or
+// never initialised. The helper dereferences them unconditionally, so a
+// garbage pointer turns into a float store at an arbitrary guest address.
+// Observed consequence: after ~36 presented frames it overwrote the
+// swap-chain buffer-descriptor array of a global display object
+// (0x82697100 + 216/220), after which every VdSwap carried a null
+// frontbuffer and the title never displayed another frame - the whole
+// reason the release build appeared to hang on a black screen.
+//
+// Beta 5 has the same defect and is already protected by the
+// __wrap___imp__sub_825857A8 emitter guard above; this is the release
+// image's equivalent. Validate the output pointers the same way and skip
+// only the malformed emitter, leaving well-formed audio untouched.
+// Diagnostic: sub_82388B58(device, bufferDescriptor, flags) is what issues
+// VdSwap. It has three distinct call sites; reporting the descriptor and the
+// return address identifies which one supplies a malformed descriptor.
+extern "C" void __imp__sub_82388B58(PPCContext& ctx, uint8_t* base);
+void sub_82388B58(PPCContext& ctx, uint8_t* base)
+{
+    static const bool trace = std::getenv("XERENGE_SWAPSRC_TRACE") != nullptr;
+    if (trace)
+    {
+        static std::atomic<uint32_t> n{0};
+        const uint32_t i = n.fetch_add(1, std::memory_order_relaxed);
+        const bool bad = ctx.r4.u32 < 0x60000000u || ctx.r4.u32 >= 0x90000000u;
+        if (i < 45 || bad)
+            std::cerr << "SWAPSRC #" << i << " descriptor=0x" << std::hex << ctx.r4.u32
+                      << " device=0x" << ctx.r3.u32
+                      << " calledFrom=0x" << static_cast<uint32_t>(ctx.lr) << std::dec
+                      << (bad ? "  <== BAD DESCRIPTOR" : "") << '\n';
+    }
+    __imp__sub_82388B58(ctx, base);
+}
+
+extern "C" void __imp__sub_825861E8(PPCContext& ctx, uint8_t* base);
+void sub_825861E8(PPCContext& ctx, uint8_t* base)
+{
+    const auto looksLikeGuestPointer = [](uint32_t address) {
+        return address >= 0x60000000u && address < 0x90000000u;
+    };
+    auto guestWord = [base](uint32_t address) {
+        uint32_t value = 0;
+        std::memcpy(&value, base + address, sizeof(value));
+        return __builtin_bswap32(value);
+    };
+    const uint32_t dspSettings = ctx.r6.u32;
+    if (!looksLikeGuestPointer(dspSettings))
+        return;
+    const uint32_t matrixCoefficients = guestWord(dspSettings + 0);
+    const uint32_t delayTimes = guestWord(dspSettings + 4);
+    const uint32_t srcChannelCount = guestWord(dspSettings + 8);
+    const uint32_t dstChannelCount = guestWord(dspSettings + 12);
+    static const bool x3dTrace = std::getenv("XERENGE_X3D_TRACE") != nullptr;
+    if (x3dTrace)
+    {
+        static std::atomic<uint32_t> t{0};
+        if (t.fetch_add(1, std::memory_order_relaxed) < 24)
+            std::cerr << "X3D settings=0x" << std::hex << dspSettings
+                      << " matrix=0x" << matrixCoefficients
+                      << " delay=0x" << delayTimes << std::dec
+                      << " src=" << srcChannelCount << " dst=" << dstChannelCount << '\n';
+    }
+    // The matrix loop writes SrcChannelCount x DstChannelCount floats through
+    // pMatrixCoefficients, so a garbage channel count overruns a
+    // correctly-sized buffer. Observed here: src=255 (an uninitialised 0xFF
+    // byte) against a two-channel destination. X3DAudio tops out at 8 real
+    // channels; treat anything past XAUDIO2_MAX_AUDIO_CHANNELS as malformed.
+    constexpr uint32_t kMaxChannels = 64;
+    const bool countsUsable =
+        srcChannelCount != 0 && srcChannelCount <= kMaxChannels &&
+        dstChannelCount != 0 && dstChannelCount <= kMaxChannels;
+    const bool outputsUsable = countsUsable &&
+        (matrixCoefficients == 0 || looksLikeGuestPointer(matrixCoefficients)) &&
+        (delayTimes == 0 || looksLikeGuestPointer(delayTimes));
+    if (!outputsUsable)
+    {
+        static const bool audioTraceEnabled = std::getenv("XERENGE_AUDIO_TRACE") != nullptr;
+        if (audioTraceEnabled)
+        {
+            static std::atomic<uint32_t> skipped{0};
+            if (skipped.fetch_add(1, std::memory_order_relaxed) < 16)
+                std::cerr << "X3DAudio skipped malformed DSP settings=0x" << std::hex
+                          << dspSettings << " matrix=0x" << matrixCoefficients
+                          << " delay=0x" << delayTimes << std::dec << '\n';
+        }
+        return;
+    }
+    __imp__sub_825861E8(ctx, base);
 }
 #endif
 
