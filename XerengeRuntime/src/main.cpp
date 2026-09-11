@@ -6053,6 +6053,28 @@ void sub_82480310(PPCContext& ctx, uint8_t* base)
 // logos, just a black screen. Emulate the retire the same way Beta 5 does.
 extern "C" void __imp__sub_82482680(PPCContext& ctx, uint8_t* base);
 extern "C" void __imp__sub_824823F0(PPCContext& ctx, uint8_t* base);
+// Run the GPU-interrupt retire the renderer is waiting for. `leaveInFlight`
+// is how many frames may remain queued: one while playback continues, since
+// Render has just added the frame it expects to still be pending, and none
+// once the renderer is being torn down.
+void retireMovieFrames(PPCContext& ctx, uint8_t* base, uint32_t renderer,
+                       uint32_t leaveInFlight)
+{
+    const auto inFlight = [base, renderer] {
+        uint32_t value = 0;
+        std::memcpy(&value, base + renderer + 368, sizeof(value));
+        return __builtin_bswap32(value);
+    };
+    // Bounded so a counter that never falls - a renderer already torn down, or
+    // one this runtime has misread - cannot turn teardown into a hang of its
+    // own.
+    for (int guard = 0; guard < 8 && inFlight() > leaveInFlight; ++guard)
+    {
+        ctx.r3.u32 = renderer;
+        __imp__sub_824823F0(ctx, base);
+    }
+}
+
 void sub_82482680(PPCContext& ctx, uint8_t* base)
 {
     const uint32_t renderer = ctx.r3.u32;
@@ -6071,16 +6093,40 @@ void sub_82482680(PPCContext& ctx, uint8_t* base)
                       << " result=0x" << std::hex << ctx.r3.u32 << std::dec << '\n';
         }
     }
-    const auto inFlight = [base, renderer] {
-        uint32_t value = 0;
-        std::memcpy(&value, base + renderer + 368, sizeof(value));
-        return __builtin_bswap32(value);
-    };
-    for (int guard = 0; guard < 4 && inFlight() > 1; ++guard)
-    {
-        ctx.r3.u32 = renderer;
-        __imp__sub_824823F0(ctx, base);
-    }
+    retireMovieFrames(ctx, base, renderer, 1);
+}
+
+// Draining only from Render leaves the pipeline holding frames once the title
+// stops asking for them, which is exactly what happens when a clip ends. On
+// hardware the GPU finishes what it was given and the interrupt fires whether
+// or not anyone asks for another frame; nothing stays in flight across a
+// renderer being stopped. Emulate that by draining at Stop and Close too.
+//
+// It matters well beyond the renderer: CCalMoviePlayer::EndOfVideoFrameCallback
+// runs off this retire and signals the event its audio renderer thread waits
+// on. A frame left in flight therefore parks that thread, which then never
+// reaches its exit, so CCalMoviePlayer::Close waits on it forever and the clip
+// never reports finishing - the intro stops with no sound on the clip that
+// stalled.
+extern "C" void __imp__sub_824822C8(PPCContext& ctx, uint8_t* base);
+extern "C" void __imp__sub_82482430(PPCContext& ctx, uint8_t* base);
+
+void sub_824822C8(PPCContext& ctx, uint8_t* base)
+{
+    const uint32_t renderer = ctx.r3.u32;
+    const uint32_t flags = ctx.r4.u32;
+    retireMovieFrames(ctx, base, renderer, 0);
+    ctx.r3.u32 = renderer;
+    ctx.r4.u32 = flags;
+    __imp__sub_824822C8(ctx, base);
+}
+
+void sub_82482430(PPCContext& ctx, uint8_t* base)
+{
+    const uint32_t renderer = ctx.r3.u32;
+    retireMovieFrames(ctx, base, renderer, 0);
+    ctx.r3.u32 = renderer;
+    __imp__sub_82482430(ctx, base);
 }
 
 extern "C" void __imp__sub_825861E8(PPCContext& ctx, uint8_t* base);
