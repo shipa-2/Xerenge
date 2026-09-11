@@ -5288,6 +5288,41 @@ void sub_82452F28(PPCContext& ctx, uint8_t* base)
 }
 #endif
 
+#if defined(XERENGE_HAS_PPC) && !XERENGE_TARGET_BETA5
+// sub_8238CD28 (retail-release-specific address; the Beta 5 image has
+// different code here) processes one "tick" of some fixed-timestep
+// subsystem: several call sites walk `while (sub_8238CD28(state)) {}`,
+// comparing the state's stored position against an external counter
+// dereferenced through it (state+10384). That counter advances far faster
+// than this emulation can keep up with (root cause not found - it is not
+// fed by mftb, so the ppc_context.h time-base scaling fix does not reach
+// it), so those loops can each run an effectively unbounded number of
+// iterations and stall the whole title.  Rate-limit calls process-wide: once
+// a burst of calls looks like a runaway catch-up rather than the ordinary
+// one-or-two-per-frame case, report "already caught up" (the callers' own
+// exit condition) instead of doing the real work, so every affected loop
+// exits instead of spinning forever. The title stays slightly behind its
+// own simulated clock rather than never rendering another frame.
+extern "C" void __imp__sub_8238CD28(PPCContext& ctx, uint8_t* base);
+void sub_8238CD28(PPCContext& ctx, uint8_t* base)
+{
+    static thread_local uint32_t burstCount = 0;
+    static thread_local auto burstStart = std::chrono::steady_clock::now();
+    const auto now = std::chrono::steady_clock::now();
+    if (now - burstStart > std::chrono::milliseconds(4))
+    {
+        burstStart = now;
+        burstCount = 0;
+    }
+    if (++burstCount > 256u)
+    {
+        ctx.r3.u32 = 0;
+        return;
+    }
+    __imp__sub_8238CD28(ctx, base);
+}
+#endif
+
 int main(int argc, char** argv)
 {
     if (argc > 1 && (std::string(argv[1]) == "--validate" || std::string(argv[1]) == "--inspect"))
