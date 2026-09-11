@@ -5788,6 +5788,35 @@ void sub_82388B58(PPCContext& ctx, uint8_t* base)
     __imp__sub_82388B58(ctx, base);
 }
 
+// IXMediaXmvPlayer_GetStatus (retail 0x82480310). CGtVideoDecoder::Update
+// pumps frames in a loop that re-reads this status every iteration and only
+// leaves on a terminal one; the status it writes therefore decides whether the
+// title advances to the next clip or spins here forever. Report what it
+// actually returns.
+extern "C" void __imp__sub_82480310(PPCContext& ctx, uint8_t* base);
+void sub_82480310(PPCContext& ctx, uint8_t* base)
+{
+    static const bool trace = std::getenv("XERENGE_VIDEO_TRACE") != nullptr;
+    const uint32_t out = ctx.r4.u32;
+    __imp__sub_82480310(ctx, base);
+    if (trace)
+    {
+        uint32_t state = 0;
+        std::memcpy(&state, base + out, sizeof(state));
+        state = __builtin_bswap32(state);
+        static std::atomic<uint32_t> lastReported{0xFFFFFFFFu};
+        static std::atomic<uint64_t> samples{0};
+        const uint64_t sample = samples.fetch_add(1, std::memory_order_relaxed);
+        // The loop can call this millions of times a second, so report only
+        // when the answer changes, plus an occasional heartbeat to show it is
+        // still being asked.
+        if (lastReported.exchange(state, std::memory_order_relaxed) != state ||
+            (sample % 2000000u) == 0)
+            std::cerr << "XMV player status=" << state << " result=0x" << std::hex
+                      << ctx.r3.u32 << std::dec << " sample=" << sample << '\n';
+    }
+}
+
 // CCalVideoRenderer::Render (retail 0x82482680, the same function Beta 5 has
 // at 0x82481C90 - located by matching opcode sequences between the two
 // images). Each call blits the next decoded frame and bumps an in-flight
