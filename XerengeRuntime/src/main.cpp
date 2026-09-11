@@ -2563,6 +2563,41 @@ public:
                     }
                 }
             }
+            if (path.empty() && nameText != 0)
+            {
+                // XMV requests use the same reused ANSI scratch buffer as
+                // the sound requests above.  In this image the descriptor
+                // length is sometimes zero, although the actual OVID path
+                // remains in the buffer.  Recover it before openFile();
+                // otherwise the media policy never sees the requested clip.
+                std::array<char, 0x400> scratch{};
+                std::memcpy(scratch.data(), base + nameText, scratch.size());
+                for (size_t i = 0; i + 4 < scratch.size(); ++i)
+                {
+                    const auto lower = [](char c) {
+                        return static_cast<char>(std::tolower(
+                            static_cast<unsigned char>(c)));
+                    };
+                    if (lower(scratch[i]) != '.' || lower(scratch[i + 1]) != 'x' ||
+                        lower(scratch[i + 2]) != 'm' || lower(scratch[i + 3]) != 'v')
+                        continue;
+                    size_t begin = i;
+                    while (begin >= 5 &&
+                           !(lower(scratch[begin - 5]) == 'o' &&
+                             lower(scratch[begin - 4]) == 'v' &&
+                             lower(scratch[begin - 3]) == 'i' &&
+                             lower(scratch[begin - 2]) == 'd' &&
+                             (scratch[begin - 1] == '\\' || scratch[begin - 1] == '/')))
+                        --begin;
+                    if (begin >= 5)
+                    {
+                        begin -= 5;
+                        path = "D:\\" +
+                            std::string(scratch.data() + begin, i + 4 - begin);
+                        break;
+                    }
+                }
+            }
             // A few prototype sound requests pass an ANSI path assembled in
             // a temporary title buffer.  Its object name can retain the
             // leading bytes of the previous request, while the actual Xbox
@@ -5975,6 +6010,62 @@ void sub_8248D398(PPCContext& ctx, uint8_t* base)
                       << static_cast<uint32_t>(ctx.lr) << std::dec << '\n';
     }
     __imp__sub_8248D398(ctx, base);
+}
+
+// The title mixes its own audio and hands this runtime the finished frame, so
+// a silent clip means one of its own source voices never played. Report when
+// the movie's voice is started and stopped (retail CSourceVoice::Start
+// 0x82568E50, ::Stop 0x82568C98) to see which.
+extern "C" void __imp__sub_82568E50(PPCContext& ctx, uint8_t* base);
+extern "C" void __imp__sub_82568C98(PPCContext& ctx, uint8_t* base);
+
+void sub_82568E50(PPCContext& ctx, uint8_t* base)
+{
+    static const bool trace = std::getenv("XERENGE_AUDIO_TRACE") != nullptr;
+    const uint32_t voice = ctx.r3.u32;
+    __imp__sub_82568E50(ctx, base);
+    if (trace)
+        std::cerr << "voice start 0x" << std::hex << voice << " result=0x"
+                  << ctx.r3.u32 << " from 0x" << static_cast<uint32_t>(ctx.lr)
+                  << std::dec << '\n';
+}
+
+void sub_82568C98(PPCContext& ctx, uint8_t* base)
+{
+    static const bool trace = std::getenv("XERENGE_AUDIO_TRACE") != nullptr;
+    const uint32_t voice = ctx.r3.u32;
+    __imp__sub_82568C98(ctx, base);
+    if (trace)
+        std::cerr << "voice stop  0x" << std::hex << voice << " result=0x"
+                  << ctx.r3.u32 << " from 0x" << static_cast<uint32_t>(ctx.lr)
+                  << std::dec << '\n';
+}
+
+// A clip that goes straight from "created" to "finished" never started, and
+// the two calls that decide that are CGtVideoDecoder::Prepare (retail
+// 0x8235B7A0), which opens and parses the stream, and CCalMoviePlayer::Play
+// (0x8248E1B0). Report what they return.
+extern "C" void __imp__sub_8235B7A0(PPCContext& ctx, uint8_t* base);
+extern "C" void __imp__sub_8248E1B0(PPCContext& ctx, uint8_t* base);
+
+void sub_8235B7A0(PPCContext& ctx, uint8_t* base)
+{
+    static const bool trace = std::getenv("XERENGE_VIDEO_TRACE") != nullptr;
+    const uint32_t name = ctx.r6.u32;
+    __imp__sub_8235B7A0(ctx, base);
+    if (trace)
+        std::cerr << "decoder prepare '"
+                  << (name != 0 ? reinterpret_cast<const char*>(base + name) : "?")
+                  << "' -> " << (ctx.r3.u32 != 0 ? "ok" : "FAILED") << '\n';
+}
+
+void sub_8248E1B0(PPCContext& ctx, uint8_t* base)
+{
+    static const bool trace = std::getenv("XERENGE_VIDEO_TRACE") != nullptr;
+    __imp__sub_8248E1B0(ctx, base);
+    if (trace)
+        std::cerr << "movie player play -> 0x" << std::hex << ctx.r3.u32
+                  << std::dec << '\n';
 }
 
 // CCalMoviePlayer::GetStatus (retail 0x8248CC20) reports the player's state

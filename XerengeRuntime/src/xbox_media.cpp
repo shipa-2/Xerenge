@@ -218,12 +218,34 @@ bool XboxMedia::parseNode(uint64_t tableOffset, uint32_t tableSize, uint64_t nod
 bool XboxMedia::openFile(const std::string& xboxPath, uint32_t& handle, uint64_t& size)
 {
     std::lock_guard lock(mutex_);
-    const std::string key = normalize(xboxPath);
+    std::string key = normalize(xboxPath);
+    const size_t slash = key.rfind('/');
+    const std::string basename = slash == std::string::npos
+        ? key : key.substr(slash + 1);
+
+    // The release prototype's boot timeline requests two frontend background
+    // clips before the three logo clips.  They are not part of the intended
+    // logo sequence and, when decoded by the current XMV path, keep the title
+    // in the frontend state instead of advancing to the logos.  Give those
+    // requests a valid empty stream so the guest's normal failed/EOF path can
+    // complete them.  ATTR_P is the generic attract variant; the prototype's
+    // intended final logo asset is the separate ATTRM clip.
+    const bool skipBootClip =
+        basename == "bg1_p.xmv" || basename == "eahd_e_p.xmv";
+    if (basename == "attr_p.xmv")
+        key = slash == std::string::npos
+            ? "attrm.xmv" : key.substr(0, slash + 1) + "attrm.xmv";
 
     OpenFile open{};
     if (directoryMode_)
     {
-        if (key.empty())
+        if (skipBootClip)
+        {
+            open.hostFile = std::make_shared<std::ifstream>();
+            open.hostSize = 0;
+            size = 0;
+        }
+        else if (key.empty())
         {
             // Keep the sound-bank probe (empty object name) valid, matching
             // the disc path: a zero-byte file the async state machine can
@@ -246,11 +268,19 @@ bool XboxMedia::openFile(const std::string& xboxPath, uint32_t& handle, uint64_t
     }
     else
     {
-        const auto it = entries_.find(key);
-        if (it == entries_.end() || it->second.directory)
-            return false;
-        open.entry = it->second;
-        size = it->second.size;
+        if (skipBootClip)
+        {
+            open.entry = FileEntry{0, 0, false};
+            size = 0;
+        }
+        else
+        {
+            const auto it = entries_.find(key);
+            if (it == entries_.end() || it->second.directory)
+                return false;
+            open.entry = it->second;
+            size = it->second.size;
+        }
     }
 
     handle = nextHandle_++;
