@@ -2181,6 +2181,8 @@ public:
             if (handle != 0)
             {
                 events_[handle] = ctx.r6.u32 != 0;
+                if (ctx.r6.u32 != 0)
+                    ++eventSignalCounts_[handle];
                 manualResetEvents_[handle] = ctx.r5.u32 == 0; // NotificationEvent.
             }
             if (outputHandle != 0)
@@ -2266,7 +2268,48 @@ public:
             {
                 if (timeoutPointer == 0)
                 {
-                    eventCondition_.wait(lock, ready);
+                    // A wait with no timeout is the shape a deadlock takes:
+                    // the thread simply disappears from every trace, with
+                    // nothing to say which object it is parked on. Waiting in
+                    // bounded steps costs nothing and lets a wait that overruns
+                    // name itself, along with whether its object was ever
+                    // signalled - a wakeup that was missed and one that never
+                    // happened are different bugs. Idle worker threads park
+                    // here legitimately, so this only reports when asked.
+                    static const unsigned stuckAfterSeconds = [] {
+                        const char* configured = std::getenv("XERENGE_STUCK_WAIT_SECONDS");
+                        return configured != nullptr ? unsigned(std::atoi(configured)) : 0u;
+                    }();
+                    if (stuckAfterSeconds == 0)
+                    {
+                        eventCondition_.wait(lock, ready);
+                    }
+                    else
+                    {
+                        const auto began = std::chrono::steady_clock::now();
+                        bool reported = false;
+                        while (!eventCondition_.wait_for(
+                                   lock, std::chrono::milliseconds(250), ready))
+                        {
+                            if (reported ||
+                                std::chrono::steady_clock::now() - began <
+                                    std::chrono::seconds(stuckAfterSeconds))
+                                continue;
+                            reported = true;
+                            std::cerr << "guest wait not completing: object=0x" << std::hex
+                                      << object << " calledFrom=0x"
+                                      << static_cast<uint32_t>(ctx.lr) << std::dec
+                                      << " thread=" << std::this_thread::get_id()
+                                      << " known=" << (events_.count(object) ? "event"
+                                          : semaphores_.count(object) ? "semaphore"
+                                          : "neither")
+                                      << " manualReset=" << (manualResetEvents_.count(object)
+                                          ? (manualResetEvents_[object] ? "yes" : "no")
+                                          : "unknown")
+                                      << " signalled=" << eventSignalCounts_[object]
+                                      << " times\n";
+                        }
+                    }
                 }
                 else
                 {
@@ -2342,6 +2385,8 @@ public:
                 gGraphicsWaitEventSignaled.store(set, std::memory_order_release);
             const bool previous = events_[ctx.r3.u32];
             events_[ctx.r3.u32] = set;
+            if (set)
+                ++eventSignalCounts_[ctx.r3.u32];
             if (service == "NtSetEvent" && ctx.r4.u32 != 0)
                 storeU32(base, ctx.r4.u32, previous ? 1u : 0u);
             if (set)
@@ -2532,6 +2577,7 @@ public:
                 if (ctx.r4.u32 != 0)
                 {
                     events_[ctx.r4.u32] = true;
+                ++eventSignalCounts_[ctx.r4.u32];
                     eventCondition_.notify_all();
                 }
                 ctx.r3.u32 = 0xC0000011u;
@@ -2625,6 +2671,7 @@ public:
             if (ctx.r4.u32 != 0)
             {
                 events_[ctx.r4.u32] = true;
+                ++eventSignalCounts_[ctx.r4.u32];
                 eventCondition_.notify_all();
             }
             // A successful read at EOF is reported through the byte count,
@@ -2718,6 +2765,7 @@ public:
             if (timerObject)
             {
                 events_[ctx.r3.u32] = true;
+                ++eventSignalCounts_[ctx.r3.u32];
                 eventCondition_.notify_all();
             }
             ctx.r3.u32 = 0;
@@ -3559,6 +3607,7 @@ public:
                 if (event != 0)
                 {
                     events_[event] = true;
+                ++eventSignalCounts_[event];
                     eventCondition_.notify_all();
                 }
             }
@@ -4294,6 +4343,7 @@ private:
             {
                 std::lock_guard lock(stateMutex_);
                 events_[threadHandle] = true;
+                ++eventSignalCounts_[threadHandle];
                 manualResetEvents_[threadHandle] = true;
                 eventCondition_.notify_all();
                 threadCondition_.notify_all();
@@ -4412,6 +4462,10 @@ private:
     std::unordered_map<uint32_t, uint32_t> allocations_;
     std::unordered_map<uint32_t, uint32_t> objects_;
     std::unordered_map<uint32_t, bool> events_;
+    // How many times each event has been signalled. A wait that never
+    // completes is a different problem depending on whether its object was
+    // signalled and the wakeup missed, or never signalled at all.
+    std::unordered_map<uint32_t, uint64_t> eventSignalCounts_;
     std::unordered_map<uint32_t, bool> manualResetEvents_;
     std::unordered_set<uint32_t> timers_;
     std::unordered_map<uint32_t, int32_t> semaphores_;
