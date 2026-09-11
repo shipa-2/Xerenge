@@ -1972,6 +1972,20 @@ public:
     // exit notifications at guest 0x7215bbe4..) are treated as auto-reset, so a
     // final KeSetEvent before a producer thread exits is consumed by the first
     // waiter and the movie player's shutdown join deadlocks.
+    // Read the mode without recording one. std::map::operator[] inserts a
+    // default when the key is absent, and a read written that way marks the
+    // event auto-reset for good: adoptInlineEventResetMode then sees a mode
+    // already on file and declines to look at the header again. A manual-reset
+    // event that happens to be read before it is adopted therefore has its
+    // signal consumed like an auto-reset one, and the next waiter - the
+    // movie player's shutdown join, in the case that surfaced this - waits for
+    // a wakeup that has already been thrown away.
+    bool isManualResetEvent(uint32_t object) const
+    {
+        const auto mode = manualResetEvents_.find(object);
+        return mode != manualResetEvents_.end() && mode->second;
+    }
+
     void adoptInlineEventResetMode(uint32_t object, const uint8_t* base)
     {
         if (object < 0x10000000u || object >= 0x90000000u)
@@ -2304,10 +2318,11 @@ public:
                                           : semaphores_.count(object) ? "semaphore"
                                           : "neither")
                                       << " manualReset=" << (manualResetEvents_.count(object)
-                                          ? (manualResetEvents_[object] ? "yes" : "no")
+                                          ? (isManualResetEvent(object) ? "yes" : "no")
                                           : "unknown")
                                       << " signalled=" << eventSignalCounts_[object]
-                                      << " times\n";
+                                      << " times, last from 0x" << std::hex
+                                      << eventSignalCallers_[object] << std::dec << '\n';
                         }
                     }
                 }
@@ -2344,7 +2359,7 @@ public:
                 if (object == gGraphicsWaitEvent.load(std::memory_order_acquire))
                     gGraphicsWaitEventSignaled.store(false, std::memory_order_release);
                 const auto event = events_.find(object);
-                if (event != events_.end() && !manualResetEvents_[object])
+                if (event != events_.end() && !isManualResetEvent(object))
                     event->second = false;
                 const auto semaphore = semaphores_.find(object);
                 if (semaphore != semaphores_.end())
@@ -2386,7 +2401,10 @@ public:
             const bool previous = events_[ctx.r3.u32];
             events_[ctx.r3.u32] = set;
             if (set)
+            {
                 ++eventSignalCounts_[ctx.r3.u32];
+                eventSignalCallers_[ctx.r3.u32] = static_cast<uint32_t>(ctx.lr);
+            }
             if (service == "NtSetEvent" && ctx.r4.u32 != 0)
                 storeU32(base, ctx.r4.u32, previous ? 1u : 0u);
             if (set)
@@ -3920,7 +3938,7 @@ public:
                     const auto it = events_.find(waitHandles[i]);
                     if (it != events_.end() && it->second)
                     {
-                        if (!manualResetEvents_[waitHandles[i]])
+                        if (!isManualResetEvent(waitHandles[i]))
                             it->second = false;
                         ctx.r3.u32 = 0x00000000u + static_cast<uint32_t>(i);
                         return;
@@ -4466,6 +4484,9 @@ private:
     // completes is a different problem depending on whether its object was
     // signalled and the wakeup missed, or never signalled at all.
     std::unordered_map<uint32_t, uint64_t> eventSignalCounts_;
+    // Where the most recent signal came from, so a starved waiter can name the
+    // code that is out-signalling it.
+    std::unordered_map<uint32_t, uint32_t> eventSignalCallers_;
     std::unordered_map<uint32_t, bool> manualResetEvents_;
     std::unordered_set<uint32_t> timers_;
     std::unordered_map<uint32_t, int32_t> semaphores_;
