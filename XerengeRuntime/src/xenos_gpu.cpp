@@ -541,19 +541,63 @@ bool XenosGpu::ensureGraphicsPipeline(VkPrimitiveTopology topology)
         sizeof(specializationValue), &specializationValue};
     stages[1].pSpecializationInfo = &specialization;
 
-    VkVertexInputBindingDescription vertexBinding{0, 12 * sizeof(float),
+    // XenosRecomp assigns a fixed Vulkan location per vertex-declaration
+    // usage (see USAGE_LOCATIONS in its shader_recompiler.cpp): position 0,
+    // normals 4-7, tangents 8-11, binormal 12, texcoords 13-16, colour 17,
+    // blend indices 18, blend weights 19. A translated shader declares inputs
+    // for whichever of those the original used, and Vulkan requires every
+    // declared input to be backed by an attribute description - otherwise the
+    // pipeline is invalid and its inputs are undefined.
+    //
+    // Only position, texcoord0 and colour were described here, so any shader
+    // touching a normal, a second texcoord or skinning weights - which is most
+    // real geometry - had unbacked inputs and produced nothing. Validation
+    // reports this as VUID-VkGraphicsPipelineCreateInfo-Input-07904.
+    //
+    // Describe the whole range. The synthetic vertex carries position, uv and
+    // colour; every other location is pointed at a float4 of zeros kept at the
+    // end of the vertex so it reads as a defined value rather than garbage.
+    constexpr uint32_t kVertexFloats = 16;
+    constexpr uint32_t kPositionOffset = 0;
+    constexpr uint32_t kTexCoordOffset = 4 * sizeof(float);
+    constexpr uint32_t kColourOffset = 8 * sizeof(float);
+    constexpr uint32_t kZeroOffset = 12 * sizeof(float);
+    VkVertexInputBindingDescription vertexBinding{0, kVertexFloats * sizeof(float),
         VK_VERTEX_INPUT_RATE_VERTEX};
-    const VkVertexInputAttributeDescription attributes[] = {
-        {0, 0, VK_FORMAT_R32G32B32A32_SFLOAT, 0},
-        {13, 0, VK_FORMAT_R32G32B32A32_SFLOAT, 4 * sizeof(float)},
-        {17, 0, VK_FORMAT_R32G32B32A32_SFLOAT, 8 * sizeof(float)},
+    // XenosRecomp gives every vertex-declaration element a fixed Vulkan
+    // location (shader_recompiler.cpp): a recognised usage takes its slot from
+    // USAGE_LOCATIONS (position 0 -> 0, texcoord 0 -> 13, colour 0 -> 17),
+    // while a raw element takes 64 + its vertex-fetch address. Vulkan requires
+    // every input a shader declares to be backed by an attribute description,
+    // so describing only 0, 13 and 17 left these shaders with unbacked inputs
+    // and nothing to transform - validation reports it as
+    // VUID-VkGraphicsPipelineCreateInfo-Input-07904 for locations 67 and 68.
+    //
+    // Those are addresses 3 and 4, which is how the captured shaders were
+    // wrapped (element 3 = position, 4 = texcoord, 5 = colour), so point them
+    // at the same data rather than at zeros. Cover the recognised range and
+    // the first eight raw addresses; the device guarantees only 32 attributes,
+    // so this deliberately stops at 28 rather than describing every possible
+    // slot.
+    std::array<VkVertexInputAttributeDescription, 28> attributes{};
+    uint32_t attributeCount = 0;
+    const auto describe = [&](uint32_t location, uint32_t offset) {
+        attributes[attributeCount++] = {location, 0, VK_FORMAT_R32G32B32A32_SFLOAT, offset};
     };
+    for (uint32_t location = 0; location < 20; ++location)
+        describe(location, location == 0 ? kPositionOffset
+            : location == 13 ? kTexCoordOffset
+            : location == 17 ? kColourOffset : kZeroOffset);
+    for (uint32_t address = 0; address < 8; ++address)
+        describe(64 + address, address == 3 ? kPositionOffset
+            : address == 4 ? kTexCoordOffset
+            : address == 5 ? kColourOffset : kZeroOffset);
     VkPipelineVertexInputStateCreateInfo vertexInput{
         VK_STRUCTURE_TYPE_PIPELINE_VERTEX_INPUT_STATE_CREATE_INFO};
     vertexInput.vertexBindingDescriptionCount = 1;
     vertexInput.pVertexBindingDescriptions = &vertexBinding;
-    vertexInput.vertexAttributeDescriptionCount = std::size(attributes);
-    vertexInput.pVertexAttributeDescriptions = attributes;
+    vertexInput.vertexAttributeDescriptionCount = attributeCount;
+    vertexInput.pVertexAttributeDescriptions = attributes.data();
     VkPipelineInputAssemblyStateCreateInfo assembly{
         VK_STRUCTURE_TYPE_PIPELINE_INPUT_ASSEMBLY_STATE_CREATE_INFO};
     assembly.topology = topology;
@@ -671,7 +715,7 @@ bool XenosGpu::drawVulkanGeometry(const float* vertices, uint32_t vertexCount,
     uint64_t textureKey)
 {
     constexpr uint32_t vertexCapacity = (4u * 1024u * 1024u) /
-        (12u * sizeof(float));
+        (16u * sizeof(float));
     const bool validCount = topology == VK_PRIMITIVE_TOPOLOGY_POINT_LIST
         ? vertexCount != 0
         : vertexCount >= 3 && vertexCount % 3 == 0;
@@ -785,7 +829,7 @@ bool XenosGpu::drawVulkanGeometry(const float* vertices, uint32_t vertexCount,
     }
 
     std::memcpy(vulkanVertexMapped_, vertices,
-        size_t(vertexCount) * 12 * sizeof(float));
+        size_t(vertexCount) * 16 * sizeof(float));
     std::memset(vulkanConstantsMapped_, 0, 12u * 1024u);
     auto* constants = static_cast<uint32_t*>(vulkanConstantsMapped_);
     // Xenos has 256 float4 constants per stage in adjacent register banks.
@@ -976,6 +1020,26 @@ void XenosGpu::readbackVulkanFrame()
     constexpr size_t frameBytes = size_t(1280) * 720 * 4;
     edram_.resize(frameBytes);
     std::memcpy(edram_.data(), vulkanReadbackMapped_, frameBytes);
+    // Report what the Vulkan colour image itself holds, before the resolve
+    // merges rasterised pixels into it - the only way to tell a Vulkan path
+    // that renders nothing from one whose output is being overwritten.
+    static const bool readbackTrace = std::getenv("XERENGE_VULKAN_READBACK_TRACE") != nullptr;
+    if (readbackTrace)
+    {
+        size_t lit = 0;
+        uint32_t firstLit = 0;
+        for (size_t i = 0; i + 3 < frameBytes; i += 4)
+            if ((edram_[i] | edram_[i + 1] | edram_[i + 2]) != 0)
+            {
+                if (lit == 0)
+                    firstLit = static_cast<uint32_t>(i / 4);
+                ++lit;
+            }
+        static uint64_t n = 0;
+        if ((n++ % 30) == 0)
+            std::cerr << "VulkanReadback lit=" << lit << " firstLitPixel=" << firstLit
+                      << " draws=" << vulkanDrawCount_ << '\n';
+    }
 }
 
 namespace
@@ -2486,10 +2550,10 @@ void XenosGpu::rasterizeDraw(uint8_t* guestBase, uint32_t initiator)
                     std::swap(a, b);
                 nativeOrder.insert(nativeOrder.end(), {a, b, c});
             }
-        std::vector<float> nativeVertices(nativeOrder.size() * 12u);
+        std::vector<float> nativeVertices(nativeOrder.size() * 16u);
         for (uint32_t vertex = 0; vertex < nativeOrder.size(); ++vertex)
         {
-            float* destination = nativeVertices.data() + vertex * 12;
+            float* destination = nativeVertices.data() + vertex * 16;
             destination[0] = nativeOrder[vertex]->position[0];
             destination[1] = nativeOrder[vertex]->position[1];
             destination[2] = nativeOrder[vertex]->position[2];
@@ -2552,10 +2616,10 @@ void XenosGpu::rasterizeDraw(uint8_t* guestBase, uint32_t initiator)
                     float minV = nativeVertices[5], maxV = nativeVertices[5];
                     for (size_t vertex = 1; vertex < nativeOrder.size(); ++vertex)
                     {
-                        minU = std::min(minU, nativeVertices[vertex * 12 + 4]);
-                        maxU = std::max(maxU, nativeVertices[vertex * 12 + 4]);
-                        minV = std::min(minV, nativeVertices[vertex * 12 + 5]);
-                        maxV = std::max(maxV, nativeVertices[vertex * 12 + 5]);
+                        minU = std::min(minU, nativeVertices[vertex * 16 + 4]);
+                        maxU = std::max(maxU, nativeVertices[vertex * 16 + 4]);
+                        minV = std::min(minV, nativeVertices[vertex * 16 + 5]);
+                        maxV = std::max(maxV, nativeVertices[vertex * 16 + 5]);
                     }
                     std::cerr << "Xenos texture stats size=" << textureWidth << 'x'
                               << textureHeight << " format=" << textureFormat
