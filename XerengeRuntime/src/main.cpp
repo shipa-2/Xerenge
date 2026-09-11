@@ -22,6 +22,7 @@
 #include <string_view>
 #include <string>
 #include <thread>
+#include <utility>
 #include <unordered_map>
 #include <unordered_set>
 #include <unordered_set>
@@ -434,8 +435,151 @@ extern "C" void PPCTraceStore(uint32_t address, uint32_t value, uint64_t lr)
                   << " value=0x" << value << " lr=0x" << lr << std::dec << '\n';
 }
 
+// A guest thread that stops making progress is almost always spinning in a few
+// functions, but nothing in the recompiled code says which. Sampling the host
+// stack would answer it, except a debugger cannot always attach to a running
+// process, and a host frame names the recompiled function rather than the guest
+// address that is useful here. Counting entries per guest function costs one
+// increment on a path that is already being called, and reporting the change
+// between two samples points straight at whatever is spinning.
+namespace
+{
+class GuestFunctionProfile
+{
+public:
+    void record(uint32_t address)
+    {
+        std::size_t index = (address >> 2) % kSlots;
+        for (std::size_t probe = 0; probe < kProbeLimit; ++probe)
+        {
+            uint32_t owner = slots_[index].address.load(std::memory_order_relaxed);
+            if (owner == 0)
+            {
+                // Losing the race is fine: the winner's address is examined on
+                // the next turn of the loop and shared if it is this one.
+                slots_[index].address.compare_exchange_strong(
+                    owner, address, std::memory_order_relaxed);
+                owner = slots_[index].address.load(std::memory_order_relaxed);
+            }
+            if (owner == address)
+            {
+                slots_[index].count.fetch_add(1, std::memory_order_relaxed);
+                return;
+            }
+            index = (index + 1) % kSlots;
+        }
+        // The table is full around this address. A function busy enough to
+        // matter will have claimed a slot long before that.
+    }
+
+    void report(std::size_t wanted)
+    {
+        std::vector<std::pair<uint64_t, uint32_t>> busiest;
+        for (std::size_t index = 0; index < kSlots; ++index)
+        {
+            const uint32_t address = slots_[index].address.load(std::memory_order_relaxed);
+            if (address == 0)
+                continue;
+            const uint64_t total = slots_[index].count.load(std::memory_order_relaxed);
+            const uint64_t since = total - std::exchange(slots_[index].reported, total);
+            if (since != 0)
+                busiest.emplace_back(since, address);
+        }
+        std::sort(busiest.begin(), busiest.end(), std::greater<>());
+        busiest.resize(std::min(wanted, busiest.size()));
+        std::cerr << "hot guest functions:";
+        for (const auto& [since, address] : busiest)
+            std::cerr << " 0x" << std::hex << address << std::dec << '=' << since;
+        std::cerr << '\n';
+        reportWatched();
+    }
+
+    // "Is this subsystem running at all?" is not answered by a list of the
+    // busiest functions - a state machine that ticks a few times a second never
+    // reaches it. Naming addresses explicitly answers it directly.
+    void watch(const char* addresses)
+    {
+        for (const char* cursor = addresses; *cursor != '\0';)
+        {
+            char* end = nullptr;
+            const unsigned long address = std::strtoul(cursor, &end, 0);
+            if (end == cursor)
+                break;
+            watched_.push_back(uint32_t(address));
+            cursor = (*end == '\0') ? end : end + 1;
+        }
+    }
+
+    void reportWatched()
+    {
+        if (watched_.empty())
+            return;
+        std::cerr << "watched guest functions:";
+        for (const uint32_t address : watched_)
+            std::cerr << " 0x" << std::hex << address << std::dec << '=' << total(address);
+        std::cerr << '\n';
+    }
+
+    uint64_t total(uint32_t address) const
+    {
+        std::size_t index = (address >> 2) % kSlots;
+        for (std::size_t probe = 0; probe < kProbeLimit; ++probe)
+        {
+            const uint32_t owner = slots_[index].address.load(std::memory_order_relaxed);
+            if (owner == address)
+                return slots_[index].count.load(std::memory_order_relaxed);
+            if (owner == 0)
+                return 0;
+            index = (index + 1) % kSlots;
+        }
+        return 0;
+    }
+
+private:
+    static constexpr std::size_t kSlots = 1u << 16;
+    static constexpr std::size_t kProbeLimit = 8;
+
+    struct Slot
+    {
+        std::atomic<uint32_t> address{0};
+        std::atomic<uint64_t> count{0};
+        uint64_t reported = 0;  // only the reporting thread touches this
+    };
+
+    std::array<Slot, kSlots> slots_{};
+    std::vector<uint32_t> watched_;
+};
+
+GuestFunctionProfile gGuestFunctionProfile;
+
+bool startGuestFunctionProfile(unsigned seconds)
+{
+    std::thread([seconds] {
+        for (;;)
+        {
+            std::this_thread::sleep_for(std::chrono::seconds(seconds));
+            gGuestFunctionProfile.report(16);
+        }
+    }).detach();
+    return true;
+}
+}  // namespace
+
 extern "C" void PPCTraceFunction(uint32_t address, PPCContext& ctx, uint8_t* base)
 {
+    static const bool hotFunctionsEnabled = std::getenv("XERENGE_HOT_FUNCTIONS") != nullptr;
+    if (hotFunctionsEnabled)
+    {
+        static const bool started = [] {
+            if (const char* watched = std::getenv("XERENGE_WATCH_FUNCTIONS"))
+                gGuestFunctionProfile.watch(watched);
+            return startGuestFunctionProfile(
+                std::max(1u, unsigned(std::atoi(std::getenv("XERENGE_HOT_FUNCTIONS")))));
+        }();
+        (void)started;
+        gGuestFunctionProfile.record(address);
+    }
+
     static const bool entryTraceEnabled = std::getenv("XERENGE_ENTRY_TRACE") != nullptr;
     static const bool bootTraceEnabled = std::getenv("XERENGE_BOOT_TRACE") != nullptr;
     static const bool aptTraceEnabled = std::getenv("XERENGE_APT_TRACE") != nullptr;
@@ -5522,6 +5666,17 @@ void sub_82452F28(PPCContext& ctx, uint8_t* base)
 extern "C" void __imp__sub_8238CD28(PPCContext& ctx, uint8_t* base);
 void sub_8238CD28(PPCContext& ctx, uint8_t* base)
 {
+    // The static constructors this image's boot walks were, for a long time,
+    // never dispatched, which left several globals unpopulated and made
+    // workarounds like this one necessary. Now that they run, the workaround
+    // may be the thing holding the title back, so it can be switched off to
+    // find out.
+    static const bool rateLimit = std::getenv("XERENGE_NO_TICK_LIMIT") == nullptr;
+    if (!rateLimit)
+    {
+        __imp__sub_8238CD28(ctx, base);
+        return;
+    }
     static thread_local uint32_t burstCount = 0;
     static thread_local auto burstStart = std::chrono::steady_clock::now();
     const auto now = std::chrono::steady_clock::now();
@@ -5559,6 +5714,12 @@ void sub_8238CD28(PPCContext& ctx, uint8_t* base)
 extern "C" void __imp__sub_823483F8(PPCContext& ctx, uint8_t* base);
 void sub_823483F8(PPCContext& ctx, uint8_t* base)
 {
+    static const bool validate = std::getenv("XERENGE_NO_LISTENER_GUARD") == nullptr;
+    if (!validate)
+    {
+        __imp__sub_823483F8(ctx, base);
+        return;
+    }
     const auto looksLikeGuestPointer = [](uint32_t address) {
         return address >= 0x60000000u && address < 0x90000000u;
     };
