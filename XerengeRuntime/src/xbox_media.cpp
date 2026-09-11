@@ -223,29 +223,28 @@ bool XboxMedia::openFile(const std::string& xboxPath, uint32_t& handle, uint64_t
     const std::string basename = slash == std::string::npos
         ? key : key.substr(slash + 1);
 
-    // The release prototype's boot timeline requests two frontend background
-    // clips before the three logo clips.  They are not part of the intended
-    // logo sequence and, when decoded by the current XMV path, keep the title
-    // in the frontend state instead of advancing to the logos.  Give those
-    // requests a valid empty stream so the guest's normal failed/EOF path can
-    // complete them.  ATTR_P is the generic attract variant; the prototype's
-    // intended final logo asset is the separate ATTRM clip.
-    const bool skipBootClip =
-        basename == "bg1_p.xmv" || basename == "eahd_e_p.xmv";
-    if (basename == "attr_p.xmv")
+    // The release prototype's Flash timeline asks for two unwanted frontend
+    // clips before the logo sequence.  A zero-length successful open is not a
+    // valid way to skip them: the XMV player reaches EOF before parsing a
+    // header and never emits its normal finished transition, leaving the last
+    // frontend frame (the language selector) on screen.  Substitute complete,
+    // valid XMV streams so the decoder, renderer and completion callback all
+    // follow the ordinary lifecycle while starting with the intended logos.
+    const char* replacement = nullptr;
+    if (basename == "bg1_p.xmv")
+        replacement = "ea_e_p.xmv";
+    else if (basename == "eahd_e_p.xmv")
+        replacement = "crrw_e_p.xmv";
+    else if (basename == "attr_p.xmv")
+        replacement = "attrm.xmv";
+    if (replacement != nullptr)
         key = slash == std::string::npos
-            ? "attrm.xmv" : key.substr(0, slash + 1) + "attrm.xmv";
+            ? replacement : key.substr(0, slash + 1) + replacement;
 
     OpenFile open{};
     if (directoryMode_)
     {
-        if (skipBootClip)
-        {
-            open.hostFile = std::make_shared<std::ifstream>();
-            open.hostSize = 0;
-            size = 0;
-        }
-        else if (key.empty())
+        if (key.empty())
         {
             // Keep the sound-bank probe (empty object name) valid, matching
             // the disc path: a zero-byte file the async state machine can
@@ -268,19 +267,11 @@ bool XboxMedia::openFile(const std::string& xboxPath, uint32_t& handle, uint64_t
     }
     else
     {
-        if (skipBootClip)
-        {
-            open.entry = FileEntry{0, 0, false};
-            size = 0;
-        }
-        else
-        {
-            const auto it = entries_.find(key);
-            if (it == entries_.end() || it->second.directory)
-                return false;
-            open.entry = it->second;
-            size = it->second.size;
-        }
+        const auto it = entries_.find(key);
+        if (it == entries_.end() || it->second.directory)
+            return false;
+        open.entry = it->second;
+        size = it->second.size;
     }
 
     handle = nextHandle_++;
