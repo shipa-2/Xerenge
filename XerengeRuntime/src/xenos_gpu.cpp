@@ -1929,23 +1929,37 @@ void XenosGpu::rasterizeDraw(uint8_t* guestBase, uint32_t initiator)
         // half res, BT.601).  Decode the frame into movieFrameRgba_ and record
         // the surface it targets; do not touch the framebuffer here.
         static const bool movieYuvOff = std::getenv("XERENGE_MOVIE_YUV_OFF") != nullptr;
-        if (primitive == 4u && listVertices.size() >= 3u &&
-            activePixelShaderHash_ == 0xF7F9B122274108DBull && !movieYuvOff)
+        struct Plane { uint32_t base, w, h, pitch, format; bool tiled; };
+        const auto readPlane = [&](uint32_t fc) {
+            const uint32_t w0 = gpuRegisters_[0x4800u + fc * 6u + 0u];
+            const uint32_t w1 = gpuRegisters_[0x4800u + fc * 6u + 1u];
+            const uint32_t w2 = gpuRegisters_[0x4800u + fc * 6u + 2u];
+            Plane p{};
+            p.base = gpuPhysicalToGuest(((w1 >> 12) & 0xFFFFFu) << 12);
+            p.w = (w2 & 0x1FFFu) + 1u;
+            p.h = ((w2 >> 13) & 0x1FFFu) + 1u;
+            p.pitch = std::max(p.w, ((w0 >> 22) & 0x1FFu) << 5); // k_8: byte pitch
+            p.format = w1 & 0x3Fu;
+            p.tiled = (w0 & 0x80000000u) != 0u;
+            return p;
+        };
+        const Plane yP = readPlane(0), uP = readPlane(1), vP = readPlane(2);
+        // Recognise the movie draw by what it is rather than by which shader
+        // compiled it: three single-channel (k_8) planes where the two chroma
+        // planes are half the luma's size is 4:2:0 video and nothing else.
+        // The previous test compared the pixel shader hash against the one
+        // Beta 5 happens to use, so the retail build - whose shader hashes
+        // differ - never decoded a frame and showed no intro at all.
+        constexpr uint32_t kFormatK8 = 2u;
+        const bool looksLikeYuvPlanes =
+            yP.format == kFormatK8 && uP.format == kFormatK8 && vP.format == kFormatK8 &&
+            yP.w >= 32u && yP.h >= 32u && yP.w <= 1920u && yP.h <= 1088u &&
+            uP.w == vP.w && uP.h == vP.h &&
+            uP.w == yP.w / 2u && uP.h == yP.h / 2u &&
+            yP.base != 0u && uP.base != 0u && vP.base != 0u;
+        if (primitive == 4u && listVertices.size() >= 3u && !movieYuvOff &&
+            (activePixelShaderHash_ == 0xF7F9B122274108DBull || looksLikeYuvPlanes))
         {
-            struct Plane { uint32_t base, w, h, pitch; bool tiled; };
-            const auto readPlane = [&](uint32_t fc) {
-                const uint32_t w0 = gpuRegisters_[0x4800u + fc * 6u + 0u];
-                const uint32_t w1 = gpuRegisters_[0x4800u + fc * 6u + 1u];
-                const uint32_t w2 = gpuRegisters_[0x4800u + fc * 6u + 2u];
-                Plane p{};
-                p.base = gpuPhysicalToGuest(((w1 >> 12) & 0xFFFFFu) << 12);
-                p.w = (w2 & 0x1FFFu) + 1u;
-                p.h = ((w2 >> 13) & 0x1FFFu) + 1u;
-                p.pitch = std::max(p.w, ((w0 >> 22) & 0x1FFu) << 5); // k_8: byte pitch
-                p.tiled = (w0 & 0x80000000u) != 0u;
-                return p;
-            };
-            const Plane yP = readPlane(0), uP = readPlane(1), vP = readPlane(2);
             static const bool movieTexTraceEnabled = std::getenv("XERENGE_MOVIE_TEX_TRACE") != nullptr;
             if (movieTexTraceEnabled)
             {
