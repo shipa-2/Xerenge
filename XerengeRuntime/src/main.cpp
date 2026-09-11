@@ -1588,8 +1588,9 @@ extern "C" void PPCGuestStoreU32(uint8_t* base, uint32_t address, uint32_t value
         std::cerr << "Memory block 19 pointer store value=0x" << std::hex << value
                   << " function=0x" << gPpcCurrentFunction << " caller=0x"
                   << gPpcCurrentCaller << std::dec << '\n';
-    if (std::getenv("XERENGE_FRONTEND_PREPARE_TRACE") != nullptr &&
-        address == 0x82847090u + 2220u)
+    static const bool frontendPrepareTraceEnabledForStore =
+        std::getenv("XERENGE_FRONTEND_PREPARE_TRACE") != nullptr;
+    if (frontendPrepareTraceEnabledForStore && address == 0x82847090u + 2220u)
     {
         static std::atomic<uint32_t> loaderIndexTraceCount{0};
         if (loaderIndexTraceCount.fetch_add(1, std::memory_order_relaxed) < 64)
