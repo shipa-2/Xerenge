@@ -1666,6 +1666,23 @@ extern "C" void PPCGuestStoreU32(uint8_t* base, uint32_t address, uint32_t value
             }
         }
     }
+    // XERENGE_WATCH_VALUE=0xVALUE reports every 32-bit store of that exact
+    // value together with the destination and the recompiled function that
+    // issued it. Watching by value rather than by address is what finds the
+    // producer of a bad pointer when its storage location is not yet known.
+    static const uint32_t watchValue = [] {
+        const char* text = std::getenv("XERENGE_WATCH_VALUE");
+        return text != nullptr ? static_cast<uint32_t>(std::strtoul(text, nullptr, 0)) : 0u;
+    }();
+    if (watchValue != 0 && value == watchValue)
+    {
+        static std::atomic<uint32_t> valueHits{0};
+        if (valueHits.fetch_add(1, std::memory_order_relaxed) < 24)
+            std::cerr << "WATCHVALUE 0x" << std::hex << value
+                      << " stored to 0x" << address
+                      << " guestFn=0x" << gPpcCurrentFunction
+                      << " guestCaller=0x" << gPpcCurrentCaller << std::dec << '\n';
+    }
     const uint32_t watchedResourceState =
         gResourceStateWatchAddress.load(std::memory_order_relaxed);
     if (watchedResourceState != 0 && address == watchedResourceState &&
