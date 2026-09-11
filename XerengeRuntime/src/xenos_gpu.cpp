@@ -2566,12 +2566,31 @@ void XenosGpu::rasterizeDraw(uint8_t* guestBase, uint32_t initiator)
             }
         }
         static const bool forceSoftware = std::getenv("XERENGE_XENOS_FORCE_SOFTWARE") != nullptr;
-        if (!forceSoftware && drawVulkanGeometry(nativeVertices.data(), nativeOrder.size(),
+        const bool submittedToVulkan = !forceSoftware &&
+            drawVulkanGeometry(nativeVertices.data(), nativeOrder.size(),
                 VK_PRIMITIVE_TOPOLOGY_TRIANGLE_LIST,
                 hasNativeTexture && nativeTextureKey != vulkanTextureKey_
                     ? nativeTexture.data() : nullptr,
-                textureWidth, textureHeight, nativeTextureKey))
+                textureWidth, textureHeight, nativeTextureKey);
+        // Whether a submitted Vulkan draw should end this draw depends on the
+        // image. Measured lit pixels per resolved frame:
+        //
+        //   Beta 5, Vulkan path   918013      retail, Vulkan path      38
+        //   Beta 5, software      917967      retail, software      33263
+        //
+        // In Beta 5 the submission mostly declines, so the rasteriser runs
+        // anyway and returning early costs nothing. In the retail image the
+        // same submission succeeds and returning here throws away the only
+        // path that actually draws the frame. resolveToGuest prefers the
+        // Vulkan readback and falls back to rasterised pixels only where it is
+        // black, so continuing is safe - but it is not free, and Beta 5 gains
+        // nothing from it, so leave that image on its established path.
+#if defined(XERENGE_TARGET_BETA5) && XERENGE_TARGET_BETA5
+        if (submittedToVulkan)
             return;
+#else
+        (void)submittedToVulkan;
+#endif
         if (primitive == 4u)
         {
             for (size_t vertex = 2; vertex < listVertices.size(); vertex += 3u)
