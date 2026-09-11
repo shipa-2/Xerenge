@@ -1525,6 +1525,10 @@ extern "C" void PPCTraceFunction(uint32_t address, PPCContext& ctx, uint8_t* bas
 extern "C" uint32_t PPCGuestClock()
 {
     static std::atomic<uint32_t> guestClock = 0;
+    static std::atomic<uint64_t> callCount = 0;
+    const uint64_t n = callCount.fetch_add(1, std::memory_order_relaxed);
+    if (std::getenv("XERENGE_CLOCK_TRACE") != nullptr && (n % 100000) == 0)
+        std::cerr << "PPCGuestClock call #" << n << '\n';
     return guestClock.fetch_add(1000000, std::memory_order_relaxed) + 1000000;
 }
 
@@ -2428,10 +2432,13 @@ public:
         }
         if (service == "KeQueryPerformanceFrequency")
         {
-            // The kernel export returns a 64-bit LARGE_INTEGER in r3. The
-            // generated PPC currently lowers mftb to the host TSC, so report
-            // the matching calibrated frequency as well.
-            ctx.r3.u64 = hostTimeBaseFrequency();
+            // The kernel export returns a 64-bit LARGE_INTEGER in r3. mftb
+            // (ppc_context.h's __rdtsc()) now scales its result down to this
+            // same fixed Xbox 360 time-base rate, so report the constant a
+            // real console would - not the raw host TSC frequency - keeping
+            // this in sync for titles that query it, and correct outright
+            // for titles that hardcode the console constant instead.
+            ctx.r3.u64 = 49875000ull;
             return;
         }
         if (service == "KeQuerySystemTime")
