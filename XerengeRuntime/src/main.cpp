@@ -263,6 +263,12 @@ std::atomic<uint8_t> gGamepadLeftTrigger = 0;
 std::atomic<uint8_t> gGamepadRightTrigger = 0;
 std::atomic<uint16_t> gGuestInputButtons = 0;
 
+// Keyboard steering and pedals, kept apart from the gamepad values so a
+// connected pad still wins when it is being used.
+std::atomic<int> gKeyboardSteer = 0;      // -1 left, +1 right
+std::atomic<bool> gKeyboardAccelerate = false;
+std::atomic<bool> gKeyboardBrake = false;
+
 uint16_t inputButtonForKey(int key)
 {
     switch (key)
@@ -273,14 +279,29 @@ uint16_t inputButtonForKey(int key)
     case GLFW_KEY_RIGHT: return 0x0008u;
     case GLFW_KEY_ENTER: return 0x0010u;
     case GLFW_KEY_BACKSPACE: return 0x0020u;
-    case GLFW_KEY_SPACE: return 0x1000u;
-    case GLFW_KEY_ESCAPE: return 0x2000u;
+    case GLFW_KEY_SPACE: return 0x1000u;   // A
+    case GLFW_KEY_ESCAPE: return 0x2000u;  // B
+    case GLFW_KEY_Z: return 0x4000u;       // X
+    case GLFW_KEY_C: return 0x8000u;       // Y
+    case GLFW_KEY_Q: return 0x0100u;       // left shoulder
+    case GLFW_KEY_E: return 0x0200u;       // right shoulder
     default: return 0;
     }
 }
 
 void glfwInputCallback(GLFWwindow*, int key, int, int action, int)
 {
+    // Arrows stay the D-pad so menus work; WASD drives, which is what the
+    // title actually reads once a race starts.
+    const bool held = action != GLFW_RELEASE;
+    switch (key)
+    {
+    case GLFW_KEY_W: gKeyboardAccelerate.store(held, std::memory_order_relaxed); return;
+    case GLFW_KEY_S: gKeyboardBrake.store(held, std::memory_order_relaxed); return;
+    case GLFW_KEY_A: gKeyboardSteer.store(held ? -1 : 0, std::memory_order_relaxed); return;
+    case GLFW_KEY_D: gKeyboardSteer.store(held ? 1 : 0, std::memory_order_relaxed); return;
+    default: break;
+    }
     const uint16_t button = inputButtonForKey(key);
     if (button == 0)
         return;
@@ -288,6 +309,19 @@ void glfwInputCallback(GLFWwindow*, int key, int, int action, int)
         gKeyboardButtons.fetch_and(static_cast<uint16_t>(~button), std::memory_order_relaxed);
     else
         gKeyboardButtons.fetch_or(button, std::memory_order_relaxed);
+}
+
+// Overlay the keyboard's steering and pedals on whatever the gamepad poll
+// left behind, so either input works without one clobbering the other.
+void applyKeyboardAnalog()
+{
+    if (gKeyboardAccelerate.load(std::memory_order_relaxed))
+        gGamepadRightTrigger.store(255, std::memory_order_relaxed);
+    if (gKeyboardBrake.load(std::memory_order_relaxed))
+        gGamepadLeftTrigger.store(255, std::memory_order_relaxed);
+    const int steer = gKeyboardSteer.load(std::memory_order_relaxed);
+    if (steer != 0)
+        gGamepadLeftX.store(steer < 0 ? -32767 : 32767, std::memory_order_relaxed);
 }
 
 uint16_t pollGamepadButtons()
@@ -5770,6 +5804,9 @@ int main(int argc, char** argv)
             // an arbitrary shape would reintroduce the letterbox/squeeze the
             // full-screen video quad fix was meant to eliminate.
             glfwSetWindowAspectRatio(window, 16, 9);
+            // The key callback used to be attached only to the diagnostic
+            // window, so nothing the player pressed ever reached the title.
+            glfwSetKeyCallback(window, glfwInputCallback);
             glfwMakeContextCurrent(window);
             glfwSwapInterval(1);
             gHostCloseRequested.store(false, std::memory_order_release);
@@ -5834,9 +5871,10 @@ int main(int argc, char** argv)
                 if (pixels.empty())
                 {
                     glfwPollEvents();
-                    gInputButtons.store(
-                        gKeyboardButtons.load(std::memory_order_relaxed) | pollGamepadButtons(),
-                        std::memory_order_relaxed);
+                    const uint16_t buttons =
+                        gKeyboardButtons.load(std::memory_order_relaxed) | pollGamepadButtons();
+                    applyKeyboardAnalog();
+                    gInputButtons.store(buttons, std::memory_order_relaxed);
                     continue;
                 }
                 int displayWidth = 0, displayHeight = 0;
@@ -5896,9 +5934,12 @@ int main(int argc, char** argv)
                 }
                 glfwSwapBuffers(window);
                 glfwPollEvents();
-                gInputButtons.store(
-                    gKeyboardButtons.load(std::memory_order_relaxed) | pollGamepadButtons(),
-                    std::memory_order_relaxed);
+                {
+                    const uint16_t buttons =
+                        gKeyboardButtons.load(std::memory_order_relaxed) | pollGamepadButtons();
+                    applyKeyboardAnalog();
+                    gInputButtons.store(buttons, std::memory_order_relaxed);
+                }
             }
             glfwDestroyWindow(window);
             glfwTerminate();
