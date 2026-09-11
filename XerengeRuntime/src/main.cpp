@@ -3325,11 +3325,43 @@ public:
             // state. Expose pad 0 as connected and idle until host input is
             // wired into these fields.
             clear(base, state, 16);
-            // Report exactly what the player is holding. Synthetic button
-            // injection used to live here; it masked real input problems and
-            // fought the player for control, so the guest now sees the host
-            // devices and nothing else.
-            const uint16_t buttons = gInputButtons.load(std::memory_order_relaxed);
+            // Report exactly what the player is holding.
+            uint16_t buttons = gInputButtons.load(std::memory_order_relaxed);
+            // XERENGE_AUTOPAD=<button>[,<button>...] is a testing aid: it
+            // pulses the named buttons so a state deep in the title can be
+            // reached without a human at the keyboard. Kept deliberately
+            // explicit and opt-in - it takes control away from the player
+            // whenever it is set, so it has no business being on by default.
+            static const uint16_t autopadButtons = [] {
+                const char* text = std::getenv("XERENGE_AUTOPAD");
+                if (text == nullptr)
+                    return uint16_t(0);
+                const std::string request(text);
+                const auto has = [&](const char* name) {
+                    return request.find(name) != std::string::npos;
+                };
+                uint16_t mask = 0;
+                if (has("up")) mask |= 0x0001u;
+                if (has("down")) mask |= 0x0002u;
+                if (has("left")) mask |= 0x0004u;
+                if (has("right")) mask |= 0x0008u;
+                if (has("start")) mask |= 0x0010u;
+                if (has("back")) mask |= 0x0020u;
+                if (has("A") || has("a,") || request == "a") mask |= 0x1000u;
+                if (has("B")) mask |= 0x2000u;
+                if (has("X")) mask |= 0x4000u;
+                if (has("Y")) mask |= 0x8000u;
+                return mask;
+            }();
+            if (autopadButtons != 0)
+            {
+                // Discrete presses, not a held button: menus act on the
+                // transition, so hold briefly then release.
+                static std::atomic<uint32_t> autopadPoll{0};
+                const uint32_t phase = autopadPoll.fetch_add(1, std::memory_order_relaxed) % 90u;
+                if (phase < 8u)
+                    buttons |= autopadButtons;
+            }
             if (buttons != inputButtons_)
             {
                 inputButtons_ = buttons;
@@ -5593,6 +5625,49 @@ void sub_82388B58(PPCContext& ctx, uint8_t* base)
                       << (bad ? "  <== BAD DESCRIPTOR" : "") << '\n';
     }
     __imp__sub_82388B58(ctx, base);
+}
+
+// CCalVideoRenderer::Render (retail 0x82482680, the same function Beta 5 has
+// at 0x82481C90 - located by matching opcode sequences between the two
+// images). Each call blits the next decoded frame and bumps an in-flight
+// counter at renderer+368 that only the GPU-interrupt callback
+// (retail 0x824823F0) clears. This runtime presents synchronously and never
+// delivers that per-blit retire, so after three frames the counter pins,
+// Render returns E_PENDING forever and the decode queue never frees a slot.
+//
+// Symptom in the retail build: the title opens its intro videos
+// (EAHD_E_P.xmv, BG1_P.xmv) and then never draws a single YUV frame - no
+// logos, just a black screen. Emulate the retire the same way Beta 5 does.
+extern "C" void __imp__sub_82482680(PPCContext& ctx, uint8_t* base);
+extern "C" void __imp__sub_824823F0(PPCContext& ctx, uint8_t* base);
+void sub_82482680(PPCContext& ctx, uint8_t* base)
+{
+    const uint32_t renderer = ctx.r3.u32;
+    static const bool videoTrace = std::getenv("XERENGE_VIDEO_TRACE") != nullptr;
+    __imp__sub_82482680(ctx, base);
+    if (videoTrace)
+    {
+        static std::atomic<uint32_t> calls{0};
+        const uint32_t n = calls.fetch_add(1, std::memory_order_relaxed);
+        if (n < 8 || (n % 120) == 0)
+        {
+            uint32_t counter = 0;
+            std::memcpy(&counter, base + renderer + 368, sizeof(counter));
+            std::cerr << "VideoRender #" << n << " renderer=0x" << std::hex << renderer
+                      << std::dec << " inFlight=" << __builtin_bswap32(counter)
+                      << " result=0x" << std::hex << ctx.r3.u32 << std::dec << '\n';
+        }
+    }
+    const auto inFlight = [base, renderer] {
+        uint32_t value = 0;
+        std::memcpy(&value, base + renderer + 368, sizeof(value));
+        return __builtin_bswap32(value);
+    };
+    for (int guard = 0; guard < 4 && inFlight() > 1; ++guard)
+    {
+        ctx.r3.u32 = renderer;
+        __imp__sub_824823F0(ctx, base);
+    }
 }
 
 extern "C" void __imp__sub_825861E8(PPCContext& ctx, uint8_t* base);

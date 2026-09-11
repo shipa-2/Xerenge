@@ -1943,7 +1943,8 @@ void XenosGpu::rasterizeDraw(uint8_t* guestBase, uint32_t initiator)
             p.tiled = (w0 & 0x80000000u) != 0u;
             return p;
         };
-        const Plane yP = readPlane(0), uP = readPlane(1), vP = readPlane(2);
+        Plane yP = readPlane(0);
+        const Plane uP = readPlane(1), vP = readPlane(2);
         // Recognise the movie draw by what it is rather than by which shader
         // compiled it: three single-channel (k_8) planes where the two chroma
         // planes are half the luma's size is 4:2:0 video and nothing else.
@@ -1951,14 +1952,58 @@ void XenosGpu::rasterizeDraw(uint8_t* guestBase, uint32_t initiator)
         // Beta 5 happens to use, so the retail build - whose shader hashes
         // differ - never decoded a frame and showed no intro at all.
         constexpr uint32_t kFormatK8 = 2u;
-        const bool looksLikeYuvPlanes =
-            yP.format == kFormatK8 && uP.format == kFormatK8 && vP.format == kFormatK8 &&
-            yP.w >= 32u && yP.h >= 32u && yP.w <= 1920u && yP.h <= 1088u &&
+        // The chroma planes always carry real dimensions, but the luma
+        // descriptor can arrive with none at all - the retail build composites
+        // video through a fetch constant that reports 1x1. Anchor the test on
+        // the chroma pair and derive the luma size from it (4:2:0, so exactly
+        // twice), rather than requiring the luma descriptor to describe
+        // itself.
+        const bool chromaPairLooksLikeVideo =
+            uP.format == kFormatK8 && vP.format == kFormatK8 &&
             uP.w == vP.w && uP.h == vP.h &&
-            uP.w == yP.w / 2u && uP.h == yP.h / 2u &&
-            yP.base != 0u && uP.base != 0u && vP.base != 0u;
-        if (primitive == 4u && listVertices.size() >= 3u && !movieYuvOff &&
-            (activePixelShaderHash_ == 0xF7F9B122274108DBull || looksLikeYuvPlanes))
+            uP.w >= 16u && uP.h >= 16u && uP.w <= 960u && uP.h <= 544u &&
+            uP.base != 0u && vP.base != 0u && uP.base != vP.base;
+        const bool looksLikeYuvPlanes = chromaPairLooksLikeVideo &&
+            yP.format == kFormatK8 && yP.base != 0u &&
+            yP.base != uP.base && yP.base != vP.base;
+        if (looksLikeYuvPlanes)
+        {
+            // Fill in what the luma descriptor failed to state.
+            const uint32_t lumaWidth = uP.w * 2u;
+            const uint32_t lumaHeight = uP.h * 2u;
+            if (yP.w < lumaWidth || yP.h < lumaHeight)
+            {
+                yP.w = lumaWidth;
+                yP.h = lumaHeight;
+                yP.pitch = std::max(yP.pitch, lumaWidth);
+            }
+        }
+        // Report near-misses so a movie draw that fails the test can be seen.
+        static const bool planeProbe = std::getenv("XERENGE_MOVIE_PLANE_PROBE") != nullptr;
+        if (planeProbe &&
+            (yP.format == kFormatK8 || uP.format == kFormatK8 || vP.format == kFormatK8))
+        {
+            static int probes = 0;
+            if (probes++ < 14)
+            {
+                std::cerr << "PLANEPROBE prim=" << primitive << " verts=" << count
+                          << " ps=0x" << std::hex << activePixelShaderHash_ << std::dec
+                          << " accepted=" << looksLikeYuvPlanes << " slots:";
+                for (uint32_t fc = 0; fc < 16u; ++fc)
+                {
+                    const Plane p = readPlane(fc);
+                    if (p.format == 0u && p.base == 0x60000000u)
+                        continue;
+                    std::cerr << ' ' << fc << ":f" << p.format << '=' << p.w << 'x' << p.h
+                              << "@0x" << std::hex << p.base << std::dec;
+                }
+                std::cerr << '\n';
+            }
+        }
+        if (!movieYuvOff &&
+            ((primitive == 4u && listVertices.size() >= 3u &&
+              activePixelShaderHash_ == 0xF7F9B122274108DBull) ||
+             ((primitive == 4u || primitive == 8u) && looksLikeYuvPlanes)))
         {
             static const bool movieTexTraceEnabled = std::getenv("XERENGE_MOVIE_TEX_TRACE") != nullptr;
             if (movieTexTraceEnabled)
