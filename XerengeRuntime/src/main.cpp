@@ -3325,23 +3325,11 @@ public:
             // state. Expose pad 0 as connected and idle until host input is
             // wired into these fields.
             clear(base, state, 16);
-            uint16_t buttons = gInputButtons.load(std::memory_order_relaxed);
-            const bool holdStart = std::getenv("XERENGE_HOLD_START") != nullptr;
-            const bool holdA = std::getenv("XERENGE_HOLD_A") != nullptr;
-            const bool lateAutoStart = std::getenv("XERENGE_AUTO_START_LATE") != nullptr;
-            const char* autoStartAfterText = std::getenv("XERENGE_AUTO_START_AFTER_PACKET");
-            const uint32_t autoStartAfter = autoStartAfterText != nullptr
-                ? static_cast<uint32_t>(std::strtoul(autoStartAfterText, nullptr, 0))
-                : (lateAutoStart ? 300u : 0u);
-            const uint32_t poll = inputPollNumber_++;
-            const bool autoStartPulse = std::getenv("XERENGE_AUTO_START") != nullptr &&
-                poll >= autoStartAfter && poll % 300u >= 20u && poll % 300u < 24u;
-            const bool autoAPulse = std::getenv("XERENGE_AUTO_A") != nullptr &&
-                poll >= autoStartAfter && poll % 300u >= 20u && poll % 300u < 24u;
-            if (holdStart || autoStartPulse)
-                buttons |= 0x0010u;
-            if (holdA || autoAPulse)
-                buttons |= 0x1000u;
+            // Report exactly what the player is holding. Synthetic button
+            // injection used to live here; it masked real input problems and
+            // fought the player for control, so the guest now sees the host
+            // devices and nothing else.
+            const uint16_t buttons = gInputButtons.load(std::memory_order_relaxed);
             if (buttons != inputButtons_)
             {
                 inputButtons_ = buttons;
@@ -4262,7 +4250,6 @@ private:
     std::array<bool, 64> tlsUsed_{};
     std::atomic<uint32_t> nextThreadId_{1};
     uint32_t inputPacketNumber_ = 1;
-    uint32_t inputPollNumber_ = 0;
     uint16_t inputButtons_ = 0;
     XAudioBackend xaudio_;
     // A service call owns this mutex for its state mutation. Event waits pass
