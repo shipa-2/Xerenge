@@ -2266,7 +2266,17 @@ public:
                 events_[handle] = ctx.r6.u32 != 0;
                 if (ctx.r6.u32 != 0)
                     ++eventSignalCounts_[handle];
-                manualResetEvents_[handle] = ctx.r5.u32 == 0; // NotificationEvent.
+                // The release XMsg bootstrap creates its shared completion
+                // event as a SynchronizationEvent (r5=1), but several XMsg
+                // wait paths can observe the same completion.  Modeling it
+                // as auto-reset lets an unrelated waiter consume the pulse
+                // before the request worker sees it, leaving the worker
+                // parked forever even though NtSetEvent keeps publishing
+                // completions.  Keep the normal NT type for every other
+                // event and retain this one completion latch until the
+                // request state machine clears it.
+                const bool xmsgCompletionEvent = ctx.lr == 0x825AE9BCu;
+                manualResetEvents_[handle] = xmsgCompletionEvent || ctx.r5.u32 == 0;
             }
             if (outputHandle != 0)
                 storeU32(base, outputHandle, handle);
