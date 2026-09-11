@@ -5994,14 +5994,62 @@ extern "C" void __imp__sub_821FEBC0(PPCContext& ctx, uint8_t* base);
 void sub_821FEBC0(PPCContext& ctx, uint8_t* base)
 {
     static const bool trace = std::getenv("XERENGE_VIDEO_TRACE") != nullptr;
-    if (trace)
+    const uint32_t manager = ctx.r3.u32;
+    const uint32_t descriptor = ctx.r4.u32;
+    uint32_t namePointer = 0;
+    if (descriptor != 0)
     {
-        uint32_t namePointer = 0;
-        std::memcpy(&namePointer, base + ctx.r4.u32, sizeof(namePointer));
+        std::memcpy(&namePointer, base + descriptor, sizeof(namePointer));
         namePointer = __builtin_bswap32(namePointer);
-        const char* name = namePointer != 0
-            ? reinterpret_cast<const char*>(base + namePointer) : "(none)";
+    }
+    const char* name = namePointer != 0
+        ? reinterpret_cast<const char*>(base + namePointer) : "(none)";
+    if (trace)
         std::cerr << "intro clip requested: " << name << '\n';
+
+    std::string clip;
+    if (namePointer >= 0x50000000u && namePointer < 0x90000000u)
+    {
+        for (size_t i = 0; i < 260 && base[namePointer + i] != 0; ++i)
+            clip.push_back(static_cast<char>(std::tolower(
+                static_cast<unsigned char>(base[namePointer + i]))));
+        const size_t slash = clip.find_last_of("/\\");
+        if (slash != std::string::npos)
+            clip.erase(0, slash + 1);
+        if (clip.size() >= 4 && clip.compare(clip.size() - 4, 4, ".xmv") == 0)
+            clip.resize(clip.size() - 4);
+    }
+
+    // The release Flash timeline contains BG1, EAHD, EA, CRRW and ATTR. The
+    // media layer substitutes the first two requests with the intended EA and
+    // CRRW logo streams. When Flash subsequently asks for EA and CRRW by name,
+    // those clips have therefore already played. Complete just those two
+    // duplicate requests through the same state value (28) that the real
+    // manager publishes at end of playback; the caller polls manager+152 for
+    // this exact value before advancing the timeline.
+    static std::atomic<uint32_t> substitutedLogos{0};
+    if (clip == "bg1_p")
+        substitutedLogos.fetch_or(1u, std::memory_order_relaxed);
+    else if (clip == "eahd_e_p")
+        substitutedLogos.fetch_or(2u, std::memory_order_relaxed);
+
+    uint32_t duplicateBit = 0;
+    if (clip == "ea_e_p")
+        duplicateBit = 1u;
+    else if (clip == "crrw_e_p")
+        duplicateBit = 2u;
+    if (duplicateBit != 0 &&
+        (substitutedLogos.fetch_and(~duplicateBit, std::memory_order_relaxed) &
+            duplicateBit) != 0)
+    {
+        if (descriptor != 0)
+            std::memcpy(base + manager + 136, base + descriptor, 12);
+        const uint32_t complete = __builtin_bswap32(28u);
+        std::memcpy(base + manager + 152, &complete, sizeof(complete));
+        if (trace)
+            std::cerr << "intro duplicate completed without replay: " << clip << '\n';
+        ctx.r3.u32 = manager;
+        return;
     }
     __imp__sub_821FEBC0(ctx, base);
 }
