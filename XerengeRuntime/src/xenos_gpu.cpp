@@ -2571,6 +2571,12 @@ void XenosGpu::rasterizeDraw(uint8_t* guestBase, uint32_t initiator)
         RasterVertex v3 = v1;
         v3.position[0] = v0.position[0] + v2.position[0] - v1.position[0];
         v3.position[1] = v0.position[1] + v2.position[1] - v1.position[1];
+        // The Vulkan path draws from rawPosition, so the implied corner needs
+        // the same parallelogram relation applied there. Leaving it as v1's
+        // copy collapsed the second triangle onto the first, which is what
+        // made a RectangleList arrive as a single stray triangle.
+        v3.rawPosition[0] = v0.rawPosition[0] + v2.rawPosition[0] - v1.rawPosition[0];
+        v3.rawPosition[1] = v0.rawPosition[1] + v2.rawPosition[1] - v1.rawPosition[1];
         v3.uv[0] = v0.uv[0] + v2.uv[0] - v1.uv[0];
         v3.uv[1] = v0.uv[1] + v2.uv[1] - v1.uv[1];
         for (uint32_t component = 0; component < 4; ++component)
@@ -2679,7 +2685,15 @@ void XenosGpu::rasterizeDraw(uint8_t* guestBase, uint32_t initiator)
         // opt-in until its geometry matches, so the default picture is the
         // right one.
         static const bool vulkanGeometry = std::getenv("XERENGE_VULKAN_GEOMETRY") != nullptr;
-        const bool submittedToVulkan = !forceSoftware && vulkanGeometry &&
+        // Diagnostic: XERENGE_VULKAN_ONLY_PRIM=N submits just that primitive
+        // type to Vulkan, which isolates which draw contributes a given
+        // artefact when several primitive paths feed the same colour image.
+        static const uint32_t onlyPrim = [] {
+            const char* text = std::getenv("XERENGE_VULKAN_ONLY_PRIM");
+            return text != nullptr ? uint32_t(std::strtoul(text, nullptr, 0)) : 0xFFFFFFFFu;
+        }();
+        const bool primitiveSelected = onlyPrim == 0xFFFFFFFFu || onlyPrim == primitive;
+        const bool submittedToVulkan = !forceSoftware && vulkanGeometry && primitiveSelected &&
             drawVulkanGeometry(nativeVertices.data(), nativeOrder.size(),
                 VK_PRIMITIVE_TOPOLOGY_TRIANGLE_LIST,
                 hasNativeTexture && nativeTextureKey != vulkanTextureKey_
