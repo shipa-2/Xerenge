@@ -579,7 +579,7 @@ bool XenosGpu::ensureGraphicsPipeline(VkPrimitiveTopology topology)
     // the first eight raw addresses; the device guarantees only 32 attributes,
     // so this deliberately stops at 28 rather than describing every possible
     // slot.
-    std::array<VkVertexInputAttributeDescription, 28> attributes{};
+    std::array<VkVertexInputAttributeDescription, 32> attributes{};
     uint32_t attributeCount = 0;
     const auto describe = [&](uint32_t location, uint32_t offset) {
         attributes[attributeCount++] = {location, 0, VK_FORMAT_R32G32B32A32_SFLOAT, offset};
@@ -588,8 +588,10 @@ bool XenosGpu::ensureGraphicsPipeline(VkPrimitiveTopology topology)
         describe(location, location == 0 ? kPositionOffset
             : location == 13 ? kTexCoordOffset
             : location == 17 ? kColourOffset : kZeroOffset);
-    for (uint32_t address = 0; address < 8; ++address)
-        describe(64 + address, address == 3 ? kPositionOffset
+    // Raw elements land at 20 + (fetch address % 12); the captured shaders
+    // were wrapped with address 3 = position, 4 = texcoord, 5 = colour.
+    for (uint32_t address = 0; address < 12; ++address)
+        describe(20 + address, address == 3 ? kPositionOffset
             : address == 4 ? kTexCoordOffset
             : address == 5 ? kColourOffset : kZeroOffset);
     VkPipelineVertexInputStateCreateInfo vertexInput{
@@ -674,6 +676,17 @@ bool XenosGpu::ensureGraphicsPipeline(VkPrimitiveTopology topology)
     blendAttachment.srcAlphaBlendFactor = blendFactor(alphaSource);
     blendAttachment.dstAlphaBlendFactor = blendFactor(alphaDestination);
     blendAttachment.alphaBlendOp = blendOp(alphaOperation);
+    // Diagnostic (XERENGE_VULKAN_FORCE_WRITE): ignore the guest's blend state
+    // and colour mask. If output appears only with this set, the fault is in
+    // how those registers are translated rather than in the draw itself.
+    static const bool forceWrite = std::getenv("XERENGE_VULKAN_FORCE_WRITE") != nullptr;
+    if (forceWrite)
+    {
+        blendAttachment.blendEnable = VK_FALSE;
+        blendAttachment.colorWriteMask =
+            VK_COLOR_COMPONENT_R_BIT | VK_COLOR_COMPONENT_G_BIT |
+            VK_COLOR_COMPONENT_B_BIT | VK_COLOR_COMPONENT_A_BIT;
+    }
     VkPipelineColorBlendStateCreateInfo blend{
         VK_STRUCTURE_TYPE_PIPELINE_COLOR_BLEND_STATE_CREATE_INFO};
     blend.attachmentCount = 1;
@@ -828,6 +841,28 @@ bool XenosGpu::drawVulkanGeometry(const float* vertices, uint32_t vertexCount,
                       << std::dec << '\n';
     }
 
+    // Diagnostic (XERENGE_VULKAN_TEST_TRIANGLE): replace the geometry with a
+    // half-screen triangle in the space the title's own vertex shader expects
+    // - raw viewport pixels, which its constants scale to NDC. If this lights
+    // pixels the pipeline and shader are sound and the fault is in the
+    // geometry handed to them; if it does not, the fault is further down.
+    static const bool testTriangle = std::getenv("XERENGE_VULKAN_TEST_TRIANGLE") != nullptr;
+    std::vector<float> injected;
+    if (testTriangle && topology == VK_PRIMITIVE_TOPOLOGY_TRIANGLE_LIST)
+    {
+        injected.assign(3 * 16, 0.0f);
+        const float corners[3][2] = {{0.0f, 0.0f}, {1280.0f, 0.0f}, {0.0f, 720.0f}};
+        for (uint32_t corner = 0; corner < 3; ++corner)
+        {
+            float* vertex = injected.data() + corner * 16;
+            vertex[0] = corners[corner][0];
+            vertex[1] = corners[corner][1];
+            vertex[3] = 1.0f;
+            vertex[8] = vertex[9] = vertex[10] = vertex[11] = 1.0f;
+        }
+        vertices = injected.data();
+        vertexCount = 3;
+    }
     std::memcpy(vulkanVertexMapped_, vertices,
         size_t(vertexCount) * 16 * sizeof(float));
     std::memset(vulkanConstantsMapped_, 0, 12u * 1024u);
@@ -1597,6 +1632,10 @@ void XenosGpu::rasterizeDraw(uint8_t* guestBase, uint32_t initiator)
         std::array<float, 3> position{};
         std::array<float, 2> uv{};
         std::array<float, 4> color{1.0f, 1.0f, 1.0f, 1.0f};
+        // The software path rasterises `position` (NDC). The Vulkan path runs
+        // the title's real vertex shader, which applies the title's own
+        // constants to untransformed guest coordinates, so it needs these.
+        std::array<float, 2> rawPosition{};
     };
     std::array<RasterVertex, 3> triangle{};
     std::vector<RasterVertex> stripVertices;
@@ -1748,7 +1787,8 @@ void XenosGpu::rasterizeDraw(uint8_t* guestBase, uint32_t initiator)
             continue;
         }
         if (primitive == 8u && i < triangle.size())
-            triangle[i] = {{xNdc, yNdc, 0.0f}, uv, vertexColor};
+            triangle[i] = {{xNdc, yNdc, 0.0f}, uv, vertexColor,
+                {position[0], position[1]}};
         if (primitive == 8u)
             continue;
         if (primitive == 4u)
@@ -1757,7 +1797,8 @@ void XenosGpu::rasterizeDraw(uint8_t* guestBase, uint32_t initiator)
             // frontend.  The software path above already converts them to
             // Vulkan's NDC space; keep the same coordinates for the native
             // path or the vertex shader clips the rectangle diagonally.
-            listVertices.push_back({{xNdc, yNdc, 0.0f}, uv, vertexColor});
+            listVertices.push_back({{xNdc, yNdc, 0.0f}, uv, vertexColor,
+                {position[0], position[1]}});
         }
         else if (primitive == 6u)
         {
@@ -1765,7 +1806,8 @@ void XenosGpu::rasterizeDraw(uint8_t* guestBase, uint32_t initiator)
             // and optionally float4 colour. Keep position in guest space;
             // the recompiled VS applies the title's actual constant matrices.
             stripVertices.push_back(
-                {{position[0], position[1], 0.0f}, uv, vertexColor});
+                {{position[0], position[1], 0.0f}, uv, vertexColor,
+                 {position[0], position[1]}});
             continue;
         }
 
@@ -2554,8 +2596,8 @@ void XenosGpu::rasterizeDraw(uint8_t* guestBase, uint32_t initiator)
         for (uint32_t vertex = 0; vertex < nativeOrder.size(); ++vertex)
         {
             float* destination = nativeVertices.data() + vertex * 16;
-            destination[0] = nativeOrder[vertex]->position[0];
-            destination[1] = nativeOrder[vertex]->position[1];
+            destination[0] = nativeOrder[vertex]->rawPosition[0];
+            destination[1] = nativeOrder[vertex]->rawPosition[1];
             destination[2] = nativeOrder[vertex]->position[2];
             destination[3] = 1.0f;
             destination[4] = nativeOrder[vertex]->uv[0];
@@ -2630,7 +2672,14 @@ void XenosGpu::rasterizeDraw(uint8_t* guestBase, uint32_t initiator)
             }
         }
         static const bool forceSoftware = std::getenv("XERENGE_XENOS_FORCE_SOFTWARE") != nullptr;
-        const bool submittedToVulkan = !forceSoftware &&
+        // The Vulkan geometry path now produces output (see the location fix in
+        // ensureGraphicsPipeline) but not yet correct output: a spurious
+        // large triangle survives, and because resolveToGuest prefers Vulkan
+        // pixels it hides the rasterised frame that is correct. Keep it
+        // opt-in until its geometry matches, so the default picture is the
+        // right one.
+        static const bool vulkanGeometry = std::getenv("XERENGE_VULKAN_GEOMETRY") != nullptr;
+        const bool submittedToVulkan = !forceSoftware && vulkanGeometry &&
             drawVulkanGeometry(nativeVertices.data(), nativeOrder.size(),
                 VK_PRIMITIVE_TOPOLOGY_TRIANGLE_LIST,
                 hasNativeTexture && nativeTextureKey != vulkanTextureKey_
