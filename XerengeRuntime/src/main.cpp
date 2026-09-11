@@ -5321,6 +5321,55 @@ void sub_8238CD28(PPCContext& ctx, uint8_t* base)
     }
     __imp__sub_8238CD28(ctx, base);
 }
+
+// sub_823483F8 (retail-release-specific address) broadcasts one "tick" to a
+// list of registered listener objects: for i in [0, count) at object+12,
+// call (*(*(object+4+i*4)))->vtable[2](this, deltaTime).  The one caller
+// passes a fixed global object (0x82679844) whose fields read back as
+// obvious garbage (count in the tens of thousands; the first "listener"
+// pointer nowhere near the guest address range) rather than the small,
+// sane listener list this is clearly meant to be - something that should
+// populate this object at startup either never runs or writes the wrong
+// place, and without symbols the actual initializer has not been found.
+// Every listener call this dispatches lands on an invalid function pointer
+// (PPCUnknownIndirectTrap's "unresolved indirect target" fallback already
+// makes each individual call harmless, but the garbage count still means
+// tens of thousands of wasted calls, and it never gets to deliver whatever
+// event this broadcast represents - very plausibly including whatever
+// drives the loading-screen UI). Validate before dispatching instead of
+// trusting the stored count/pointers: cap the iteration count, and only
+// call a listener whose object and vtable-method pointers actually look
+// like guest code/data addresses.
+extern "C" void __imp__sub_823483F8(PPCContext& ctx, uint8_t* base);
+void sub_823483F8(PPCContext& ctx, uint8_t* base)
+{
+    const auto looksLikeGuestPointer = [](uint32_t address) {
+        return address >= 0x60000000u && address < 0x90000000u;
+    };
+    auto guestWord = [base](uint32_t address) {
+        uint32_t value = 0;
+        std::memcpy(&value, base + address, sizeof(value));
+        return __builtin_bswap32(value);
+    };
+    const uint32_t object = ctx.r3.u32;
+    const uint32_t rawCount = guestWord(object + 12);
+    const uint32_t count = std::min(rawCount, 256u);
+    for (uint32_t i = 0; i < count; ++i)
+    {
+        const uint32_t listener = guestWord(object + 4 + i * 4);
+        if (!looksLikeGuestPointer(listener))
+            continue;
+        const uint32_t vtable = guestWord(listener);
+        if (!looksLikeGuestPointer(vtable))
+            continue;
+        const uint32_t method = guestWord(vtable + 8);
+        if (!looksLikeGuestPointer(method))
+            continue;
+        ctx.r3.u32 = listener;
+        ctx.ctr.u32 = method;
+        PPCDispatchIndirect(ctx, base, method);
+    }
+}
 #endif
 
 int main(int argc, char** argv)
