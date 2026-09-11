@@ -444,6 +444,8 @@ extern "C" void PPCTraceStore(uint32_t address, uint32_t value, uint64_t lr)
 // between two samples points straight at whatever is spinning.
 namespace
 {
+std::atomic<const uint8_t*> gProfiledGuestBase{nullptr};
+
 class GuestFunctionProfile
 {
 public:
@@ -492,6 +494,7 @@ public:
             std::cerr << " 0x" << std::hex << address << std::dec << '=' << since;
         std::cerr << '\n';
         reportWatched();
+        reportWords(gProfiledGuestBase.load(std::memory_order_relaxed));
     }
 
     // "Is this subsystem running at all?" is not answered by a list of the
@@ -508,6 +511,38 @@ public:
             watched_.push_back(uint32_t(address));
             cursor = (*end == '\0') ? end : end + 1;
         }
+    }
+
+    // Guest state that decides control flow often lives in a global the
+    // profile cannot see: a state machine's current state is a word, not a
+    // function. Reporting named words alongside the counters shows whether the
+    // machine is stuck or merely quiet.
+    void watchWords(const char* addresses)
+    {
+        for (const char* cursor = addresses; *cursor != '\0';)
+        {
+            char* end = nullptr;
+            const unsigned long address = std::strtoul(cursor, &end, 0);
+            if (end == cursor)
+                break;
+            watchedWords_.push_back(uint32_t(address));
+            cursor = (*end == '\0') ? end : end + 1;
+        }
+    }
+
+    void reportWords(const uint8_t* base)
+    {
+        if (watchedWords_.empty() || base == nullptr)
+            return;
+        std::cerr << "watched guest words:";
+        for (const uint32_t address : watchedWords_)
+        {
+            uint32_t value = 0;
+            std::memcpy(&value, base + address, sizeof(value));
+            std::cerr << " [0x" << std::hex << address << "]=0x"
+                      << __builtin_bswap32(value) << std::dec;
+        }
+        std::cerr << '\n';
     }
 
     void reportWatched()
@@ -548,6 +583,7 @@ private:
 
     std::array<Slot, kSlots> slots_{};
     std::vector<uint32_t> watched_;
+    std::vector<uint32_t> watchedWords_;
 };
 
 GuestFunctionProfile gGuestFunctionProfile;
@@ -573,10 +609,13 @@ extern "C" void PPCTraceFunction(uint32_t address, PPCContext& ctx, uint8_t* bas
         static const bool started = [] {
             if (const char* watched = std::getenv("XERENGE_WATCH_FUNCTIONS"))
                 gGuestFunctionProfile.watch(watched);
+            if (const char* words = std::getenv("XERENGE_WATCH_WORDS"))
+                gGuestFunctionProfile.watchWords(words);
             return startGuestFunctionProfile(
                 std::max(1u, unsigned(std::atoi(std::getenv("XERENGE_HOT_FUNCTIONS")))));
         }();
         (void)started;
+        gProfiledGuestBase.store(base, std::memory_order_relaxed);
         gGuestFunctionProfile.record(address);
     }
 
@@ -5861,6 +5900,52 @@ void sub_82388B58(PPCContext& ctx, uint8_t* base)
                       << (bad ? "  <== BAD DESCRIPTOR" : "") << '\n';
     }
     __imp__sub_82388B58(ctx, base);
+}
+
+// CB4VideoManager::PlayVideo (retail 0x821FEBC0). Its descriptor carries the
+// clip name, which is the only place the intro's running order is stated
+// outright - the sequence is driven by a Flash timeline, so nothing else says
+// which clip was asked for or in what order.
+extern "C" void __imp__sub_821FEBC0(PPCContext& ctx, uint8_t* base);
+void sub_821FEBC0(PPCContext& ctx, uint8_t* base)
+{
+    static const bool trace = std::getenv("XERENGE_VIDEO_TRACE") != nullptr;
+    if (trace)
+    {
+        uint32_t namePointer = 0;
+        std::memcpy(&namePointer, base + ctx.r4.u32, sizeof(namePointer));
+        namePointer = __builtin_bswap32(namePointer);
+        const char* name = namePointer != 0
+            ? reinterpret_cast<const char*>(base + namePointer) : "(none)";
+        std::cerr << "intro clip requested: " << name << '\n';
+    }
+    __imp__sub_821FEBC0(ctx, base);
+}
+
+// CCalMoviePlayer::GetStatus (retail 0x8248CC20) reports the player's state
+// through three out parameters. Its caller forwards only one of them, and only
+// when the second says the first is meaningful, so the value the intro loop
+// actually spins on hides which of the three disagreed.
+extern "C" void __imp__sub_8248CC20(PPCContext& ctx, uint8_t* base);
+void sub_8248CC20(PPCContext& ctx, uint8_t* base)
+{
+    static const bool trace = std::getenv("XERENGE_VIDEO_TRACE") != nullptr;
+    const uint32_t outs[3] = {ctx.r4.u32, ctx.r5.u32, ctx.r6.u32};
+    __imp__sub_8248CC20(ctx, base);
+    if (!trace)
+        return;
+    const auto read = [base](uint32_t address) {
+        uint32_t value = 0;
+        if (address != 0)
+            std::memcpy(&value, base + address, sizeof(value));
+        return __builtin_bswap32(value);
+    };
+    static std::atomic<uint64_t> last{~0ull};
+    const uint64_t combined = (uint64_t(read(outs[0])) << 32) | read(outs[1]);
+    if (last.exchange(combined, std::memory_order_relaxed) != combined)
+        std::cerr << "movie player state=" << read(outs[0])
+                  << " kind=" << read(outs[1]) << " extra=" << read(outs[2])
+                  << " result=0x" << std::hex << ctx.r3.u32 << std::dec << '\n';
 }
 
 // IXMediaXmvPlayer_GetStatus (retail 0x82480310). CGtVideoDecoder::Update
