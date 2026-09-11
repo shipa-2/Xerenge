@@ -1,4 +1,7 @@
 #include "xenos_gpu.h"
+#include <cstdio>
+#include <cstdlib>
+#include <filesystem>
 #include "shader_cache_runtime.h"
 
 #include <algorithm>
@@ -98,7 +101,8 @@ bool XenosGpu::initializeVulkan()
     const VkResult instanceResult = vkCreateInstance(&instanceInfo, nullptr, &vulkanInstance_);
     if (instanceResult != VK_SUCCESS)
     {
-        if (std::getenv("XERENGE_XENOS_VULKAN_TRACE") != nullptr)
+        static const bool xenosVulkanTraceEnabled = std::getenv("XERENGE_XENOS_VULKAN_TRACE") != nullptr;
+        if (xenosVulkanTraceEnabled)
             std::cerr << "Xenos Vulkan instance creation failed result=" << instanceResult << '\n';
         return false;
     }
@@ -107,7 +111,8 @@ bool XenosGpu::initializeVulkan()
     vkEnumeratePhysicalDevices(vulkanInstance_, &physicalCount, nullptr);
     std::vector<VkPhysicalDevice> physicalDevices(physicalCount);
     vkEnumeratePhysicalDevices(vulkanInstance_, &physicalCount, physicalDevices.data());
-    if (std::getenv("XERENGE_XENOS_VULKAN_TRACE") != nullptr)
+    static const bool xenosVulkanTraceEnabled2 = std::getenv("XERENGE_XENOS_VULKAN_TRACE") != nullptr;
+    if (xenosVulkanTraceEnabled2)
         std::cerr << "Xenos Vulkan physical devices=" << physicalCount << '\n';
     for (VkPhysicalDevice candidate : physicalDevices)
     {
@@ -132,7 +137,8 @@ bool XenosGpu::initializeVulkan()
         VkPhysicalDeviceFeatures2 available{VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_FEATURES_2};
         available.pNext = &available12;
         vkGetPhysicalDeviceFeatures2(candidate, &available);
-        if (std::getenv("XERENGE_XENOS_VULKAN_TRACE") != nullptr)
+        static const bool xenosVulkanTraceEnabled3 = std::getenv("XERENGE_XENOS_VULKAN_TRACE") != nullptr;
+        if (xenosVulkanTraceEnabled3)
             std::cerr << "Xenos Vulkan candidate '" << candidateProperties.deviceName
                       << "' clip=" << available.features.shaderClipDistance
                       << " int64=" << available.features.shaderInt64
@@ -420,7 +426,8 @@ bool XenosGpu::ensureGraphicsPipeline(VkPrimitiveTopology topology)
     const bool pixelModule = pixelFound && ensureShaderModule(pixelMicrocode->shaderHash);
     if (!deviceReady || !vertexFound || !pixelFound || !vertexModule || !pixelModule)
     {
-        if (std::getenv("XERENGE_XENOS_SHADER_TRACE") != nullptr)
+        static const bool xenosShaderTraceEnabled = std::getenv("XERENGE_XENOS_SHADER_TRACE") != nullptr;
+        if (xenosShaderTraceEnabled)
         {
             static std::atomic<uint32_t> reasonTraceCount = 0;
             if (reasonTraceCount.fetch_add(1, std::memory_order_relaxed) < 8)
@@ -644,12 +651,14 @@ bool XenosGpu::ensureGraphicsPipeline(VkPrimitiveTopology topology)
         &pipelineInfo, nullptr, &pipeline);
     if (result != VK_SUCCESS)
     {
-        if (std::getenv("XERENGE_XENOS_SHADER_TRACE") != nullptr)
+        static const bool xenosShaderTraceEnabled2 = std::getenv("XERENGE_XENOS_SHADER_TRACE") != nullptr;
+        if (xenosShaderTraceEnabled2)
             std::cerr << "Xenos Vulkan pipeline failed: " << result << '\n';
         return false;
     }
     vulkanPipelines_.emplace(key, pipeline);
-    if (std::getenv("XERENGE_XENOS_SHADER_TRACE") != nullptr)
+    static const bool xenosShaderTraceEnabled3 = std::getenv("XERENGE_XENOS_SHADER_TRACE") != nullptr;
+    if (xenosShaderTraceEnabled3)
         std::cerr << "Xenos Vulkan pipeline ready vs=0x" << std::hex
                   << activeVertexShaderHash_ << " ps=0x" << activePixelShaderHash_
                   << std::dec << '\n';
@@ -768,7 +777,8 @@ bool XenosGpu::drawVulkanGeometry(const float* vertices, uint32_t vertexCount,
         vulkanTextureHeight_ = textureHeight;
         vulkanTextureKey_ = textureKey;
         vulkanTextureInitialized_ = false;
-        if (std::getenv("XERENGE_XENOS_VULKAN_TRACE") != nullptr)
+        static const bool xenosVulkanTraceEnabled4 = std::getenv("XERENGE_XENOS_VULKAN_TRACE") != nullptr;
+        if (xenosVulkanTraceEnabled4)
             std::cerr << "Xenos Vulkan texture upload=" << textureWidth << 'x'
                       << textureHeight << " key=0x" << std::hex << textureKey
                       << std::dec << '\n';
@@ -901,7 +911,9 @@ bool XenosGpu::drawVulkanGeometry(const float* vertices, uint32_t vertexCount,
     ++vulkanDrawCount_;
     const bool largestDraw = vertexCount > vulkanLargestDrawVertexCount_;
     vulkanLargestDrawVertexCount_ = std::max(vulkanLargestDrawVertexCount_, vertexCount);
-    if (std::getenv("XERENGE_XENOS_VULKAN_TRACE") != nullptr &&
+    static const bool xenosVulkanTraceEnabled5 = std::getenv("XERENGE_XENOS_VULKAN_TRACE") != nullptr;
+    if (xenosVulkanTraceEnabled5 &&
+        
         (vulkanDrawCount_ <= 8 || largestDraw || (vulkanDrawCount_ % 256) == 0))
         std::cerr << "Xenos Vulkan draw=" << vulkanDrawCount_
                   << " vertices=" << vertexCount
@@ -1149,7 +1161,8 @@ bool XenosGpu::presentFromGuest(uint8_t* guestBase, uint32_t guestAddress,
                 guestBase + guestAddress + static_cast<size_t>(y) * sourceRowBytes,
                 rowBytes);
     }
-    if (std::getenv("XERENGE_FRAMEBUFFER_TRACE") != nullptr)
+    static const bool framebufferTraceEnabled = std::getenv("XERENGE_FRAMEBUFFER_TRACE") != nullptr;
+    if (framebufferTraceEnabled)
     {
         size_t nonzeroRgbPixels = 0;
         uint64_t checksum = 1469598103934665603ull;
@@ -1179,6 +1192,25 @@ bool XenosGpu::presentFromGuest(uint8_t* guestBase, uint32_t guestAddress,
     hasVisibleFrame_ = guestNonzeroRgbPixels >= 8 || useVulkanReadback;
     lastFrameWidth_ = width;
     lastFrameHeight_ = height;
+    if (const char* dumpEvery = std::getenv("XERENGE_FRAMEBUFFER_PPM"))
+    {
+        static uint64_t frame = 0;
+        const uint64_t step = std::max<uint64_t>(1, std::strtoull(dumpEvery, nullptr, 10));
+        if ((frame++ % step) == 0 && frame < step * 400)
+        {
+            char path[64];
+            std::snprintf(path, sizeof(path), "/tmp/xfb/%06llu.ppm",
+                static_cast<unsigned long long>(frame / step));
+            std::filesystem::create_directories("/tmp/xfb");
+            if (FILE* f = std::fopen(path, "wb"))
+            {
+                std::fprintf(f, "P6\n%u %u\n255\n", width, height);
+                for (size_t i = 0; i + 3 < framebuffer_.size(); i += 4)
+                    std::fwrite(framebuffer_.data() + i, 1, 3, f);
+                std::fclose(f);
+            }
+        }
+    }
     return true;
 }
 
@@ -1280,7 +1312,9 @@ void XenosGpu::writeGpuRegister(uint32_t index, uint32_t value)
     if (index < gpuRegisters_.size())
     {
         gpuRegisters_[index] = value;
-        if (std::getenv("XERENGE_XENOS_STATE_TRACE") != nullptr &&
+        static const bool xenosStateTraceEnabled = std::getenv("XERENGE_XENOS_STATE_TRACE") != nullptr;
+        if (xenosStateTraceEnabled &&
+            
             (index == 0x2000u || index == 0x2001u || index == 0x2104u ||
              index == 0x2208u || index == 0x2318u || index == 0x2319u))
         {
@@ -1342,7 +1376,8 @@ void XenosGpu::loadPointerShader(uint8_t* guestBase, uint32_t address,
             stream.write(reinterpret_cast<const char*>(guestBase + guestAddress), byteSize);
         }
     }
-    if (std::getenv("XERENGE_XENOS_SHADER_DUMP") != nullptr)
+    static const bool xenosShaderDumpEnabled = std::getenv("XERENGE_XENOS_SHADER_DUMP") != nullptr;
+    if (xenosShaderDumpEnabled)
     {
         std::cerr << "Xenos pointer shader code stage=" << shaderType
                   << " dwords=" << dwordCount << ':';
@@ -1372,7 +1407,8 @@ void XenosGpu::loadPointerShader(uint8_t* guestBase, uint32_t address,
     }
     const auto* match = xerengeShaderCache().findMicrocode(hash);
     const bool moduleReady = match != nullptr && ensureShaderModule(match->shaderHash);
-    if (std::getenv("XERENGE_XENOS_SHADER_TRACE") != nullptr)
+    static const bool xenosShaderTraceEnabled4 = std::getenv("XERENGE_XENOS_SHADER_TRACE") != nullptr;
+    if (xenosShaderTraceEnabled4)
     {
         std::cerr << "Xenos pointer shader stage=" << shaderType
                   << " guest=0x" << std::hex << guestAddress
@@ -1427,7 +1463,8 @@ void XenosGpu::rasterizeDraw(uint8_t* guestBase, uint32_t initiator)
     const uint32_t fetchRegister = 0x4800u + activeVertexFetchConstantIndex_ * 2u;
     const uint32_t fetch0 = vertexFetchRegisters_[fetchRegister - 0x4800u];
     const uint32_t fetch1 = vertexFetchRegisters_[fetchRegister - 0x4800u + 1u];
-    if (std::getenv("XERENGE_XENOS_VERTEX_TRACE") != nullptr)
+    static const bool xenosVertexTraceEnabled = std::getenv("XERENGE_XENOS_VERTEX_TRACE") != nullptr;
+    if (xenosVertexTraceEnabled)
         std::cerr << "Xenos vertex-fetch slot=" << activeVertexFetchConstantIndex_
                   << " reg=0x" << std::hex << fetchRegister
                   << " words=" << fetch0 << ' ' << fetch1 << std::dec << '\n';
@@ -1453,7 +1490,9 @@ void XenosGpu::rasterizeDraw(uint8_t* guestBase, uint32_t initiator)
     if (edram_.size() != size_t(width) * height * 4)
         edram_.assign(size_t(width) * height * 4, 0);
     const uint32_t colorMask = gpuRegisters_[0x2104u] & 0xFu;
-    if (std::getenv("XERENGE_XENOS_CONSTANT_TRACE") != nullptr &&
+    static const bool xenosConstantTraceEnabled = std::getenv("XERENGE_XENOS_CONSTANT_TRACE") != nullptr;
+    if (xenosConstantTraceEnabled &&
+        
         activeVertexShaderHash_ == 0xBCEC88072A5F344Dull)
     {
         static std::atomic<uint32_t> constantTraceCount = 0;
@@ -1570,8 +1609,10 @@ void XenosGpu::rasterizeDraw(uint8_t* guestBase, uint32_t initiator)
                 continue;
         }
 
+        static const bool xenosVertexTraceEnabled2 =
+            std::getenv("XERENGE_XENOS_VERTEX_TRACE") != nullptr;
         if ((primitive == 1u || primitive == 4u || primitive == 8u || primitive == 6u) &&
-            std::getenv("XERENGE_XENOS_VERTEX_TRACE") != nullptr && i < 3)
+            xenosVertexTraceEnabled2 && i < 3)
         {
             std::cerr << "Xenos vertex i=" << i << " guest=0x" << std::hex << address
                       << " words=";
@@ -1711,7 +1752,8 @@ void XenosGpu::rasterizeDraw(uint8_t* guestBase, uint32_t initiator)
                     std::clamp(pointVertices[vertex + 8u + component], 0.0f, 1.0f) * 255.0f);
             writeColorMasked((size_t(y) * width + x) * 4, color);
         }
-        if (std::getenv("XERENGE_XENOS_DRAW_TRACE") != nullptr)
+        static const bool xenosDrawTraceEnabled = std::getenv("XERENGE_XENOS_DRAW_TRACE") != nullptr;
+        if (xenosDrawTraceEnabled)
             std::cerr << "Xenos point draw rasterized count="
                       << pointVertices.size() / 12u << '\n';
         return;
@@ -1747,13 +1789,400 @@ void XenosGpu::rasterizeDraw(uint8_t* guestBase, uint32_t initiator)
         const uint32_t texture0 = gpuRegisters_[0x4800u];
         const uint32_t texture1 = gpuRegisters_[0x4801u];
         const uint32_t texture2 = gpuRegisters_[0x4802u];
+
+        // Stage 1: the movie player draws the video with pixel shader
+        // 0xF7F9B122274108DB sampling three linear k_8 planes (Y full res, U/V
+        // half res, BT.601).  Decode the frame into movieFrameRgba_ and record
+        // the surface it targets; do not touch the framebuffer here.
+        static const bool movieYuvOff = std::getenv("XERENGE_MOVIE_YUV_OFF") != nullptr;
+        if (primitive == 4u && listVertices.size() >= 3u &&
+            activePixelShaderHash_ == 0xF7F9B122274108DBull && !movieYuvOff)
+        {
+            struct Plane { uint32_t base, w, h, pitch; bool tiled; };
+            const auto readPlane = [&](uint32_t fc) {
+                const uint32_t w0 = gpuRegisters_[0x4800u + fc * 6u + 0u];
+                const uint32_t w1 = gpuRegisters_[0x4800u + fc * 6u + 1u];
+                const uint32_t w2 = gpuRegisters_[0x4800u + fc * 6u + 2u];
+                Plane p{};
+                p.base = gpuPhysicalToGuest(((w1 >> 12) & 0xFFFFFu) << 12);
+                p.w = (w2 & 0x1FFFu) + 1u;
+                p.h = ((w2 >> 13) & 0x1FFFu) + 1u;
+                p.pitch = std::max(p.w, ((w0 >> 22) & 0x1FFu) << 5); // k_8: byte pitch
+                p.tiled = (w0 & 0x80000000u) != 0u;
+                return p;
+            };
+            const Plane yP = readPlane(0), uP = readPlane(1), vP = readPlane(2);
+            static const bool movieTexTraceEnabled = std::getenv("XERENGE_MOVIE_TEX_TRACE") != nullptr;
+            if (movieTexTraceEnabled)
+            {
+                static int ttc = 0;
+                if (ttc++ < 8)
+                    std::cerr << "MOVIEPLANE Y=" << yP.w << 'x' << yP.h << "/p" << yP.pitch
+                              << " U=" << uP.w << 'x' << uP.h << "/p" << uP.pitch
+                              << " V=" << vP.w << 'x' << vP.h << "/p" << vP.pitch
+                              << " tiled=" << yP.tiled << uP.tiled << vP.tiled
+                              << " base Y=0x" << std::hex << yP.base << " U=0x" << uP.base
+                              << " V=0x" << vP.base << std::dec << '\n';
+            }
+            // The movie player cycles through a small ring of physical
+            // buffers, so an unchanged base address does not mean unchanged
+            // content (round-robin reuse writes a new frame into the same
+            // address).  Detect a real change with a cheap content sample
+            // instead - redraws between real decoded frames resubmit the
+            // same bytes and can skip the ~2.2M-multiply-add BT.601 pass.
+            uint64_t sample = uint64_t(yP.base) ^ (uint64_t(yP.w) << 32) ^ yP.h;
+            // A real video frame is spatially coherent - horizontally
+            // adjacent luma samples are usually close.  Once a clip ends, the
+            // movie player's plane buffers can be reclaimed and refilled with
+            // unrelated data (or caught mid-write) that still matches this
+            // pixel shader/format/size, and decoding that as YUV produces
+            // rainbow static.  Score local coherence alongside the content
+            // signature so garbage is rejected instead of displayed.
+            uint64_t incoherence = 0;
+            uint64_t chromaIncoherence = 0;
+            if (yP.w >= 2 && yP.h != 0)
+                for (uint32_t s = 0; s < 64; ++s)
+                {
+                    const uint32_t sx = (s * 2654435761u) % (yP.w - 1u);
+                    const uint32_t sy = (s * 40503u) % yP.h;
+                    const uint8_t* row = guestBase + yP.base + size_t(sy) * yP.pitch;
+                    sample = sample * 1099511628211ull + row[sx];
+                    incoherence += std::abs(int(row[sx]) - int(row[sx + 1]));
+                }
+            // Luma alone can look smooth while a bad chroma stride/base still
+            // paints the classic rainbow-comb pattern (colour cycling on an
+            // otherwise plausible-looking brightness image), so score U/V
+            // local coherence too - the observed corruption is chroma-only.
+            if (uP.w >= 2 && uP.h != 0 && vP.w >= 2 && vP.h != 0)
+                for (uint32_t s = 0; s < 64; ++s)
+                {
+                    const uint32_t ux = (s * 2246822519u) % (uP.w - 1u);
+                    const uint32_t uy = (s * 3266489917u) % uP.h;
+                    const uint8_t* urow = guestBase + uP.base + size_t(uy) * uP.pitch;
+                    const uint8_t* vrow = guestBase + vP.base + size_t(uy) * vP.pitch;
+                    chromaIncoherence += std::abs(int(urow[ux]) - int(urow[ux + 1]));
+                    chromaIncoherence += std::abs(int(vrow[ux]) - int(vrow[ux + 1]));
+                }
+            // A torn/mid-write decode can also look perfectly smooth while
+            // being horizontally repeated - e.g. a plane pitch briefly read
+            // too small tiles the same strip across the row several times.
+            // Each tile is internally smooth, so the adjacent-pixel checks
+            // above pass; catch it by comparing one full luma row against
+            // itself shifted by a handful of candidate tile widths.  A
+            // genuine frame's content at an arbitrary shift differs about as
+            // much as its own local detail; a tiled/torn row matches almost
+            // exactly.
+            bool periodicTear = false;
+            if (yP.w >= 64 && yP.h != 0)
+            {
+                const uint8_t* row = guestBase + yP.base + size_t(yP.h / 2) * yP.pitch;
+                uint64_t rowDetail = 0;
+                uint32_t detailSamples = 0;
+                for (uint32_t x = 0; x + 1 < yP.w; x += 4, ++detailSamples)
+                    rowDetail += std::abs(int(row[x]) - int(row[x + 1]));
+                if (detailSamples != 0 && rowDetail / detailSamples > 6u)
+                {
+                    const uint32_t candidates[] = {yP.w / 8u, yP.w / 6u, yP.w / 5u,
+                        yP.w / 4u, yP.w / 3u};
+                    for (uint32_t period : candidates)
+                    {
+                        if (period < 8u || period >= yP.w)
+                            continue;
+                        uint64_t periodicDiff = 0;
+                        uint32_t n = 0;
+                        for (uint32_t x = 0; x + period < yP.w; x += 4, ++n)
+                            periodicDiff += std::abs(int(row[x]) - int(row[x + period]));
+                        if (n != 0 && (periodicDiff / n) * 3u < (rowDetail / detailSamples))
+                        {
+                            periodicTear = true;
+                            break;
+                        }
+                    }
+                }
+            }
+            const bool looksLikeVideo = incoherence < 64u * 40u && // avg luma step < 40/255
+                chromaIncoherence < 128u * 40u && // avg chroma step < 40/255
+                !periodicTear;
+            const bool sameFrame = sample == movieDecodedSample_ && !movieFrameRgba_.empty();
+            if (!looksLikeVideo)
+            {
+                // Give a currently-good frame a little slack (compression
+                // artefacts / a genuinely busy frame can trip this once) but
+                // drop the movie state entirely once garbage persists, so a
+                // stale surface address cannot keep painting noise forever.
+                if (++movieIncoherentStreak_ > 2)
+                {
+                    movieFrameRgba_.clear();
+                    movieCompositeEdram_.clear();
+                    movieCompositeValid_ = false;
+                    movieSurfaceGuest_ = 0;
+                }
+                static const bool movieTexTraceEnabled2 = std::getenv("XERENGE_MOVIE_TEX_TRACE") != nullptr;
+                if (movieTexTraceEnabled2)
+                    std::cerr << "MOVIEINCOHERENT score=" << incoherence
+                              << " chroma=" << chromaIncoherence
+                              << " periodicTear=" << periodicTear
+                              << " streak=" << movieIncoherentStreak_ << '\n';
+                return;
+            }
+            movieIncoherentStreak_ = 0;
+            if (!sameFrame && yP.w >= 16 && yP.h >= 16 && yP.w <= 1920 && yP.h <= 1088)
+            {
+                movieFrameWidth_ = yP.w;
+                movieFrameHeight_ = yP.h;
+                movieDecodedSample_ = sample;
+                ++movieDecodeGeneration_;
+                movieFrameRgba_.resize(size_t(yP.w) * yP.h * 4u);
+                // Fixed-point BT.601 limited-range YUV -> RGB (>>8 fixed
+                // point) - equivalent to the float version but without
+                // per-pixel float math.
+                for (uint32_t py = 0; py < yP.h; ++py)
+                {
+                    const uint8_t* yRow = guestBase + yP.base + size_t(py) * yP.pitch;
+                    const uint8_t* uRow = guestBase + uP.base +
+                        size_t(std::min(uP.h - 1u, py * uP.h / yP.h)) * uP.pitch;
+                    const uint8_t* vRow = guestBase + vP.base +
+                        size_t(std::min(vP.h - 1u, py * vP.h / yP.h)) * vP.pitch;
+                    uint8_t* dstRow = movieFrameRgba_.data() + size_t(py) * yP.w * 4u;
+                    for (uint32_t px = 0; px < yP.w; ++px)
+                    {
+                        const uint32_t cx = std::min(uP.w - 1u, px * uP.w / yP.w);
+                        const int yv = (298 * (int(yRow[px]) - 16)) >> 8;
+                        const int cu = int(uRow[cx]) - 128;
+                        const int cv = int(vRow[cx]) - 128;
+                        const int r = yv + ((409 * cv) >> 8);
+                        const int g = yv - ((100 * cu + 208 * cv) >> 8);
+                        const int b = yv + ((516 * cu) >> 8);
+                        uint8_t* d = dstRow + px * 4u;
+                        d[0] = static_cast<uint8_t>(std::clamp(r, 0, 255));
+                        d[1] = static_cast<uint8_t>(std::clamp(g, 0, 255));
+                        d[2] = static_cast<uint8_t>(std::clamp(b, 0, 255));
+                        d[3] = 255u;
+                    }
+                }
+                static const bool movieRawDumpEnabled = std::getenv("XERENGE_MOVIE_RAW_DUMP") != nullptr;
+                if (movieRawDumpEnabled)
+                {
+                    static int rd = 0;
+                    if (rd < 400)
+                    {
+                        std::filesystem::create_directories("/tmp/xfb");
+                        const auto dumpPlane = [&](const char* tag, const Plane& p) {
+                            char path[80];
+                            std::snprintf(path, sizeof(path), "/tmp/xfb/raw%s_%03d.pgm",
+                                tag, rd);
+                            if (FILE* f = std::fopen(path, "wb"))
+                            {
+                                std::fprintf(f, "P5\n%u %u\n255\n", p.w, p.h);
+                                for (uint32_t py = 0; py < p.h; ++py)
+                                    std::fwrite(guestBase + p.base + size_t(py) * p.pitch, 1,
+                                        p.w, f);
+                                std::fclose(f);
+                            }
+                        };
+                        dumpPlane("Y", yP);
+                        dumpPlane("U", uP);
+                        dumpPlane("V", vP);
+                        ++rd;
+                    }
+                }
+                // RB_COPY_DEST_BASE names the guest surface this frame resolves
+                // into; that is what the Flash compositor later samples.  It is
+                // only populated on frames that carry the resolve packet, so
+                // latch the last plausible value.
+                const uint32_t copyDest = gpuRegisters_[0x2319u] & 0x1FFFFFFFu;
+                if (copyDest > 0x1000u)
+                    movieSurfaceGuest_ = 0x60000000u | copyDest;
+            }
+            static const bool movieTexTraceEnabled3 = std::getenv("XERENGE_MOVIE_TEX_TRACE") != nullptr;
+            if (movieTexTraceEnabled3)
+            {
+                static int mtc = 0;
+                if (mtc++ < 8)
+                    std::cerr << "MOVIEYUV " << movieFrameWidth_ << 'x' << movieFrameHeight_
+                              << " -> surface 0x" << std::hex << movieSurfaceGuest_
+                              << std::dec << '\n';
+            }
+            return;
+        }
+
+        // Stage 2: the Flash compositor (pixel shader 0x2E372EA28CC404B7, a
+        // RectangleList) draws a quad textured with the movie surface, but its
+        // fetch constant has no dimensions so the generic path samples a single
+        // texel.  Rasterise it straight from the decoded frame instead.
+        if (primitive == 8u && drawVertices == 3u && !movieFrameRgba_.empty() &&
+            activePixelShaderHash_ == 0x2E372EA28CC404B7ull && movieSurfaceGuest_ != 0u &&
+            (gpuPhysicalToGuest(((texture1 >> 12) & 0xFFFFFu) << 12) == movieSurfaceGuest_) &&
+            !movieYuvOff)
+        {
+            RasterVertex q3 = triangle[1];
+            q3.position[0] = triangle[0].position[0] + triangle[2].position[0] -
+                triangle[1].position[0];
+            q3.position[1] = triangle[0].position[1] + triangle[2].position[1] -
+                triangle[1].position[1];
+            q3.uv[0] = triangle[0].uv[0] + triangle[2].uv[0] - triangle[1].uv[0];
+            q3.uv[1] = triangle[0].uv[1] + triangle[2].uv[1] - triangle[1].uv[1];
+
+            // The decoded XMV frame is natively 16:9 (matches this runtime's
+            // 1280x720 bootstrap surface / a 16:9 window) but the movie
+            // player's own compositor quad only spans a fraction of the
+            // screen width (observed: NDC -1..0.5, i.e. 75%), so mapping the
+            // full frame onto that quad's bounding box horizontally squeezes
+            // it.  The intended presentation is a full-screen video, so pin
+            // the render position to the whole viewport instead of trusting
+            // the quad's own (narrower) placement; sampleMovie below already
+            // maps the quad's bounding box to the whole decoded frame, so
+            // widening the quad to the full screen widens what is sampled to
+            // match, restoring the frame's native aspect.
+            RasterVertex fsTL = triangle[0], fsTR = triangle[1], fsBR = triangle[2], fsBL = q3;
+            fsTL.position[0] = -1.0f; fsTL.position[1] = 1.0f;
+            fsTR.position[0] = 1.0f; fsTR.position[1] = 1.0f;
+            fsBR.position[0] = 1.0f; fsBR.position[1] = -1.0f;
+            fsBL.position[0] = -1.0f; fsBL.position[1] = -1.0f;
+            triangle[0] = fsTL; triangle[1] = fsTR; triangle[2] = fsBR; q3 = fsBL;
+
+            // The movie player redraws this compositor quad many times per
+            // displayed frame while waiting on the next decoded frame.  When
+            // neither the quad's screen position nor the source frame changed
+            // since the last pass, just re-blit the retained overlay instead
+            // of re-running the full per-pixel barycentric rasteriser.
+            const std::array<float, 4> quadKey{triangle[0].position[0],
+                triangle[0].position[1], triangle[2].position[0], triangle[2].position[1]};
+            static const bool movieTexTraceEnabled4 = std::getenv("XERENGE_MOVIE_TEX_TRACE") != nullptr;
+            if (movieTexTraceEnabled4)
+            {
+                static int qvc = 0;
+                if (qvc++ < 20)
+                    std::cerr << "MOVIEQUAD v0=(" << triangle[0].position[0] << ','
+                              << triangle[0].position[1] << ") v1=("
+                              << triangle[1].position[0] << ',' << triangle[1].position[1]
+                              << ") v2=(" << triangle[2].position[0] << ','
+                              << triangle[2].position[1] << ") frameW=" << width
+                              << " frameH=" << height << '\n';
+            }
+            const bool sameComposite = movieCompositeValid_ &&
+                quadKey == movieCompositedQuad_ &&
+                movieCompositedGeneration_ == movieDecodeGeneration_ &&
+                movieCompositeEdram_.size() == edram_.size();
+            if (sameComposite)
+            {
+                // The overlay is a full-screen frame (see the fullscreen NDC
+                // override above), so re-blit it unconditionally rather than
+                // only where it happens to be non-black - see the matching
+                // comment in resolveToGuest for why the black-skip let stale
+                // pre-video pixels linger.
+                std::copy(movieCompositeEdram_.begin(), movieCompositeEdram_.end(),
+                    edram_.begin());
+                static const bool movieTexTraceEnabled5 = std::getenv("XERENGE_MOVIE_TEX_TRACE") != nullptr;
+                if (movieTexTraceEnabled5)
+                {
+                    static int sc = 0;
+                    if (sc++ < 8)
+                        std::cerr << "MOVIESAME blitted=" << (edram_.size() / 4) << '\n';
+                }
+                // Keep the resolve-side overlay (see resolveToGuest) from
+                // ageing out while the compositor keeps redrawing this same
+                // still-current frame instead of a genuinely new one.
+                movieCompositeAge_ = 0;
+                return;
+            }
+            if (movieCompositeScratch_.size() != size_t(width) * height * 4u)
+                movieCompositeScratch_.assign(size_t(width) * height * 4u, 0u);
+            else
+                std::fill(movieCompositeScratch_.begin(), movieCompositeScratch_.end(), 0u);
+            std::vector<uint8_t>& compositeScratch = movieCompositeScratch_;
+            const std::array<const RasterVertex*, 6> quad{
+                &triangle[0], &triangle[1], &triangle[2],
+                &triangle[0], &triangle[2], &q3};
+            const uint32_t mw = movieFrameWidth_, mh = movieFrameHeight_;
+            const auto sampleMovie = [&](float u, float v) {
+                const uint32_t sx = std::min(mw - 1u,
+                    static_cast<uint32_t>(std::clamp(u, 0.0f, 1.0f) * mw));
+                const uint32_t sy = std::min(mh - 1u,
+                    static_cast<uint32_t>(std::clamp(v, 0.0f, 1.0f) * mh));
+                return movieFrameRgba_.data() + (size_t(sy) * mw + sx) * 4u;
+            };
+            const auto rasterComposite = [&](const RasterVertex& a, const RasterVertex& b,
+                                             const RasterVertex& c) {
+                const float ax = a.position[0], ay = a.position[1];
+                const float bx = b.position[0], by = b.position[1];
+                const float cx = c.position[0], cy = c.position[1];
+                const float area = (bx - ax) * (cy - ay) - (by - ay) * (cx - ax);
+                if (std::abs(area) < 1.0e-9f)
+                    return;
+                const float nx0 = std::min({ax, bx, cx}), nx1 = std::max({ax, bx, cx});
+                const float ny0 = std::min({ay, by, cy}), ny1 = std::max({ay, by, cy});
+                const int x0 = std::max(0, static_cast<int>((nx0 * 0.5f + 0.5f) * width));
+                const int x1 = std::min(static_cast<int>(width) - 1,
+                    static_cast<int>((nx1 * 0.5f + 0.5f) * width) + 1);
+                const int yy0 = std::max(0,
+                    static_cast<int>((1.0f - (ny1 * 0.5f + 0.5f)) * height));
+                const int yy1 = std::min(static_cast<int>(height) - 1,
+                    static_cast<int>((1.0f - (ny0 * 0.5f + 0.5f)) * height) + 1);
+                // The RectangleList carries no usable UV gradient, so map the
+                // quad's own NDC bounding box to the full video frame.
+                const float qx0 = std::min({ax, bx, cx, q3.position[0]});
+                const float qx1 = std::max({ax, bx, cx, q3.position[0]});
+                const float qy0 = std::min({ay, by, cy, q3.position[1]});
+                const float qy1 = std::max({ay, by, cy, q3.position[1]});
+                for (int py = yy0; py <= yy1; ++py)
+                    for (int px = x0; px <= x1; ++px)
+                    {
+                        const float sx = (px + 0.5f) / width * 2.0f - 1.0f;
+                        const float sy = 1.0f - (py + 0.5f) / height * 2.0f;
+                        const float w0 =
+                            ((bx - sx) * (cy - sy) - (by - sy) * (cx - sx)) / area;
+                        const float w1 =
+                            ((cx - sx) * (ay - sy) - (cy - sy) * (ax - sx)) / area;
+                        const float w2 = 1.0f - w0 - w1;
+                        if (w0 < -1.0e-4f || w1 < -1.0e-4f || w2 < -1.0e-4f)
+                            continue;
+                        const float u = (sx - qx0) / std::max(1.0e-4f, qx1 - qx0);
+                        const float v = (qy1 - sy) / std::max(1.0e-4f, qy1 - qy0);
+                        const uint8_t* s = sampleMovie(u, v);
+                        uint8_t rgba[4] = {s[0], s[1], s[2], 255u};
+                        writeColorMasked((size_t(py) * width + px) * 4, rgba);
+                        uint8_t* o = compositeScratch.data() +
+                            (size_t(py) * width + px) * 4u;
+                        o[0] = s[0]; o[1] = s[1]; o[2] = s[2]; o[3] = 255u;
+                    }
+            };
+            for (size_t k = 0; k < quad.size(); k += 3u)
+                rasterComposite(*quad[k], *quad[k + 1u], *quad[k + 2u]);
+            size_t drew = 0;
+            for (size_t i = 0; i + 3 < compositeScratch.size(); i += 4)
+                drew += (compositeScratch[i] | compositeScratch[i + 1] |
+                    compositeScratch[i + 2]) != 0;
+            // Only replace the retained overlay when this pass rasterised a
+            // meaningful amount - the movie player emits blank compositor
+            // passes between frames that would otherwise blink the video off.
+            if (drew > 512)
+            {
+                movieCompositeEdram_.swap(compositeScratch);
+                movieCompositeAge_ = 0;
+                movieCompositedQuad_ = quadKey;
+                movieCompositedGeneration_ = movieDecodeGeneration_;
+                movieCompositeValid_ = true;
+            }
+            static const bool movieTexTraceEnabled6 = std::getenv("XERENGE_MOVIE_TEX_TRACE") != nullptr;
+            if (movieTexTraceEnabled6)
+            {
+                static int cc = 0;
+                if (cc++ < 8)
+                    std::cerr << "MOVIECOMP " << mw << 'x' << mh << " drew=" << drew
+                              << " age=" << movieCompositeAge_ << '\n';
+            }
+            return;
+        }
+
         const uint32_t textureFormat = texture1 & 0x3Fu;
         const uint32_t textureEndian = (texture1 >> 6) & 0x3u;
         const bool textureIsValid = (texture0 & 0x3u) == 2u;
         const bool hasDxt1Texture = textureIsValid && textureFormat == 13u;
         const bool hasDxt3Texture = textureIsValid && textureFormat == 19u;
         const bool hasRgba8Texture = textureIsValid && textureFormat == 6u;
-        if (std::getenv("XERENGE_XENOS_TEXTURE_TRACE_ALL") != nullptr)
+        static const bool xenosTextureTraceAllEnabled = std::getenv("XERENGE_XENOS_TEXTURE_TRACE_ALL") != nullptr;
+        if (xenosTextureTraceAllEnabled)
             std::cerr << "Xenos tf0 raw=0x" << std::hex << texture0 << ' ' << texture1
                       << ' ' << texture2 << " ps=0x" << activePixelShaderHash_
                       << std::dec << '\n';
@@ -1768,7 +2197,8 @@ void XenosGpu::rasterizeDraw(uint8_t* guestBase, uint32_t initiator)
         if (primitive != 6u && !hasDxt1Texture && !hasDxt3Texture && !hasRgba8Texture &&
             !havePixelConstant && !solidVertexColor)
         {
-            if (std::getenv("XERENGE_XENOS_DRAW_TRACE") != nullptr)
+            static const bool xenosDrawTraceEnabled2 = std::getenv("XERENGE_XENOS_DRAW_TRACE") != nullptr;
+            if (xenosDrawTraceEnabled2)
                 std::cerr << "Xenos rectangle skipped: unsupported pixel resource\n";
             return;
         }
@@ -1780,8 +2210,10 @@ void XenosGpu::rasterizeDraw(uint8_t* guestBase, uint32_t initiator)
         // with 1x1 UI resources.
         const uint32_t texturePitchPixels = std::max(32u,
             ((texture0 >> 22) & 0x1FFu) << 5);
+        static const bool xenosTextureTraceEnabled2 =
+            std::getenv("XERENGE_XENOS_TEXTURE_TRACE") != nullptr;
         if ((hasDxt1Texture || hasDxt3Texture || hasRgba8Texture) &&
-            std::getenv("XERENGE_XENOS_TEXTURE_TRACE") != nullptr)
+            xenosTextureTraceEnabled2)
             std::cerr << "Xenos texture tf0 base=0x" << std::hex
                       << ((texture1 >> 12) & 0xFFFFFu)
                       << " format=" << (texture1 & 0x3Fu)
@@ -1811,7 +2243,8 @@ void XenosGpu::rasterizeDraw(uint8_t* guestBase, uint32_t initiator)
             std::memcpy(&alphaThreshold, &raw, sizeof(alphaThreshold));
             if (!std::isfinite(alphaThreshold))
                 alphaThreshold = 0.0f;
-            if (std::getenv("XERENGE_XENOS_TEXTURE_TRACE") != nullptr)
+            static const bool xenosTextureTraceEnabled = std::getenv("XERENGE_XENOS_TEXTURE_TRACE") != nullptr;
+            if (xenosTextureTraceEnabled)
                 std::cerr << "Xenos alpha-test threshold=" << alphaThreshold
                           << " shared=0x" << std::hex << sharedBase << std::dec << '\n';
         }
@@ -1879,7 +2312,9 @@ void XenosGpu::rasterizeDraw(uint8_t* guestBase, uint32_t initiator)
             for (uint32_t i = 0; i < blockBytes; ++i)
                 block[i] = guestBase[address + i];
             static uint32_t texturePayloadTraceCount = 0;
-            const bool tracePayload = std::getenv("XERENGE_XENOS_TEXTURE_PAYLOAD_TRACE") != nullptr &&
+            static const bool texturePayloadTraceEnabled =
+                std::getenv("XERENGE_XENOS_TEXTURE_PAYLOAD_TRACE") != nullptr;
+            const bool tracePayload = texturePayloadTraceEnabled &&
                 texturePayloadTraceCount < 24u;
             if (tracePayload)
             {
@@ -2098,8 +2533,9 @@ void XenosGpu::rasterizeDraw(uint8_t* guestBase, uint32_t initiator)
             nativeTextureKey ^= uint64_t(textureHeight);
             if (nativeTextureKey == 0)
                 nativeTextureKey = 1;
-            if (nativeTextureKey != vulkanTextureKey_ &&
-                std::getenv("XERENGE_XENOS_TEXTURE_STATS") != nullptr)
+            static const bool xenosTextureStatsEnabled =
+                std::getenv("XERENGE_XENOS_TEXTURE_STATS") != nullptr;
+            if (nativeTextureKey != vulkanTextureKey_ && xenosTextureStatsEnabled)
             {
                 static std::atomic<uint32_t> textureStatsCount = 0;
                 if (textureStatsCount.fetch_add(1, std::memory_order_relaxed) < 32)
@@ -2129,7 +2565,7 @@ void XenosGpu::rasterizeDraw(uint8_t* guestBase, uint32_t initiator)
                 }
             }
         }
-        const bool forceSoftware = std::getenv("XERENGE_XENOS_FORCE_SOFTWARE") != nullptr;
+        static const bool forceSoftware = std::getenv("XERENGE_XENOS_FORCE_SOFTWARE") != nullptr;
         if (!forceSoftware && drawVulkanGeometry(nativeVertices.data(), nativeOrder.size(),
                 VK_PRIMITIVE_TOPOLOGY_TRIANGLE_LIST,
                 hasNativeTexture && nativeTextureKey != vulkanTextureKey_
@@ -2159,7 +2595,8 @@ void XenosGpu::rasterizeDraw(uint8_t* guestBase, uint32_t initiator)
             fillTriangle(v0, v1, v2);
             fillTriangle(v0, v2, v3);
         }
-        if (std::getenv("XERENGE_XENOS_DRAW_TRACE") != nullptr)
+        static const bool xenosDrawTraceEnabled3 = std::getenv("XERENGE_XENOS_DRAW_TRACE") != nullptr;
+        if (xenosDrawTraceEnabled3)
             std::cerr << "Xenos triangle rasterized v0=" << triangle[0].position[0] << ','
                       << triangle[0].position[1] << " v1=" << triangle[1].position[0] << ','
                       << triangle[1].position[1] << " v2=" << triangle[2].position[0] << ','
@@ -2193,6 +2630,20 @@ void XenosGpu::resolveToGuest(uint8_t* guestBase)
                     (softwareEdram[i] | softwareEdram[i + 1] | softwareEdram[i + 2]) != 0)
                     std::copy_n(softwareEdram.data() + i, 4, edram_.data() + i);
     }
+    // Paint the most recent composited XMV video quad over the readback so the
+    // frame survives whatever the frontend drew in that region this pass. The
+    // compositor quad is forced to full-screen NDC (see rasterizeDraw Stage 2),
+    // so the retained overlay is a complete frame, not a sparse patch - copy it
+    // unconditionally.  Copying only "non-black" pixels used to leave whatever
+    // the previous (pre-video) screen - e.g. the loading screen's spinner dots
+    // and trademark text - showing through wherever the video itself is
+    // legitimately black (very common: logo backgrounds, letterboxing).
+    if (!movieCompositeEdram_.empty() && movieCompositeEdram_.size() == edram_.size() &&
+        movieCompositeAge_ < 20)
+    {
+        std::copy(movieCompositeEdram_.begin(), movieCompositeEdram_.end(), edram_.begin());
+        ++movieCompositeAge_;
+    }
     const uint32_t physicalDestination = gpuRegisters_[0x2319];
     if (physicalDestination == 0)
         return;
@@ -2216,7 +2667,8 @@ void XenosGpu::resolveToGuest(uint8_t* guestBase)
     const size_t copyCount = std::min(byteCount, edram_.size());
     std::memcpy(guestBase + destination, edram_.data(), copyCount);
     ++resolveCount_;
-    if (std::getenv("XERENGE_XENOS_RESOLVE_TRACE") != nullptr)
+    static const bool xenosResolveTraceEnabled = std::getenv("XERENGE_XENOS_RESOLVE_TRACE") != nullptr;
+    if (xenosResolveTraceEnabled)
     {
         size_t nonzeroPixels = 0;
         size_t nonzeroAlphaPixels = 0;
@@ -2460,7 +2912,8 @@ void XenosGpu::processBuffer(uint8_t* guestBase, uint32_t guestAddress,
                     guestBase, guestAddress + (offset + 2) * 4) & 0xFFFFu;
                 if (codeDwords != 0 && codeDwords <= length - 3)
                 {
-                    if (std::getenv("XERENGE_XENOS_SHADER_DUMP") != nullptr)
+                    static const bool xenosShaderDumpEnabled2 = std::getenv("XERENGE_XENOS_SHADER_DUMP") != nullptr;
+                    if (xenosShaderDumpEnabled2)
                     {
                         std::cerr << "Xenos shader code stage=" << shaderType
                                   << " dwords=" << codeDwords << ':';
@@ -2510,7 +2963,8 @@ void XenosGpu::processBuffer(uint8_t* guestBase, uint32_t guestAddress,
                     const auto* match = cache.findMicrocode(hash);
                     const bool moduleReady =
                         match != nullptr && ensureShaderModule(match->shaderHash);
-                    if (std::getenv("XERENGE_XENOS_SHADER_TRACE") != nullptr)
+                    static const bool xenosShaderTraceEnabled5 = std::getenv("XERENGE_XENOS_SHADER_TRACE") != nullptr;
+                    if (xenosShaderTraceEnabled5)
                     {
                         std::cerr << "Xenos shader cache "
                                   << (match != nullptr ? "hit" : "miss")
@@ -2559,13 +3013,15 @@ void XenosGpu::processBuffer(uint8_t* guestBase, uint32_t guestAddress,
                     guestBase, guestAddress + (offset + 3) * 4);
                 writeEventToGuest(guestBase, initiator, address, value, frameCount_);
                 interruptPending_ = true;
-                if (std::getenv("XERENGE_XENOS_EVENT_TRACE") != nullptr)
+                static const bool xenosEventTraceEnabled = std::getenv("XERENGE_XENOS_EVENT_TRACE") != nullptr;
+                if (xenosEventTraceEnabled)
                     std::cerr << "Xenos event opcode=0x" << std::hex << opcode
                               << " initiator=0x" << initiator
                               << " address=0x" << address
                               << " value=0x" << value << std::dec << '\n';
             }
-            if (std::getenv("XERENGE_XENOS_PACKET_TRACE") != nullptr)
+            static const bool xenosPacketTraceEnabled = std::getenv("XERENGE_XENOS_PACKET_TRACE") != nullptr;
+            if (xenosPacketTraceEnabled)
             {
                 static std::atomic<uint32_t> traceCount = 0;
                 if (std::getenv("XERENGE_XENOS_PACKET_TRACE_ALL") != nullptr ||
@@ -2623,7 +3079,8 @@ void XenosGpu::processBuffer(uint8_t* guestBase, uint32_t guestAddress,
             if (opcode == 0x22u || opcode == 0x36u)
             {
                 ++drawPacketCount_;
-                if (std::getenv("XERENGE_XENOS_DRAW_TRACE") != nullptr)
+                static const bool xenosDrawTraceEnabled4 = std::getenv("XERENGE_XENOS_DRAW_TRACE") != nullptr;
+                if (xenosDrawTraceEnabled4)
                 {
                     const uint32_t initiator = gpuRegisters_[0x21FC];
                     std::cerr << "Xenos draw state surface=0x" << std::hex
@@ -2650,7 +3107,8 @@ void XenosGpu::processBuffer(uint8_t* guestBase, uint32_t guestAddress,
                               << " copyInfo=0x" << gpuRegisters_[0x231B]
                               << " clear=0x" << gpuRegisters_[0x231E]
                               << std::dec << '\n';
-                    if (std::getenv("XERENGE_XENOS_FETCH_TRACE") != nullptr)
+                    static const bool xenosFetchTraceEnabled = std::getenv("XERENGE_XENOS_FETCH_TRACE") != nullptr;
+                    if (xenosFetchTraceEnabled)
                     {
                         const uint32_t fetchDwords =
                             std::getenv("XERENGE_XENOS_FETCH_FULL") != nullptr ? 96u : 6u;
@@ -2658,7 +3116,8 @@ void XenosGpu::processBuffer(uint8_t* guestBase, uint32_t guestAddress,
                         for (uint32_t i = 0; i < fetchDwords; ++i)
                             std::cerr << " " << gpuRegisters_[0x4800 + i];
                         std::cerr << std::dec << '\n';
-                        if (std::getenv("XERENGE_XENOS_CONSTANT_TRACE") != nullptr)
+                        static const bool xenosConstantTraceEnabled2 = std::getenv("XERENGE_XENOS_CONSTANT_TRACE") != nullptr;
+                        if (xenosConstantTraceEnabled2)
                         {
                             std::cerr << "Xenos vs constants:" << std::hex;
                             for (uint32_t i = 0; i < 24; ++i)
@@ -2735,7 +3194,9 @@ void XenosGpu::write(uint8_t* guestBase, uint32_t address, uint64_t value, uint3
     else if (index == kCpRbWptr)
     {
         writePointer_ = registerValue;
-        if (std::getenv("XERENGE_PPC_MMIO_TRACE") != nullptr && writePointer_ <= 0x80)
+        static const bool ppcMmioTraceEnabled = std::getenv("XERENGE_PPC_MMIO_TRACE") != nullptr;
+        if (ppcMmioTraceEnabled &&
+            writePointer_ <= 0x80)
         {
             std::cerr << "Xenos ring base=0x" << std::hex << ringBase_
                       << " wptr=0x" << writePointer_ << ":";
@@ -2751,7 +3212,9 @@ void XenosGpu::processRing(uint8_t* guestBase)
 {
     if (ringBase_ == 0 || ringSizeDwords_ == 0)
     {
-        if (std::getenv("XERENGE_PPC_MMIO_TRACE") != nullptr && mmioWriteCount_ <= 4)
+        static const bool ppcMmioTraceEnabled2 = std::getenv("XERENGE_PPC_MMIO_TRACE") != nullptr;
+        if (ppcMmioTraceEnabled2 &&
+            mmioWriteCount_ <= 4)
             std::cerr << "Xenos CP_RB_WPTR=" << writePointer_
                       << " without configured ring buffer\n";
         return;
@@ -2907,7 +3370,8 @@ void XenosGpu::processRing(uint8_t* guestBase)
                 const uint32_t value = ringLoad(readPointer_ + 3);
                 writeEventToGuest(guestBase, initiator, address, value, frameCount_);
                 interruptPending_ = true;
-                if (std::getenv("XERENGE_XENOS_EVENT_TRACE") != nullptr)
+                static const bool xenosEventTraceEnabled2 = std::getenv("XERENGE_XENOS_EVENT_TRACE") != nullptr;
+                if (xenosEventTraceEnabled2)
                     std::cerr << "Xenos event opcode=0x" << std::hex << opcode
                               << " initiator=0x" << initiator
                               << " address=0x" << address
@@ -2940,7 +3404,8 @@ void XenosGpu::processRing(uint8_t* guestBase)
             if (opcode == 0x22u || opcode == 0x36u)
             {
                 ++drawPacketCount_;
-                if (std::getenv("XERENGE_XENOS_DRAW_TRACE") != nullptr)
+                static const bool xenosDrawTraceEnabled5 = std::getenv("XERENGE_XENOS_DRAW_TRACE") != nullptr;
+                if (xenosDrawTraceEnabled5)
                 {
                     const uint32_t initiator = gpuRegisters_[0x21FC];
                     std::cerr << "Xenos draw state surface=0x" << std::hex
@@ -2967,7 +3432,8 @@ void XenosGpu::processRing(uint8_t* guestBase)
                               << " copyInfo=0x" << gpuRegisters_[0x231B]
                               << " clear=0x" << gpuRegisters_[0x231E]
                               << std::dec << '\n';
-                    if (std::getenv("XERENGE_XENOS_FETCH_TRACE") != nullptr)
+                    static const bool xenosFetchTraceEnabled2 = std::getenv("XERENGE_XENOS_FETCH_TRACE") != nullptr;
+                    if (xenosFetchTraceEnabled2)
                     {
                         std::cerr << "Xenos fetch0=" << std::hex;
                         for (uint32_t i = 0; i < 6; ++i)
@@ -2976,7 +3442,8 @@ void XenosGpu::processRing(uint8_t* guestBase)
                         for (uint32_t i = 0; i < 6; ++i)
                             std::cerr << " " << gpuRegisters_[0x4806 + i];
                         std::cerr << std::dec << '\n';
-                        if (std::getenv("XERENGE_XENOS_CONSTANT_TRACE") != nullptr)
+                        static const bool xenosConstantTraceEnabled3 = std::getenv("XERENGE_XENOS_CONSTANT_TRACE") != nullptr;
+                        if (xenosConstantTraceEnabled3)
                         {
                             std::cerr << "Xenos vs constants:" << std::hex;
                             for (uint32_t i = 0; i < 24; ++i)

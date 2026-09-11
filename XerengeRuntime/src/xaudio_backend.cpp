@@ -1,4 +1,15 @@
 #include "xaudio_backend.h"
+#include <atomic>
+#include <chrono>
+#include <cmath>
+#include <cstdlib>
+
+// Wall-clock (steady) milliseconds of the last movie/game audio frame that
+// carried a non-trivial signal.  The XMV clip lifecycle in main.cpp uses this
+// to hold off "video complete" until the movie's audio has actually drained,
+// so the frontend does not tear the movie player (and its audio threads) down
+// mid-jingle.
+std::atomic<uint64_t> gXAudioLastNonSilentMs{0};
 
 #include <alsa/asoundlib.h>
 #include <array>
@@ -167,6 +178,21 @@ void XAudioBackend::submitGuestFrame(const uint8_t* guestBase, uint32_t guestAdd
         const float backRight = guestFloat(guestBase, guestAddress + (5 * kFrames + frame) * 4);
         stereo[2 * frame] = left + 0.70710678f * (center + backLeft);
         stereo[2 * frame + 1] = right + 0.70710678f * (center + backRight);
+    }
+    float peak = 0.0f;
+    for (float s : stereo)
+        peak = std::max(peak, std::fabs(s));
+    if (peak > 1.0e-3f)
+        gXAudioLastNonSilentMs.store(
+            static_cast<uint64_t>(std::chrono::duration_cast<std::chrono::milliseconds>(
+                std::chrono::steady_clock::now().time_since_epoch()).count()),
+            std::memory_order_relaxed);
+    static const bool audioTraceEnabled = std::getenv("XERENGE_AUDIO_TRACE") != nullptr;
+    if (audioTraceEnabled)
+    {
+        static unsigned long n = 0;
+        if ((n++ % 64) == 0)
+            std::cerr << "XAudio frame peak=" << peak << '\n';
     }
     {
         std::lock_guard lock(state_->mutex);

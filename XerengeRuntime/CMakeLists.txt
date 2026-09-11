@@ -50,6 +50,14 @@ target_include_directories(xerenge-runtime PRIVATE "${CMAKE_CURRENT_SOURCE_DIR}/
 # supplied, build it as a separate library so the runtime can be linked to the
 # recompiled game without checking game code into source control.
 set(XERENGE_PPC_DIRECTORY "" CACHE PATH "Directory containing XenonRecomp PPC output")
+# main.cpp accumulated a large set of weak-override hooks and direct-import
+# thunks whose addresses are specific to the Burnout Revenge Xbox 360 Beta 5
+# image this runtime was originally brought up against. Other XEX images
+# (e.g. the retail release) have entirely different function layouts, so
+# those hooks would reference PPC symbols that simply do not exist in a
+# differently-built image and fail to link. Gate them behind this option so
+# a non-Beta-5 XERENGE_PPC_DIRECTORY can still build.
+option(XERENGE_TARGET_BETA5 "Enable Burnout Revenge Beta 5-specific address hooks" ON)
 set(XERENGE_SHADER_CACHE_CPP "" CACHE FILEPATH "Generated XenosRecomp shader cache source")
 set(XERENGE_SHADER_CACHE_EXTRA_CPP "" CACHE FILEPATH
     "Optional auxiliary XenosRecomp shader cache source prepared with prepare_aux_shader_cache.py")
@@ -93,21 +101,31 @@ if(XERENGE_PPC_DIRECTORY)
         -include "${CMAKE_CURRENT_SOURCE_DIR}/src/ppc_hooks.h")
     add_library(Xerenge::Ppc ALIAS xerenge-ppc)
     target_link_libraries(xerenge-runtime PRIVATE Xerenge::Ppc)
-    # Keep malformed title-side X3DAudio emitters from reaching the generated
-    # distance-curve helper.  The generated PPC wrapper calls the imported
-    # symbol directly, so an ordinary C++ overload is not an interposition
-    # point; use the linker wrap facility instead.
-    target_link_options(xerenge-runtime PRIVATE
-        "LINKER:--wrap=__imp__sub_825857A8")
     target_include_directories(xerenge-runtime PRIVATE
         "${XERENGE_PPC_DIRECTORY}"
         "${CMAKE_CURRENT_SOURCE_DIR}/../XenonRecomp/thirdparty/simde")
     target_compile_definitions(xerenge-runtime PRIVATE XERENGE_HAS_PPC=1)
+    if(XERENGE_TARGET_BETA5)
+        target_compile_definitions(xerenge-runtime PRIVATE XERENGE_TARGET_BETA5=1)
+        # Keep malformed title-side X3DAudio emitters from reaching the
+        # generated distance-curve helper.  The generated PPC wrapper calls
+        # the imported symbol directly, so an ordinary C++ overload is not an
+        # interposition point; use the linker wrap facility instead.  Only
+        # the Beta 5 image has a function at this exact address.
+        target_link_options(xerenge-runtime PRIVATE
+            "LINKER:--wrap=__imp__sub_825857A8")
+    else()
+        target_compile_definitions(xerenge-runtime PRIVATE XERENGE_TARGET_BETA5=0)
+    endif()
     message(STATUS "Building generated PPC module from ${XERENGE_PPC_DIRECTORY}")
 endif()
 
 include(CTest)
 if(BUILD_TESTING)
+    add_executable(guest-heap-bounds-tests tests/guest_heap_bounds.cpp)
+    target_compile_features(guest-heap-bounds-tests PRIVATE cxx_std_17)
+    target_include_directories(guest-heap-bounds-tests PRIVATE src)
+    add_test(NAME guest_heap_bounds COMMAND guest-heap-bounds-tests)
     add_test(
         NAME validate_minimal_xex
         COMMAND ${CMAKE_COMMAND}

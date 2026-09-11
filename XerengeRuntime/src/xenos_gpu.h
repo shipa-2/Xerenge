@@ -104,6 +104,31 @@ private:
     uint64_t swapPacketCount_ = 0;
     uint64_t frameCount_ = 0;
     uint64_t resolveCount_ = 0;
+    // Last decoded XMV video frame (RGBA8, top-left origin) plus the guest
+    // address of the surface the movie player renders it into.  The generic
+    // texture path cannot express the movie's 3-plane YUV source or its
+    // dimensionless compositor fetch, so the video quad and the Flash
+    // compositor quad that samples it are both rasterised by hand from here.
+    std::vector<uint8_t> movieFrameRgba_;
+    uint32_t movieFrameWidth_ = 0;
+    uint32_t movieFrameHeight_ = 0;
+    uint32_t movieSurfaceGuest_ = 0;
+    // Full-screen (1280x720 RGBA8) overlay holding the last composited movie
+    // quad.  resolveToGuest paints its lit pixels over the Vulkan readback so
+    // the video survives regardless of resolve/draw ordering; it ages out a
+    // few frames after the compositor stops running.
+    std::vector<uint8_t> movieCompositeEdram_;
+    int movieCompositeAge_ = 1000;
+    // Reused scratch buffer for the compositor raster (avoids a ~3.7MB
+    // alloc+zero on every one of the ~15-20 compositor draws per frame) plus
+    // dedupe keys so an unchanged decoded frame / quad is not redone.
+    std::vector<uint8_t> movieCompositeScratch_;
+    uint64_t movieDecodedSample_ = 0xFFFFFFFFFFFFFFFFull;
+    uint64_t movieDecodeGeneration_ = 0;
+    std::array<float, 4> movieCompositedQuad_{1e30f, 1e30f, 1e30f, 1e30f};
+    uint64_t movieCompositedGeneration_ = 0xFFFFFFFFFFFFFFFFull;
+    bool movieCompositeValid_ = false;
+    int movieIncoherentStreak_ = 0;
     uint32_t lastFrameWidth_ = 0;
     uint32_t lastFrameHeight_ = 0;
     bool hasVisibleFrame_ = false;

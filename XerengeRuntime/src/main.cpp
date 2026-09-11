@@ -1,3 +1,4 @@
+#include "guest_heap_bounds.h"
 #include <GLFW/glfw3.h>
 #include <GL/gl.h>
 #include <openssl/evp.h>
@@ -64,13 +65,16 @@ void initializeGuestPpcThread(PPCContext& context, uint8_t* base, uint32_t slot)
     store(pcr + 0x100u, teb);
     store(teb + 0x14Cu, slot);
     context.r13.u32 = pcr;
+    // Preserve the host exception masks when guest SIMD changes rounding or
+    // denormal handling. A zero CSR would unmask host floating-point traps.
+    context.fpscr.loadFromHost();
 }
 }
 #endif
 
 XboxMedia gXboxMedia;
 
-#ifdef XERENGE_HAS_PPC
+#if defined(XERENGE_HAS_PPC) && XERENGE_TARGET_BETA5
 // The generated title body for VdRetrainEDRAM is an empty weak function, but
 // the graphics bootstrap uses its return value as a completion status. The
 // Xenon API returns zero on success; preserving the input r3 leaves the
@@ -405,6 +409,28 @@ extern "C" void PPCTraceFunction(uint32_t address, PPCContext& ctx, uint8_t* bas
         std::getenv("XERENGE_FRONTEND_PREPARE_TRACE") != nullptr;
     static const bool inputObjectTraceEnabled =
         std::getenv("XERENGE_INPUT_OBJECT_TRACE") != nullptr;
+    // This function is PPCTraceFunction: XenonRecomp emits a call to it at
+    // the top of every one of the ~15000 recompiled functions in the title,
+    // so it runs on essentially every guest subroutine call in the process -
+    // by far the hottest path in the whole runtime.  The debug switches below
+    // used to call std::getenv() as the first (unshortcircuited) operand of
+    // their guard, which re-scans the environment on every single one of
+    // those calls even though none of these env vars are normally set; cache
+    // each like the ones above instead.
+    static const bool stateActionTraceEnabled =
+        std::getenv("XERENGE_STATE_ACTION_TRACE") != nullptr;
+    static const bool eaLogoStateTraceEnabled =
+        std::getenv("XERENGE_EALOGO_STATE_TRACE") != nullptr;
+    static const bool videoTraceEnabled = std::getenv("XERENGE_VIDEO_TRACE") != nullptr;
+    static const bool resourceTraceEnabled =
+        std::getenv("XERENGE_RESOURCE_TRACE") != nullptr;
+    static const bool flashTraceEnabled = std::getenv("XERENGE_FLASH_TRACE") != nullptr;
+    static const bool aptTickTraceEnabled =
+        std::getenv("XERENGE_APT_TICK_TRACE") != nullptr;
+    static const bool aptCoreTraceEnabled =
+        std::getenv("XERENGE_APT_CORE_TRACE") != nullptr;
+    static const bool ringPathTraceEnabled =
+        std::getenv("XERENGE_RING_PATH_TRACE") != nullptr;
     if (inputObjectTraceEnabled &&
         (address == 0x82564210u || address == 0x8256424Cu))
     {
@@ -486,8 +512,7 @@ extern "C" void PPCTraceFunction(uint32_t address, PPCContext& ctx, uint8_t* bas
             std::cerr << std::dec << '\n';
         }
     }
-    if (std::getenv("XERENGE_STATE_ACTION_TRACE") != nullptr &&
-        address == 0x82207720u)
+    if (stateActionTraceEnabled && address == 0x82207720u)
     {
         static std::atomic<uint32_t> stateActionTraceCount{0};
         if (stateActionTraceCount.fetch_add(1, std::memory_order_relaxed) < 96)
@@ -506,7 +531,7 @@ extern "C" void PPCTraceFunction(uint32_t address, PPCContext& ctx, uint8_t* bas
                       << std::dec << '\n';
         }
     }
-    if (std::getenv("XERENGE_EALOGO_STATE_TRACE") != nullptr &&
+    if (eaLogoStateTraceEnabled &&
         (address == 0x8259D190u || address == 0x8259D180u || address == 0x8259C290u || address == 0x821FD048u) &&
         static_cast<uint32_t>(ctx.lr) >= 0x821FF530u &&
         static_cast<uint32_t>(ctx.lr) <= 0x821FF644u)
@@ -532,7 +557,7 @@ extern "C" void PPCTraceFunction(uint32_t address, PPCContext& ctx, uint8_t* bas
             std::cerr << std::dec << '\n';
         }
     }
-    if (std::getenv("XERENGE_EALOGO_STATE_TRACE") != nullptr &&
+    if (eaLogoStateTraceEnabled &&
         (address == 0x821F6610u || address == 0x821F6668u ||
          address == 0x821F69F0u || address == 0x821F6FA0u ||
          address == 0x821FF458u || address == 0x822030F8u ||
@@ -596,7 +621,7 @@ extern "C" void PPCTraceFunction(uint32_t address, PPCContext& ctx, uint8_t* bas
                       << static_cast<uint32_t>(ctx.lr) << std::dec << '\n';
         }
     }
-    if (std::getenv("XERENGE_VIDEO_TRACE") != nullptr &&
+    if (videoTraceEnabled &&
         (address == 0x821FE8C8u || address == 0x821F8F58u ||
          address == 0x821F90D8u || address == 0x821F9180u ||
          address == 0x821017D8u || address == 0x821FEAC0u ||
@@ -617,12 +642,28 @@ extern "C" void PPCTraceFunction(uint32_t address, PPCContext& ctx, uint8_t* bas
             std::cerr << "Video function=0x" << std::hex << address
                       << " object=0x" << object;
             if (object >= 0x60000000u && object < 0x90000000u)
-                std::cerr << " state=" << std::dec << guestWord(object + 152u)
-                          << " phase=" << guestWord(object + 148u)
-                          << " flags=0x" << std::hex << guestWord(object + 144u)
-                          << " decoder=0x" << guestWord(object + 4u)
-                          << " completed=" << std::dec << unsigned(base[object + 85u])
-                          << " timeBits=0x" << std::hex << guestWord(object + 160u);
+            {
+                if (address == 0x8235ACD0u || address == 0x82356ED0u ||
+                    address == 0x82357130u || address == 0x823571C0u ||
+                    address == 0x823571F0u)
+                    std::cerr << " decoderState=" << std::dec << guestWord(object + 48u)
+                              << " done=" << unsigned(base[object + 81u])
+                              << " image=" << static_cast<int8_t>(base[object + 85u])
+                              << " source=0x" << std::hex << guestWord(object + 96u);
+                else if (address == 0x82481C90u || address == 0x82481A00u)
+                    std::cerr << " inFlight=" << std::dec << guestWord(object + 368u)
+                              << " vtable=0x" << std::hex << guestWord(object);
+                else if (address == 0x8247F7B8u || address == 0x8247F920u ||
+                         address == 0x8247F990u)
+                    std::cerr << " vtable=0x" << std::hex << guestWord(object)
+                              << " r4=0x" << ctx.r4.u32 << " r5=0x" << ctx.r5.u32;
+                else
+                    std::cerr << " state=" << std::dec << guestWord(object + 152u)
+                              << " phase=" << guestWord(object + 148u)
+                              << " flags=0x" << std::hex << guestWord(object + 144u)
+                              << " decoder=0x" << guestWord(object + 4u)
+                              << " timeBits=0x" << guestWord(object + 160u);
+            }
             std::cerr << " caller=0x" << std::hex << static_cast<uint32_t>(ctx.lr)
                       << std::dec << '\n';
         }
@@ -668,7 +709,7 @@ extern "C" void PPCTraceFunction(uint32_t address, PPCContext& ctx, uint8_t* bas
                       << std::dec << '\n';
         }
     }
-    if (std::getenv("XERENGE_RESOURCE_TRACE") != nullptr &&
+    if (resourceTraceEnabled &&
         (address == 0x822D45B8u || address == 0x82356C68u))
     {
         static std::atomic<uint32_t> resourceSamples{0};
@@ -804,7 +845,7 @@ extern "C" void PPCTraceFunction(uint32_t address, PPCContext& ctx, uint8_t* bas
                       << std::dec << '\n';
         }
     }
-    if (std::getenv("XERENGE_FLASH_TRACE") != nullptr &&
+    if (flashTraceEnabled &&
         (address == 0x821F6668u || address == 0x821F6718u ||
          address == 0x821FD610u || address == 0x821FD6C0u ||
          address == 0x821FD710u || address == 0x82200540u ||
@@ -885,7 +926,7 @@ extern "C" void PPCTraceFunction(uint32_t address, PPCContext& ctx, uint8_t* bas
             std::cerr << '\n';
         }
     }
-    if (std::getenv("XERENGE_APT_TICK_TRACE") != nullptr &&
+    if (aptTickTraceEnabled &&
         (address == 0x82476938u || address == 0x8247BCD0u ||
          address == 0x8247E498u || address == 0x8247E2E8u ||
          address == 0x8247E0C8u || address == 0x8247E5A8u ||
@@ -899,7 +940,7 @@ extern "C" void PPCTraceFunction(uint32_t address, PPCContext& ctx, uint8_t* bas
                       << " r3=0x" << ctx.r3.u32 << " r4=0x" << ctx.r4.u32
                       << " r5=0x" << ctx.r5.u32 << std::dec << '\n';
     }
-    if (std::getenv("XERENGE_APT_CORE_TRACE") != nullptr &&
+    if (aptCoreTraceEnabled &&
         (address == 0x82428048u || address == 0x82427F08u ||
          address == 0x82426B48u))
     {
@@ -1087,7 +1128,7 @@ extern "C" void PPCTraceFunction(uint32_t address, PPCContext& ctx, uint8_t* bas
         gPpcCurrentFunction = address;
         gPpcCurrentCaller = static_cast<uint32_t>(ctx.lr);
     }
-    if (std::getenv("XERENGE_RING_PATH_TRACE") != nullptr &&
+    if (ringPathTraceEnabled &&
         (address == 0x82380E70u || address == 0x82380F20u || address == 0x82380FE8u))
     {
         static std::atomic<uint32_t> ringTraceCount{0};
@@ -1449,8 +1490,7 @@ extern "C" void PPCTraceFunction(uint32_t address, PPCContext& ctx, uint8_t* bas
     {
         // This is a CPU copy into the ring, not a GPU submission. Executing
         // here reorders draws against ring commands (including clears).
-        if (std::getenv("XERENGE_PPC_TRACE") != nullptr ||
-            std::getenv("XERENGE_RESOURCE_TRACE") != nullptr)
+        if (ppcTraceEnabled || resourceTraceEnabled)
         {
             static std::atomic<uint32_t> commandTraceCount = 0;
             if (commandTraceCount.fetch_add(1, std::memory_order_relaxed) < 8)
@@ -1658,6 +1698,27 @@ public:
         audioThreadStop_.store(true, std::memory_order_release);
         if (audioThread_.joinable())
             audioThread_.join();
+    }
+
+    // Adopt the reset mode of an event that was initialised inline by the
+    // guest (no NtCreateEvent / KeInitializeEvent import to observe).  The
+    // Xenon DISPATCHER_HEADER Type byte is 0 for a NotificationEvent
+    // (manual-reset) and 1 for a SynchronizationEvent (auto-reset).  Without
+    // this, inline manual-reset events (e.g. the XMV movie player's per-thread
+    // exit notifications at guest 0x7215bbe4..) are treated as auto-reset, so a
+    // final KeSetEvent before a producer thread exits is consumed by the first
+    // waiter and the movie player's shutdown join deadlocks.
+    void adoptInlineEventResetMode(uint32_t object, const uint8_t* base)
+    {
+        if (object < 0x10000000u || object >= 0x90000000u)
+            return;
+        if (manualResetEvents_.find(object) != manualResetEvents_.end())
+            return;
+        const uint8_t type = base[object];
+        if (type == 0)
+            manualResetEvents_[object] = true;
+        else if (type == 1)
+            manualResetEvents_[object] = false;
     }
 
     void invoke(std::string_view service, PPCContext& ctx, uint8_t* base)
@@ -1916,6 +1977,7 @@ public:
             // share the dispatcher implementation but not their ABI.
             const uint32_t timeoutPointer = service == "NtWaitForSingleObjectEx"
                 ? ctx.r5.u32 : ctx.r7.u32;
+            adoptInlineEventResetMode(object, base);
             const auto ready = [&]
             {
                 if (object == gGraphicsWaitEvent.load(std::memory_order_acquire))
@@ -1926,6 +1988,16 @@ public:
                 const auto semaphore = semaphores_.find(object);
                 return semaphore != semaphores_.end() && semaphore->second > 0;
             };
+            if (!ready() && timeoutPointer == 0 &&
+                std::getenv("XERENGE_WAIT_TRACE") != nullptr)
+            {
+                static std::atomic<uint32_t> wc{0};
+                if (wc.fetch_add(1, std::memory_order_relaxed) < 200)
+                    std::cerr << "IWAIT obj=0x" << std::hex << object
+                              << " caller=0x" << static_cast<uint32_t>(ctx.lr)
+                              << " thr=" << std::dec << std::this_thread::get_id()
+                              << " ev=" << (events_.count(object) ? 1 : 0) << '\n';
+            }
             if (!ready())
             {
                 if (timeoutPointer == 0)
@@ -2001,6 +2073,7 @@ public:
             service == "NtSetEvent")
         {
             const bool set = service != "KeResetEvent";
+            adoptInlineEventResetMode(ctx.r3.u32, base);
             if (ctx.r3.u32 == gGraphicsWaitEvent.load(std::memory_order_acquire))
                 gGraphicsWaitEventSignaled.store(set, std::memory_order_release);
             const bool previous = events_[ctx.r3.u32];
@@ -2214,9 +2287,12 @@ public:
             // the preserved r8/r9 pair; r7 is its IO request structure.
             const bool ok = gXboxMedia.readFile(ctx.r3.u32, base + ctx.r8.u32,
                 ctx.r9.u32, bytesRead);
+            const uint32_t status = ok
+                ? (bytesRead == 0 && ctx.r9.u32 != 0 ? 0xC0000011u : 0u)
+                : 0xC0000008u;
             if (ctx.r7.u32 != 0)
             {
-                storeU32(base, ctx.r7.u32 + 0, ok ? 0u : 0xC0000008u);
+                storeU32(base, ctx.r7.u32 + 0, status);
                 storeU32(base, ctx.r7.u32 + 4, bytesRead);
             }
             // NtReadFile signals the optional event after completing the
@@ -2234,9 +2310,7 @@ public:
             // title's stream wrapper uses this distinction to leave its
             // loading state; returning STATUS_SUCCESS with zero bytes makes
             // it restart the same scene forever.
-            ctx.r3.u32 = ok
-                ? (bytesRead == 0 && ctx.r9.u32 != 0 ? 0xC0000011u : 0u)
-                : 0xC0000008u;
+            ctx.r3.u32 = status;
             return;
         }
         if (service == "NtQueryInformationFile")
@@ -2329,7 +2403,18 @@ public:
         }
         if (service == "RtlNtStatusToDosError")
         {
-            ctx.r3.u32 = ctx.r3.u32 == 0 ? 0u : 1u;
+            // Preserve the distinction between normal end-of-stream and failure.
+            // The XMV prefetcher handles ERROR_HANDLE_EOF specifically.
+            switch (ctx.r3.u32) {
+            case 0: break;
+            case 0x00000103u: ctx.r3.u32 = 997; break; // IO_PENDING
+            case 0xC0000011u: ctx.r3.u32 = 38; break; // HANDLE_EOF
+            case 0xC0000008u: ctx.r3.u32 = 6; break; // INVALID_HANDLE
+            case 0xC000000Du: ctx.r3.u32 = 87; break; // INVALID_PARAMETER
+            case 0xC0000022u: ctx.r3.u32 = 5; break; // ACCESS_DENIED
+            case 0xC0000034u: ctx.r3.u32 = 2; break; // FILE_NOT_FOUND
+            default: ctx.r3.u32 = 317; break; // MR_MID_NOT_FOUND
+            }
             return;
         }
         if (service == "XexCheckExecutablePrivilege")
@@ -2409,6 +2494,14 @@ public:
         }
         if (service == "VdSwap")
         {
+            if (std::getenv("XERENGE_SWAP_TRACE") != nullptr)
+            {
+                static std::atomic<uint32_t> sc{0};
+                const uint32_t n = sc.fetch_add(1, std::memory_order_relaxed);
+                if (n < 20 || n % 60u == 0)
+                    std::cerr << "VdSwap #" << n << " front=0x" << std::hex << ctx.r8.u32
+                              << " thr=" << std::dec << std::this_thread::get_id() << '\n';
+            }
             const uint32_t buffer = ctx.r3.u32;
             const uint32_t fetch = ctx.r4.u32;
             const uint32_t frontbuffer = ctx.r8.u32 != 0 ? loadU32(base, ctx.r8.u32) : 0;
@@ -2710,15 +2803,68 @@ public:
             ctx.r3.u32 = 0;
             return;
         }
-        if (service == "XAudioEffectManagerQueryEffectSize" ||
-            service == "XAudioRoutedVoiceInitialize")
+        if (service == "XAudioEffectManagerQueryEffectSize")
         {
-            // Burnout creates no custom XAudio effects on the boot path. The
-            // retail effect manager and routed voice normally call back into
-            // their kernel-owned vtables; the host audio path has no need for
-            // those optional objects, so report an empty effect chain and a
-            // successfully initialized routed voice.
-            ctx.r3.u32 = 0;
+            // This is an interface thunk, not a kernel service. The embedded
+            // interface is eight bytes into the guest effect manager.
+            ctx.r3.u32 = ctx.r3.u32 != 0 ? ctx.r3.u32 - 8u : 0u;
+            if (ctx.r3.u32 == 0) {
+                ctx.r3.u32 = 0x80070057u;
+                return;
+            }
+            const uint32_t vtable = loadU32(base, ctx.r3.u32);
+            const uint32_t method = loadU32(base, vtable + 20u);
+            lock.unlock();
+            PPCDispatchIndirect(ctx, base, method);
+            return;
+        }
+        if (service == "XAudioRoutedVoiceInitialize")
+        {
+            // Restore the guest routed-voice initialization contract: create
+            // its routing entries and effects before attaching the output.
+            const uint32_t voice = ctx.r3.u32;
+            const uint32_t init = ctx.r4.u32;
+            struct RestoreCallFrame {
+                PPCContext& ctx;
+                uint64_t stack, link;
+                ~RestoreCallFrame() { ctx.r1.u64 = stack; ctx.lr = link; }
+            } frame{ctx, ctx.r1.u64, ctx.lr};
+            ctx.r1.u32 -= 144;
+            storeU32(base, ctx.r1.u32, static_cast<uint32_t>(frame.stack));
+            base[voice + 68] = base[init + 24];
+            lock.unlock();
+            ctx.lr = 0x8256ED58u;
+            PPCDispatchIndirect(ctx, base, 0x825702C8u);
+            if (ctx.r3.s32 < 0) return;
+            const uint32_t count = base[voice + 68];
+            if (count != 0) {
+                ctx.r3.u32 = loadU32(base, voice + 8);
+                ctx.r4.u32 = count * 12u;
+                const uint32_t allocator = loadU32(base, ctx.r3.u32);
+                ctx.lr = 0x8256ED90u;
+                PPCDispatchIndirect(ctx, base, loadU32(base, allocator + 20));
+                storeU32(base, voice + 72, ctx.r3.u32);
+                if (ctx.r3.u32 == 0) { ctx.r3.u32 = 0x8007000Eu; return; }
+                const uint32_t effectInit = ctx.r1.u32 + 80;
+                std::memset(base + effectInit, 0, 16);
+                base[effectInit] = 1;
+                storeU32(base, effectInit + 4, voice);
+                base[effectInit + 8] = base[init + 25];
+                for (uint32_t i = 0; i < count; ++i) {
+                    ctx.r3.u32 = voice;
+                    ctx.r4.u32 = loadU32(base, voice + 72) + i * 12u + 4;
+                    ctx.r5.u32 = effectInit;
+                    ctx.r6.u32 = 255;
+                    ctx.lr = 0x8256EE00u;
+                    PPCDispatchIndirect(ctx, base, 0x8256F6F0u);
+                    if (ctx.r3.s32 < 0) return;
+                }
+            }
+            ctx.r3.u32 = voice;
+            ctx.r4.u32 = loadU32(base, init + 28);
+            const uint32_t vtable = loadU32(base, voice);
+            ctx.lr = 0x8256EE34u;
+            PPCDispatchIndirect(ctx, base, loadU32(base, vtable + 36));
             return;
         }
         if (service == "XenonDvdFileSync")
@@ -3325,6 +3471,8 @@ public:
             waitHandles.reserve(count);
             for (uint32_t i = 0; i < count; ++i)
                 waitHandles.push_back(loadU32(base, handles + i * 4));
+            for (const uint32_t handle : waitHandles)
+                adoptInlineEventResetMode(handle, base);
             const auto ready = [&]
             {
                 uint32_t readyCount = 0;
@@ -3681,13 +3829,15 @@ private:
         audioCallback_ = function;
         audioCallbackParameter_ = parameter;
         audioThreadStop_.store(false, std::memory_order_release);
-        audioThread_ = std::thread([this]
+        const uint32_t audioThreadId = nextThreadId_.fetch_add(1, std::memory_order_relaxed);
+        audioThread_ = std::thread([this, audioThreadId]
         {
+            PPCContext context{};
+            context.r1.u32 = 0x81FC0000u - ((audioThreadId & 0xFFu) * 0x10000u);
+            initializeGuestPpcThread(context, audioCallbackBase_, audioThreadId);
             constexpr auto interval = std::chrono::microseconds(5333);
             while (!audioThreadStop_.load(std::memory_order_acquire))
             {
-                PPCContext context{};
-                context.r1.u32 = 0x81FD0000u;
                 context.r3.u32 = audioCallbackParameter_;
                 PPCDispatchIndirect(context, audioCallbackBase_, audioCallback_);
                 std::this_thread::sleep_for(interval);
@@ -3761,15 +3911,36 @@ private:
                 if (std::getenv("XERENGE_PPC_TRACE") != nullptr)
                     std::cerr << "guest thread exited at ExTerminateThread\n";
             }
+            catch (...)
+            {
+                if (std::getenv("XERENGE_PPC_TRACE") != nullptr)
+                    std::cerr << "guest thread terminated by exception\n";
+            }
+            // Signal the thread object so guest joins (NtWaitForSingleObjectEx
+            // on the ExCreateThread handle) complete.  NT thread objects latch
+            // signalled on exit and stay that way, so treat the handle as a
+            // manual-reset event.  Without this the XMV movie player's shutdown
+            // JoinAll blocks forever waiting on its worker threads.
+            if (threadHandle != 0)
+            {
+                std::lock_guard lock(stateMutex_);
+                events_[threadHandle] = true;
+                manualResetEvents_[threadHandle] = true;
+                eventCondition_.notify_all();
+                threadCondition_.notify_all();
+            }
+            if (std::getenv("XERENGE_THREAD_TRACE") != nullptr)
+                std::cerr << "thread finished handle=0x" << std::hex << threadHandle
+                          << std::dec << '\n';
         }).detach();
     }
 
     uint32_t allocate(uint32_t size, uint8_t* base, bool clear = true)
     {
-        constexpr uint32_t alignment = 16;
-        const uint32_t alignedSize = (size + alignment - 1) & ~(alignment - 1);
-        if (heapCursor_ > heapLimit_ - alignedSize)
+        const auto checkedSize = guestHeapAllocationSize(heapCursor_, heapLimit_, size);
+        if (!checkedSize)
             return 0;
+        const uint32_t alignedSize = *checkedSize;
         const uint32_t address = heapCursor_;
         heapCursor_ += alignedSize;
         allocations_.emplace(address, alignedSize);
@@ -3920,6 +4091,7 @@ extern "C" void PPCImportedServiceTrap(const char* service, PPCContext& ctx, uin
     gXboxServices.invoke(service, ctx, base);
 }
 
+#if XERENGE_TARGET_BETA5
 // Calls to these XAM thunks are emitted as direct title calls by XenonRecomp,
 // while indirect imports already use ppc_import_stubs.cpp. Strong definitions
 // here override the weak translated NOP wrappers and keep both paths on the
@@ -3980,6 +4152,7 @@ extern "C" void __wrap___imp__sub_825857A8(PPCContext& ctx, uint8_t* base)
     }
     __real___imp__sub_825857A8(ctx, base);
 }
+#endif // XERENGE_TARGET_BETA5
 
 extern "C" void PPCTraceIndirectCall(uint32_t address, PPCContext& ctx, uint8_t*)
 {
@@ -4864,7 +5037,17 @@ bool initializeVulkan(VkInstance& instance, VkPhysicalDevice& physicalDevice)
 // XenonRecomp emits these two XAM calls as C++ direct calls from the title
 // body. Keep the definitions outside the anonymous namespace so they resolve
 // the generated mangled symbols instead of the weak NOP wrappers.
-#ifdef XERENGE_HAS_PPC
+//
+// Every address in this block (through the matching #endif before main())
+// was found specifically in the Burnout Revenge Beta 5 image this runtime
+// was brought up against - a different XEX (a different beta, or the retail
+// release) lays out its functions differently, so none of these addresses
+// carry over.  Gate the whole block on XERENGE_TARGET_BETA5; a non-Beta-5
+// build should supply its own equivalent direct-import bindings (see the
+// release build's own block, if present) and skip the game-specific
+// deadlock/movie/perf workarounds entirely, since those were compensating
+// for this exact image's behaviour.
+#if defined(XERENGE_HAS_PPC) && XERENGE_TARGET_BETA5
 void sub_825C66EC(PPCContext& ctx, uint8_t* base)
 {
     gXboxServices.invoke("XamInputGetState", ctx, base);
@@ -4931,6 +5114,12 @@ XERENGE_DIRECT_IMPORT(sub_825C69FC, "KeEnterCriticalRegion")
 XERENGE_DIRECT_IMPORT(sub_825C6A0C, "VdQueryVideoFlags")
 XERENGE_DIRECT_IMPORT(sub_825C6A1C, "VdCallGraphicsNotificationRoutines")
 XERENGE_DIRECT_IMPORT(sub_825C6A2C, "VdInitializeScalerCommandBuffer")
+// XAudio's renderer calls these thunks directly when registering the
+// callback required by XMedia's audio renderer.
+XERENGE_DIRECT_IMPORT(sub_825C6B1C, "XAudioRegisterRenderDriverClient")
+XERENGE_DIRECT_IMPORT(sub_825C6B2C, "XAudioUnregisterRenderDriverClient")
+XERENGE_DIRECT_IMPORT(sub_825C6B3C, "XAudioSubmitRenderDriverFrame")
+XERENGE_DIRECT_IMPORT(sub_825C6A8C, "RtlNtStatusToDosError")
 // CRT strtok keeps its continuation pointer in guest TLS. These direct
 // thunks must reach the same service as their named import counterparts.
 XERENGE_DIRECT_IMPORT(sub_825C6B6C, "KeTlsAlloc")
@@ -4942,7 +5131,11 @@ XERENGE_DIRECT_IMPORT(sub_825C6B9C, "KeTlsGetValue")
 
 // This guest helper registers a cleanup record. The generated implementation
 // is weak; keep the loader ABI while the host owns that lifecycle.
-#ifdef XERENGE_HAS_PPC
+//
+// Everything from here through the matching #endif (movie player / resource
+// loader / listener-list workarounds) targets exact Beta 5 addresses - see
+// the comment above the previous XERENGE_TARGET_BETA5 block.
+#if defined(XERENGE_HAS_PPC) && XERENGE_TARGET_BETA5
 void sub_8259D4B0(PPCContext& ctx, uint8_t*)
 {
     // The host owns cleanup records; the guest helper reports success.
@@ -4955,6 +5148,135 @@ void sub_8259D4B0(PPCContext& ctx, uint8_t*)
 void sub_82359D48(PPCContext& ctx, uint8_t*)
 {
     ctx.r3.u64 = 0;
+}
+
+// CCalVideoRenderer::Render (vtable, 0x82481C90).  Each call blits the next
+// decoded frame into a 3-deep ring of GPU textures and bumps an in-flight
+// counter at renderer+368; that counter is only dropped again by sub_82481A00,
+// which real hardware runs from the Xenos command-processor interrupt once the
+// GPU has retired that frame's draw.  The runtime presents synchronously and
+// never delivers a per-blit retire for the movie path, so after three frames
+// the counter pins at 3: Render returns E_PENDING forever, the video decode
+// queue never frees a slot, and CCalMoviePlayer::RenderNextFrame (main thread)
+// spins waiting for a frame that never arrives - the loading screen never
+// clears.  Emulate the retire: after a successful blit, run sub_82481A00 until
+// at most one frame is left in flight.
+extern "C" void __imp__sub_82481C90(PPCContext& ctx, uint8_t* base);
+extern "C" void __imp__sub_82481A00(PPCContext& ctx, uint8_t* base);
+void sub_82481C90(PPCContext& ctx, uint8_t* base)
+{
+    const uint32_t renderer = ctx.r3.u32;
+    __imp__sub_82481C90(ctx, base);
+    const auto inFlight = [base, renderer] {
+        uint32_t v = 0;
+        std::memcpy(&v, base + renderer + 368, sizeof(v));
+        return __builtin_bswap32(v);
+    };
+    for (int guard = 0; guard < 4 && inFlight() > 1; ++guard)
+    {
+        ctx.r3.u32 = renderer;
+        __imp__sub_82481A00(ctx, base);
+    }
+}
+
+// Keep the movie boundary observable.  These methods return the decoder
+// status and the result of the XMV frame submission; entry traces alone
+// cannot tell whether the player produced a frame or merely polled it.
+extern "C" void __imp__sub_8247F920(PPCContext& ctx, uint8_t* base);
+extern "C" void __imp__sub_8247F7B8(PPCContext& ctx, uint8_t* base);
+void sub_8247F920(PPCContext& ctx, uint8_t* base)
+{
+    const uint32_t player = ctx.r3.u32;
+    __imp__sub_8247F920(ctx, base);
+    if (std::getenv("XERENGE_VIDEO_TRACE") != nullptr)
+        std::cerr << "XMedia status player=0x" << std::hex << player
+                  << " result=" << ctx.r3.u32 << " out=0x" << ctx.r4.u32
+                  << std::dec << '\n';
+}
+void sub_8247F7B8(PPCContext& ctx, uint8_t* base)
+{
+    const uint32_t player = ctx.r3.u32;
+    const uint32_t flags = ctx.r4.u32;
+    __imp__sub_8247F7B8(ctx, base);
+    if (std::getenv("XERENGE_VIDEO_TRACE") != nullptr)
+        std::cerr << "XMedia render player=0x" << std::hex << player
+                  << " flags=0x" << flags << " result=0x" << ctx.r3.u32
+                  << std::dec << '\n';
+}
+
+// The frontend resource-loader worker thread is a bare `for (;;)
+// sub_82104DD0(this);` with no wait/sleep of its own (see B4_pdb.toml's
+// resourceWorker handling).  When its job ring is empty it still burns an
+// entire host core re-polling on every host timeslice - profiling showed this
+// single function consuming 100% of one thread continuously, which starves
+// the rest of the process (PPC execution, GPU command processing) on
+// anything short of a many-core host and is a large share of the whole
+// runtime's low frame rate.  Reimplement the loop with the same call and a
+// small sleep between iterations; a real queued job is still picked up next
+// iteration, just after at most ~1ms instead of at full CPU-bound spin rate.
+void sub_821109F8(PPCContext& ctx, uint8_t* base)
+{
+    const uint32_t self = ctx.r3.u32;
+    for (;;)
+    {
+        ctx.r3.u32 = self;
+        sub_82104DD0(ctx, base);
+        std::this_thread::sleep_for(std::chrono::milliseconds(1));
+    }
+}
+
+// Diagnostic only (XERENGE_LISTENER_LIST_TRACE): sub_82452F28 walks a singly
+// linked list of listener "bucket" nodes rooted at *(r3+0), each linked via
+// its own +4 field, dispatching a per-node callback and freeing the node's
+// payload object (24 bytes, refcounted) once it is done. Buckets whose
+// payload has already gone empty are skipped (loc_824530B4 in the decompile)
+// but never unlinked from the chain - if nothing else ever removes them, the
+// list can only grow for the life of the process, making this per-frame walk
+// linearly more expensive over time.  This suspiciously matches the observed
+// "video freezes after a while" behaviour (frame time decaying continuously
+// rather than snapping to a hard stop).  Count the chain length before
+// delegating to the real implementation so a long play session can confirm
+// or rule out unbounded growth without changing any behaviour.
+extern "C" void __imp__sub_82452F28(PPCContext& ctx, uint8_t* base);
+void sub_82452F28(PPCContext& ctx, uint8_t* base)
+{
+    if (std::getenv("XERENGE_LISTENER_LIST_TRACE") != nullptr)
+    {
+        // The hang has turned out to happen at varying points in a play
+        // session, not only during the crash-scene footage, and this same
+        // generic broadcaster utility is very likely reused by many
+        // unrelated subsystems (camera events, audio triggers, HUD, crash
+        // effects, ...), each with its own independent list rooted at a
+        // different owner address.  Track every distinct owner seen instead
+        // of just the first one, so a slow-growing list anywhere shows up.
+        static std::unordered_map<uint32_t, uint32_t> lastLengths;
+        const uint32_t listOwner = ctx.r3.u32;
+        if (listOwner != 0 && lastLengths.size() < 4096u)
+        {
+            uint32_t length = 0;
+            uint32_t node = 0;
+            std::memcpy(&node, base + listOwner, sizeof(node));
+            node = __builtin_bswap32(node);
+            // Cap the walk so a genuinely corrupt/cyclic chain cannot itself
+            // hang this diagnostic.
+            for (; node != 0 && length < 1'000'000u; ++length)
+            {
+                uint32_t next = 0;
+                std::memcpy(&next, base + node + 4, sizeof(next));
+                node = __builtin_bswap32(next);
+            }
+            uint32_t& lastLength = lastLengths[listOwner];
+            if (length != lastLength)
+            {
+                std::cerr << "LISTENERLIST owner=0x" << std::hex << listOwner
+                           << std::dec << " length=" << length
+                           << " (delta=" << (int64_t(length) - int64_t(lastLength))
+                           << ") trackedOwners=" << lastLengths.size() << '\n';
+                lastLength = length;
+            }
+        }
+    }
+    __imp__sub_82452F28(ctx, base);
 }
 #endif
 
@@ -5092,6 +5414,11 @@ int main(int argc, char** argv)
                 guestThread.join();
                 return 1;
             }
+            // Constrain manual resizes to 16:9 - the guest surface (and every
+            // XMV clip) is authored for that aspect; letting the user drag to
+            // an arbitrary shape would reintroduce the letterbox/squeeze the
+            // full-screen video quad fix was meant to eliminate.
+            glfwSetWindowAspectRatio(window, 16, 9);
             glfwMakeContextCurrent(window);
             glfwSwapInterval(1);
             gHostCloseRequested.store(false, std::memory_order_release);
@@ -5104,6 +5431,23 @@ int main(int argc, char** argv)
                 gHostCloseRequested.store(true, std::memory_order_release);
             });
             glPixelStorei(GL_UNPACK_ALIGNMENT, 1);
+            // glDrawPixels + glPixelZoom is the historical blit path here, but
+            // its scaling is unreliable across GL profiles/drivers (observed:
+            // the source frame is blitted near 1:1 instead of stretched,
+            // leaving the guest's narrower render width - the game targets
+            // 960 wide inside this runtime's 1280-wide EDRAM bootstrap
+            // surface - as a black band on the right of a wider window).
+            // Upload the frame as a texture and draw a full-viewport quad
+            // instead; texture sampling scales correctly regardless of
+            // profile/driver support for the legacy pixel-transfer pipeline.
+            GLuint displayTexture = 0;
+            glGenTextures(1, &displayTexture);
+            glBindTexture(GL_TEXTURE_2D, displayTexture);
+            glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MIN_FILTER, GL_LINEAR);
+            glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MAG_FILTER, GL_LINEAR);
+            glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_S, GL_CLAMP_TO_EDGE);
+            glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_T, GL_CLAMP_TO_EDGE);
+            uint32_t displayTextureWidth = 0, displayTextureHeight = 0;
             bool readbackReported = false;
             bool guestReturnReported = false;
             uint64_t lastEntryTraceCalls = 0;
@@ -5149,19 +5493,34 @@ int main(int argc, char** argv)
                 glViewport(0, 0, displayWidth, displayHeight);
                 glClearColor(0.0f, 0.0f, 0.0f, 1.0f);
                 glClear(GL_COLOR_BUFFER_BIT);
+                glBindTexture(GL_TEXTURE_2D, displayTexture);
+                if (displayTextureWidth != frame.width || displayTextureHeight != frame.height)
+                {
+                    glTexImage2D(GL_TEXTURE_2D, 0, GL_RGBA, static_cast<GLsizei>(frame.width),
+                        static_cast<GLsizei>(frame.height), 0, GL_RGBA, GL_UNSIGNED_BYTE,
+                        pixels.data());
+                    displayTextureWidth = frame.width;
+                    displayTextureHeight = frame.height;
+                }
+                else
+                {
+                    glTexSubImage2D(GL_TEXTURE_2D, 0, 0, 0, static_cast<GLsizei>(frame.width),
+                        static_cast<GLsizei>(frame.height), GL_RGBA, GL_UNSIGNED_BYTE,
+                        pixels.data());
+                }
+                glEnable(GL_TEXTURE_2D);
+                glColor4f(1.0f, 1.0f, 1.0f, 1.0f);
                 // Xenos readback stores row zero at the top of the display
-                // surface, while OpenGL's pixel raster position starts at
-                // the lower-left. Draw from the upper-left with a negative
-                // Y zoom so scanout preserves guest orientation.
-                glRasterPos2f(-1.0f, 1.0f);
-                const float xScale = static_cast<float>(displayWidth) /
-                    static_cast<float>(frame.width);
-                const float yScale = static_cast<float>(displayHeight) /
-                    static_cast<float>(frame.height);
-                glPixelZoom(xScale, -yScale);
-                glDrawPixels(static_cast<GLsizei>(frame.width),
-                    static_cast<GLsizei>(frame.height),
-                    GL_RGBA, GL_UNSIGNED_BYTE, pixels.data());
+                // surface; flip V so scanout preserves guest orientation
+                // while the quad always spans the full viewport regardless
+                // of how the source frame's aspect compares to the window.
+                glBegin(GL_TRIANGLE_STRIP);
+                glTexCoord2f(0.0f, 0.0f); glVertex2f(-1.0f, 1.0f);
+                glTexCoord2f(1.0f, 0.0f); glVertex2f(1.0f, 1.0f);
+                glTexCoord2f(0.0f, 1.0f); glVertex2f(-1.0f, -1.0f);
+                glTexCoord2f(1.0f, 1.0f); glVertex2f(1.0f, -1.0f);
+                glEnd();
+                glDisable(GL_TEXTURE_2D);
                 if (!readbackReported)
                 {
                     std::cout << "Xenos framebuffer readback: "
@@ -5192,11 +5551,17 @@ int main(int argc, char** argv)
             }
             glfwDestroyWindow(window);
             glfwTerminate();
-            // PPC worker threads are guest-owned and have no cancellation ABI
-            // yet. Keep their guest backing alive until process exit.
+            // Detached guest PPC worker threads are still executing recompiled
+            // code against gXboxServices / the guest arena and have no
+            // cancellation ABI.  Running static destructors (audio thread join,
+            // Vulkan teardown, guest arena unmap) while they touch that state
+            // deadlocks or crashes on exit, so leave the window-close path a
+            // hard stop: flush the standard streams and terminate immediately.
+            std::cout.flush();
+            std::cerr.flush();
             guest.release();
             guestThread.detach();
-            return 0;
+            _exit(0);
         }
         return 0;
 #else
@@ -5263,6 +5628,7 @@ int main(int argc, char** argv)
         glfwTerminate();
         return 1;
     }
+    glfwSetWindowAspectRatio(window, 16, 9);
     glfwMakeContextCurrent(window);
     glfwSetKeyCallback(window, glfwInputCallback);
     glfwSwapInterval(1);

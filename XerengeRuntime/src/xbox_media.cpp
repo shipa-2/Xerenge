@@ -54,11 +54,33 @@ bool XboxMedia::open(const std::string& path)
     if (!image_)
         return false;
 
+    // A trimmed XDVDFS dump (common for beta/leaked images) starts the game
+    // partition at byte 0, so the volume descriptor sits at kHeaderOffset.
+    // A full raw XGD dump instead prefixes the game partition with a
+    // security sector and video partition; try the well-known XGD1/2/3
+    // game-partition start offsets before giving up.
+    static constexpr uint64_t kCandidateBaseOffsets[] = {
+        0x00000000ull, // trimmed dump - game partition at file start
+        0x0FD90000ull, // XGD2 game partition start
+        0x02080000ull, // XGD1 game partition start
+        0x18300000ull, // XGD3 game partition start
+    };
     std::array<char, 32> header{};
-    image_.seekg(static_cast<std::streamoff>(kHeaderOffset));
-    image_.read(header.data(), header.size());
-    if (image_.gcount() != static_cast<std::streamsize>(header.size()) ||
-        std::memcmp(header.data(), kMagic, sizeof(kMagic) - 1) != 0)
+    bool found = false;
+    for (const uint64_t candidate : kCandidateBaseOffsets)
+    {
+        image_.clear();
+        image_.seekg(static_cast<std::streamoff>(candidate + kHeaderOffset));
+        image_.read(header.data(), header.size());
+        if (image_.gcount() == static_cast<std::streamsize>(header.size()) &&
+            std::memcmp(header.data(), kMagic, sizeof(kMagic) - 1) == 0)
+        {
+            imageBaseOffset_ = candidate;
+            found = true;
+            break;
+        }
+    }
+    if (!found)
     {
         image_.close();
         return false;
@@ -125,7 +147,7 @@ bool XboxMedia::extractTo(const std::string& outDir) const
 bool XboxMedia::readAt(uint64_t offset, void* destination, size_t size) const
 {
     image_.clear();
-    image_.seekg(static_cast<std::streamoff>(offset));
+    image_.seekg(static_cast<std::streamoff>(imageBaseOffset_ + offset));
     image_.read(static_cast<char*>(destination), static_cast<std::streamsize>(size));
     return image_.gcount() == static_cast<std::streamsize>(size);
 }

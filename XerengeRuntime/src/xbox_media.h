@@ -57,6 +57,14 @@ private:
 
     mutable std::mutex mutex_;
     mutable std::ifstream image_;
+    // A "trimmed" XDVDFS dump starts the volume descriptor at kHeaderOffset
+    // from byte 0 of the file. A full raw disc dump (security sector + video
+    // partition ahead of the game partition) puts the game partition itself
+    // some way into the file first; open() probes a few known XGD layouts
+    // for the volume magic and records the winning base here so every
+    // subsequent sector offset is computed relative to the game partition,
+    // not the file.
+    uint64_t imageBaseOffset_ = 0;
     bool directoryMode_ = false;
     std::string root_;
     std::unordered_map<std::string, FileEntry> entries_;
