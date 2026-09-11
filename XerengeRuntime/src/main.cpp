@@ -6007,50 +6007,6 @@ void sub_821FEBC0(PPCContext& ctx, uint8_t* base)
     if (trace)
         std::cerr << "intro clip requested: " << name << '\n';
 
-    std::string clip;
-    if (namePointer >= 0x50000000u && namePointer < 0x90000000u)
-    {
-        for (size_t i = 0; i < 260 && base[namePointer + i] != 0; ++i)
-            clip.push_back(static_cast<char>(std::tolower(
-                static_cast<unsigned char>(base[namePointer + i]))));
-        const size_t slash = clip.find_last_of("/\\");
-        if (slash != std::string::npos)
-            clip.erase(0, slash + 1);
-        if (clip.size() >= 4 && clip.compare(clip.size() - 4, 4, ".xmv") == 0)
-            clip.resize(clip.size() - 4);
-    }
-
-    // The release Flash timeline contains BG1, EAHD, EA, CRRW and ATTR. The
-    // media layer substitutes the first two requests with the intended EA and
-    // CRRW logo streams. When Flash subsequently asks for EA and CRRW by name,
-    // those clips have therefore already played. Complete just those two
-    // duplicate requests through the same state value (28) that the real
-    // manager publishes at end of playback; the caller polls manager+152 for
-    // this exact value before advancing the timeline.
-    static std::atomic<uint32_t> substitutedLogos{0};
-    if (clip == "bg1_p")
-        substitutedLogos.fetch_or(1u, std::memory_order_relaxed);
-    else if (clip == "eahd_e_p")
-        substitutedLogos.fetch_or(2u, std::memory_order_relaxed);
-
-    uint32_t duplicateBit = 0;
-    if (clip == "ea_e_p")
-        duplicateBit = 1u;
-    else if (clip == "crrw_e_p")
-        duplicateBit = 2u;
-    if (duplicateBit != 0 &&
-        (substitutedLogos.fetch_and(~duplicateBit, std::memory_order_relaxed) &
-            duplicateBit) != 0)
-    {
-        if (descriptor != 0)
-            std::memcpy(base + manager + 136, base + descriptor, 12);
-        const uint32_t complete = __builtin_bswap32(28u);
-        std::memcpy(base + manager + 152, &complete, sizeof(complete));
-        if (trace)
-            std::cerr << "intro duplicate completed without replay: " << clip << '\n';
-        ctx.r3.u32 = manager;
-        return;
-    }
     __imp__sub_821FEBC0(ctx, base);
 }
 
@@ -6129,6 +6085,89 @@ void sub_8248E1B0(PPCContext& ctx, uint8_t* base)
     if (trace)
         std::cerr << "movie player play -> 0x" << std::hex << ctx.r3.u32
                   << std::dec << '\n';
+}
+
+// CB4AptManager::RenderVideoComponent (retail 0x821FF558) is what turns a
+// Flash video component into a PlayVideo call. Its parameter string names the
+// lookup slot the component is bound to, so logging it shows whether a clip
+// that plays was actually asked for by the timeline or picked up from the
+// wrong slot.
+extern "C" void __imp__sub_821FF558(PPCContext& ctx, uint8_t* base);
+void sub_821FF558(PPCContext& ctx, uint8_t* base)
+{
+    static const bool trace = std::getenv("XERENGE_VIDEO_TRACE") != nullptr;
+    if (trace)
+    {
+        const uint32_t parameters = ctx.r4.u32;
+        if (parameters != 0)
+        {
+            const char* text = reinterpret_cast<const char*>(base + parameters);
+            // Most calls name no clip at all; only the ones that do say
+            // anything about which slot the timeline is playing from.
+            static std::string previous;
+            if (std::strstr(text, "_name=none") == nullptr && previous != text)
+            {
+                previous = text;
+                std::cerr << "video component: '" << text << "' visible="
+                          << ctx.r5.u32 << '\n';
+            }
+        }
+    }
+    __imp__sub_821FF558(ctx, base);
+}
+
+// CGtFSM::StateChange (retail 0x820A38E8) takes the target state as a 64-bit
+// id in r4. The intro's order is this chain and nothing else, so logging the
+// transitions with their caller shows which state starts it and what each one
+// hands over to.
+extern "C" void __imp__sub_820A38E8(PPCContext& ctx, uint8_t* base);
+void sub_820A38E8(PPCContext& ctx, uint8_t* base)
+{
+    static const bool trace = std::getenv("XERENGE_VIDEO_TRACE") != nullptr;
+    if (trace)
+        std::cerr << "state change to 0x" << std::hex << ctx.r4.u64 << " from 0x"
+                  << static_cast<uint32_t>(ctx.lr) << std::dec << '\n';
+    __imp__sub_820A38E8(ctx, base);
+}
+
+// CB4FlashMovieManager::SetLookUpVideo (retail 0x821F6AF0) chooses which clip
+// the Flash timeline will ask for: r5 indexes the title's movie table at
+// 0x825F7458, whose records are 0x22 bytes and whose names start at +0. The
+// intro's running order is decided entirely by these calls, so reporting them
+// with the caller shows which state selected what - including any selection
+// made from a computed value rather than a literal.
+extern "C" void __imp__sub_821F6AF0(PPCContext& ctx, uint8_t* base);
+void sub_821F6AF0(PPCContext& ctx, uint8_t* base)
+{
+    static const bool trace = std::getenv("XERENGE_VIDEO_TRACE") != nullptr;
+    if (trace)
+    {
+        const uint32_t video = ctx.r5.u32;
+        const uint32_t record = 0x825F7458u + video * 0x22u;
+        char name[16]{};
+        for (int i = 0; i < 12 && base[record + i] != 0; ++i)
+            name[i] = static_cast<char>(base[record + i]);
+        std::cerr << "lookup video index=" << ctx.r4.u32 << " video=" << video
+                  << " (" << (name[0] != 0 ? name : "?") << ") from 0x" << std::hex
+                  << static_cast<uint32_t>(ctx.lr) << std::dec << '\n';
+    }
+    const uint32_t manager = ctx.r3.u32;
+    __imp__sub_821F6AF0(ctx, base);
+    if (trace)
+    {
+        // The slot names live at manager+0x31C, 40 bytes apart. Print them all
+        // so a write that lands in the wrong slot is visible immediately.
+        std::cerr << "  slots:";
+        for (uint32_t slot = 0; slot < 6; ++slot)
+        {
+            const uint32_t at = manager + 0x31Cu + slot * 40u;
+            char stored[16]{};
+            for (int i = 0; i < 12 && base[at + i] != 0; ++i)
+                stored[i] = static_cast<char>(base[at + i]);
+            std::cerr << ' ' << slot << "='" << stored << '\'';
+        }
+        std::cerr << '\n';
+    }
 }
 
 // CCalMoviePlayer::GetStatus (retail 0x8248CC20) reports the player's state

@@ -218,28 +218,7 @@ bool XboxMedia::parseNode(uint64_t tableOffset, uint32_t tableSize, uint64_t nod
 bool XboxMedia::openFile(const std::string& xboxPath, uint32_t& handle, uint64_t& size)
 {
     std::lock_guard lock(mutex_);
-    std::string key = normalize(xboxPath);
-    const size_t slash = key.rfind('/');
-    const std::string basename = slash == std::string::npos
-        ? key : key.substr(slash + 1);
-
-    // The release prototype's Flash timeline asks for two unwanted frontend
-    // clips before the logo sequence.  A zero-length successful open is not a
-    // valid way to skip them: the XMV player reaches EOF before parsing a
-    // header and never emits its normal finished transition, leaving the last
-    // frontend frame (the language selector) on screen.  Substitute complete,
-    // valid XMV streams so the decoder, renderer and completion callback all
-    // follow the ordinary lifecycle while starting with the intended logos.
-    const char* replacement = nullptr;
-    if (basename == "bg1_p.xmv")
-        replacement = "ea_e_p.xmv";
-    else if (basename == "eahd_e_p.xmv")
-        replacement = "crrw_e_p.xmv";
-    else if (basename == "attr_p.xmv")
-        replacement = "attrm.xmv";
-    if (replacement != nullptr)
-        key = slash == std::string::npos
-            ? replacement : key.substr(0, slash + 1) + replacement;
+    const std::string key = normalize(xboxPath);
 
     OpenFile open{};
     if (directoryMode_)
