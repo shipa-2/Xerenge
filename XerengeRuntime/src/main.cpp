@@ -5728,6 +5728,7 @@ void sub_82481C90(PPCContext& ctx, uint8_t* base)
 {
     const uint32_t renderer = ctx.r3.u32;
     __imp__sub_82481C90(ctx, base);
+    const uint64_t renderResult = ctx.r3.u64;
     const auto inFlight = [base, renderer] {
         uint32_t v = 0;
         std::memcpy(&v, base + renderer + 368, sizeof(v));
@@ -5738,6 +5739,10 @@ void sub_82481C90(PPCContext& ctx, uint8_t* base)
         ctx.r3.u32 = renderer;
         __imp__sub_82481A00(ctx, base);
     }
+    // sub_82481A00 is an implementation detail of this host-side GPU-retire
+    // emulation.  Its return value must not replace Render's HRESULT: the
+    // movie pump branches on Render's result to advance playback state.
+    ctx.r3.u64 = renderResult;
 }
 
 // Keep the movie boundary observable.  These methods return the decoder
@@ -6181,6 +6186,7 @@ void sub_82482680(PPCContext& ctx, uint8_t* base)
     const uint32_t renderer = ctx.r3.u32;
     static const bool videoTrace = std::getenv("XERENGE_VIDEO_TRACE") != nullptr;
     __imp__sub_82482680(ctx, base);
+    const uint64_t renderResult = ctx.r3.u64;
     if (videoTrace)
     {
         static std::atomic<uint32_t> calls{0};
@@ -6195,6 +6201,12 @@ void sub_82482680(PPCContext& ctx, uint8_t* base)
         }
     }
     retireMovieFrames(ctx, base, renderer, 1);
+    // Keep the guest-visible result from CCalVideoRenderer::Render.  The
+    // retire callback writes its own return value to r3, but it is only being
+    // invoked here to emulate the asynchronous Xenos completion interrupt.
+    // Leaking that value makes the caller treat successful frame submission
+    // as an error and leaves CCalMoviePlayer in its previous frontend state.
+    ctx.r3.u64 = renderResult;
 }
 
 // Draining only from Render leaves the pipeline holding frames once the title
