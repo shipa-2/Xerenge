@@ -6760,6 +6760,56 @@ void sub_82479968(PPCContext& ctx, uint8_t* base)
     __imp__sub_82479968(ctx, base);
 }
 
+// CB4FlashMovieManager::PlayMovie (retail 0x821FD498) activates one of the
+// front end's screens. The bundle holds languageselect, logo1, logo2 and
+// attract as separate movies, so whether the attract screen is ever made
+// current decides whether its handler could be registered at all.
+extern "C" void __imp__sub_821FD498(PPCContext& ctx, uint8_t* base);
+void sub_821FD498(PPCContext& ctx, uint8_t* base)
+{
+    static const bool trace = std::getenv("XERENGE_APT_TRACE") != nullptr;
+    if (trace)
+    {
+        static std::atomic<uint32_t> last{~0u};
+        if (last.exchange(ctx.r4.u32, std::memory_order_relaxed) != ctx.r4.u32)
+            std::cerr << "flash screen requested: " << ctx.r4.u32 << '\n';
+    }
+    __imp__sub_821FD498(ctx, base);
+}
+
+// What ProcessInputs does with each queued input: hand it to the character
+// instances (ProcessInputSet, retail 0x82479480) and to the registered
+// listeners (ProcessListenerEvents, 0x82479868).
+extern "C" void __imp__sub_82479480(PPCContext& ctx, uint8_t* base);
+extern "C" void __imp__sub_82479868(PPCContext& ctx, uint8_t* base);
+
+void sub_82479480(PPCContext& ctx, uint8_t* base)
+{
+    static const bool trace = std::getenv("XERENGE_APT_TRACE") != nullptr;
+    if (trace)
+    {
+        static std::atomic<uint32_t> n{0};
+        const uint32_t i = n.fetch_add(1, std::memory_order_relaxed);
+        if (i < 12)
+            std::cerr << "apt ProcessInputSet code=" << ctx.r4.u32
+                      << " pad=" << ctx.r5.u32 << " raw=" << ctx.r6.u32 << '\n';
+    }
+    __imp__sub_82479480(ctx, base);
+}
+
+void sub_82479868(PPCContext& ctx, uint8_t* base)
+{
+    static const bool trace = std::getenv("XERENGE_APT_TRACE") != nullptr;
+    if (trace)
+    {
+        static std::atomic<uint32_t> n{0};
+        const uint32_t i = n.fetch_add(1, std::memory_order_relaxed);
+        if (i < 12)
+            std::cerr << "apt ProcessListenerEvents code=" << ctx.r4.u32 << '\n';
+    }
+    __imp__sub_82479868(ctx, base);
+}
+
 // SelectedOption, the native the attract movie's script actually calls. Its
 // constant pool names localEventHandler(screen, keyCode, controllerId), the
 // INPUTCODE button enum, and MenuScreenManager.SelectedOption - so this, not
