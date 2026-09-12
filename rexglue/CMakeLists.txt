@@ -13,6 +13,8 @@ include(generated/rexglue.cmake)
 # Sources
 set(BURNOUT_SOURCES
     src/main.cpp
+    src/movie_trace.cpp
+    src/movie_frames.cpp
 )
 
 if(WIN32)
