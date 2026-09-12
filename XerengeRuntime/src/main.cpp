@@ -6117,6 +6117,82 @@ void sub_8248D398(PPCContext& ctx, uint8_t* base)
     __imp__sub_8248D398(ctx, base);
 }
 
+// CCalWmvDecoder::InitializeInput rejects a stream with E_UNEXPECTED at four
+// points, each wrapping one call into the WMC decoder and each losing the
+// decoder's own reason. Report which one refuses.
+extern "C" void __imp__sub_82489240(PPCContext& ctx, uint8_t* base);
+extern "C" void __imp__sub_82487DF8(PPCContext& ctx, uint8_t* base);
+extern "C" void __imp__sub_82489488(PPCContext& ctx, uint8_t* base);
+extern "C" void __imp__sub_82489668(PPCContext& ctx, uint8_t* base);
+
+namespace
+{
+void reportDecoderCall(const char* what, uint32_t result)
+{
+    static const bool trace = std::getenv("XERENGE_VIDEO_TRACE") != nullptr;
+    if (trace && result != 0)
+        std::cerr << "wmc " << what << " refused: 0x" << std::hex << result
+                  << std::dec << '\n';
+}
+}  // namespace
+
+void sub_82489240(PPCContext& ctx, uint8_t* base)
+{
+    __imp__sub_82489240(ctx, base);
+    reportDecoderCall("decoder init", ctx.r3.u32);
+}
+
+void sub_82487DF8(PPCContext& ctx, uint8_t* base)
+{
+    __imp__sub_82487DF8(ctx, base);
+    reportDecoderCall("stream query", ctx.r3.u32);
+}
+
+void sub_82489488(PPCContext& ctx, uint8_t* base)
+{
+    __imp__sub_82489488(ctx, base);
+    reportDecoderCall("video info", ctx.r3.u32);
+}
+
+void sub_82489668(PPCContext& ctx, uint8_t* base)
+{
+    __imp__sub_82489668(ctx, base);
+    reportDecoderCall("decode pattern", ctx.r3.u32);
+}
+
+// XMediaCreateXmvPlayerFromFile (retail 0x82480CC8). CGtVideoDecoder::Prepare
+// ignores a failure here beyond calling an error handler: it carries on and
+// stores a null player, which then makes every later step misbehave rather
+// than report anything. Its result is the first honest answer in the chain.
+extern "C" void __imp__sub_82480CC8(PPCContext& ctx, uint8_t* base);
+void sub_82480CC8(PPCContext& ctx, uint8_t* base)
+{
+    static const bool trace = std::getenv("XERENGE_VIDEO_TRACE") != nullptr;
+    const uint32_t name = ctx.r4.u32;
+    std::string path;
+    if (trace && name != 0)
+        for (int i = 0; i < 64 && base[name + i] != 0; ++i)
+            path.push_back(static_cast<char>(base[name + i]));
+    __imp__sub_82480CC8(ctx, base);
+    if (trace)
+        std::cerr << "create xmv player '" << path << "' -> 0x" << std::hex
+                  << ctx.r3.u32 << std::dec << '\n';
+}
+
+// CCalMoviePlayer::Reset (retail 0x8248CDC0) is what clears the player's flag
+// words between clips. Every clip that plays runs it; the attract clip does
+// not. Log who calls it, so the path that is being missed can be found.
+extern "C" void __imp__sub_8248CDC0(PPCContext& ctx, uint8_t* base);
+void sub_8248CDC0(PPCContext& ctx, uint8_t* base)
+{
+    static const bool trace = std::getenv("XERENGE_VIDEO_TRACE") != nullptr;
+    const uint64_t lr = ctx.lr;
+    __imp__sub_8248CDC0(ctx, base);
+    if (trace)
+        std::cerr << "player reset called from 0x" << std::hex
+                  << static_cast<uint32_t>(lr) << std::dec << '\n';
+}
+
 // CCalMoviePlayer keeps a second flag word at +0xE4, set by 0x8248D498 and
 // cleared by 0x8248D5D0. VideoRendererThread tests bit 0x4 of it as its very
 // first act and, if set, exits immediately after declaring the clip finished -
@@ -6210,12 +6286,20 @@ extern "C" void __imp__sub_8248E1B0(PPCContext& ctx, uint8_t* base);
 
 void sub_8235B7A0(PPCContext& ctx, uint8_t* base)
 {
+    // Prepare(CGtLinearMalloc*, int, int, const char* name, float, unsigned)
     static const bool trace = std::getenv("XERENGE_VIDEO_TRACE") != nullptr;
-    const uint32_t width = ctx.r4.u32;
-    const uint32_t height = ctx.r5.u32;
+    const uint32_t width = ctx.r5.u32;
+    const uint32_t height = ctx.r6.u32;
+    const uint32_t name = ctx.r7.u32;
+    const uint32_t flags = ctx.r8.u32;
+    std::string path;
+    if (trace && name != 0)
+        for (int i = 0; i < 64 && base[name + i] != 0; ++i)
+            path.push_back(static_cast<char>(base[name + i]));
     __imp__sub_8235B7A0(ctx, base);
     if (trace)
-        std::cerr << "decoder prepare " << width << 'x' << height << " -> "
+        std::cerr << "decoder prepare '" << path << "' " << width << 'x' << height
+                  << " flags=" << flags << " -> "
                   << (ctx.r3.u32 != 0 ? "ok" : "FAILED") << '\n';
 }
 
@@ -6397,9 +6481,11 @@ extern "C" void __imp__sub_82482430(PPCContext& ctx, uint8_t* base);
 
 void sub_824822C8(PPCContext& ctx, uint8_t* base)
 {
+    static const bool drain = std::getenv("XERENGE_NO_TEARDOWN_DRAIN") == nullptr;
     const uint32_t renderer = ctx.r3.u32;
     const uint32_t flags = ctx.r4.u32;
-    retireMovieFrames(ctx, base, renderer, 0);
+    if (drain)
+        retireMovieFrames(ctx, base, renderer, 0);
     ctx.r3.u32 = renderer;
     ctx.r4.u32 = flags;
     __imp__sub_824822C8(ctx, base);
@@ -6407,8 +6493,10 @@ void sub_824822C8(PPCContext& ctx, uint8_t* base)
 
 void sub_82482430(PPCContext& ctx, uint8_t* base)
 {
+    static const bool drain = std::getenv("XERENGE_NO_TEARDOWN_DRAIN") == nullptr;
     const uint32_t renderer = ctx.r3.u32;
-    retireMovieFrames(ctx, base, renderer, 0);
+    if (drain)
+        retireMovieFrames(ctx, base, renderer, 0);
     ctx.r3.u32 = renderer;
     __imp__sub_82482430(ctx, base);
 }
