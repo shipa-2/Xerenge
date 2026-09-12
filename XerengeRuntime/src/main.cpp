@@ -6743,6 +6743,25 @@ void sub_82461A10(PPCContext& ctx, uint8_t* base)
     __imp__sub_82461A10(ctx, base);
 }
 
+// AptExtObject::SetFunction (retail 0x8242BDB0) registers a native routine
+// under a name the movie's script can call. The front-end data contains no
+// FSCommand strings at all, so this is the bridge the movie actually uses, and
+// logging the registrations shows what it can reach.
+extern "C" void __imp__sub_8242BDB0(PPCContext& ctx, uint8_t* base);
+void sub_8242BDB0(PPCContext& ctx, uint8_t* base)
+{
+    static const bool trace = std::getenv("XERENGE_APT_TRACE") != nullptr;
+    if (trace)
+    {
+        static std::atomic<uint32_t> n{0};
+        const uint32_t i = n.fetch_add(1, std::memory_order_relaxed);
+        if (i < 40 && ctx.r4.u32 != 0)
+            std::cerr << "apt native registered: "
+                      << reinterpret_cast<const char*>(base + ctx.r4.u32) << '\n';
+    }
+    __imp__sub_8242BDB0(ctx, base);
+}
+
 // The three APT library routines that can reach AptLinker::Update, so which
 // of them is meant to run per frame can be settled by counting.
 extern "C" void __imp__sub_82427538(PPCContext& ctx, uint8_t* base);
