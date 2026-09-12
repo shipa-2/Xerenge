@@ -7437,6 +7437,48 @@ void sub_8220E140(PPCContext& ctx, uint8_t* base)
     __imp__sub_8220E140(ctx, base);
 }
 
+// The title screen's own gate, and the reason Start matters there.
+// CB4InputManager::CheckForNewPlayerInput (retail 0x82115850) walks the four
+// controller ports, and claims the first one whose pad reports Start - button
+// 0x10 - for the player slot, writing the claim as a flag and an index the
+// title then reads back. Until a port is claimed the read answers -1, and
+// CB4TitleState sits in the substate that polls it: it only calls
+// CB4GamertagManager::DoForcedSignIn, which is where profile and save
+// selection begins, once the claim succeeds. So whether that sign-in is ever
+// reached is decided here, and a -1 forever means the press never arrived in
+// the form this function looks for.
+extern "C" void __imp__sub_82115850(PPCContext& ctx, uint8_t* base);
+extern "C" void __imp__sub_82114870(PPCContext& ctx, uint8_t* base);
+
+void sub_82115850(PPCContext& ctx, uint8_t* base)
+{
+    static const bool trace = std::getenv("XERENGE_INPUT_TRACE") != nullptr ||
+                              std::getenv("XERENGE_VIDEO_TRACE") != nullptr;
+    const uint32_t port = ctx.r4.u32 & 0xFFu;
+    const uint32_t anyInput = ctx.r5.u32 & 0xFFu;
+    __imp__sub_82115850(ctx, base);
+    if (trace)
+    {
+        const int32_t claimed = int32_t(int8_t(ctx.r3.u32 & 0xFFu));
+        static std::atomic<uint32_t> calls{0};
+        static std::atomic<int32_t> lastResult{-2};
+        const uint32_t n = calls.fetch_add(1, std::memory_order_relaxed);
+        if (lastResult.exchange(claimed, std::memory_order_relaxed) != claimed || n == 0)
+            std::cerr << "title port claim: result=" << claimed << " port=" << port
+                      << " anyInput=" << anyInput << " after " << n << " polls\n";
+    }
+}
+
+void sub_82114870(PPCContext& ctx, uint8_t* base)
+{
+    static const bool trace = std::getenv("XERENGE_INPUT_TRACE") != nullptr ||
+                              std::getenv("XERENGE_VIDEO_TRACE") != nullptr;
+    if (trace)
+        std::cerr << "profile sign-in requested for controller "
+                  << int32_t(int8_t(ctx.r4.u32 & 0xFFu)) << '\n';
+    __imp__sub_82114870(ctx, base);
+}
+
 void sub_820A38E8(PPCContext& ctx, uint8_t* base)
 {
     static const bool trace = std::getenv("XERENGE_VIDEO_TRACE") != nullptr;

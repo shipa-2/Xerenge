@@ -2569,8 +2569,17 @@ void XenosGpu::rasterizeDraw(uint8_t* guestBase, uint32_t initiator)
             {
                 uint8_t texel[4] = {guestBase[address + 0], guestBase[address + 1],
                     guestBase[address + 2], guestBase[address + 3]};
+                // The lookup has to be hoisted, not just guarded by the
+                // once-only flag: this runs per sampled texel, and with the
+                // variable unset the flag never becomes true, so the guard
+                // never stops calling getenv - which walks the whole
+                // environment comparing strings, for every texel of every
+                // textured pixel. Sampling the render thread put it inside
+                // this sampler in five consecutive attaches.
+                static const bool traceRgba8Sample =
+                    std::getenv("XERENGE_XENOS_TEXTURE_BYTES") != nullptr;
                 static bool loggedRgba8Sample = false;
-                if (!loggedRgba8Sample && std::getenv("XERENGE_XENOS_TEXTURE_BYTES") != nullptr)
+                if (traceRgba8Sample && !loggedRgba8Sample)
                 {
                     loggedRgba8Sample = true;
                     std::cerr << "Xenos RGBA8 sample guest=0x" << std::hex << address
@@ -2823,6 +2832,28 @@ void XenosGpu::rasterizeDraw(uint8_t* guestBase, uint32_t initiator)
             for (uint32_t component = 0; component < 4; ++component)
                 destination[8 + component] = nativeOrder[vertex]->color[component];
         }
+        static const bool forceSoftware = std::getenv("XERENGE_XENOS_FORCE_SOFTWARE") != nullptr;
+        // The Vulkan geometry path now produces output (see the location fix in
+        // ensureGraphicsPipeline) but not yet correct output: a spurious
+        // large triangle survives, and because resolveToGuest prefers Vulkan
+        // pixels it hides the rasterised frame that is correct. Keep it
+        // opt-in until its geometry matches, so the default picture is the
+        // right one.
+        static const bool vulkanGeometry = std::getenv("XERENGE_VULKAN_GEOMETRY") != nullptr;
+        // Diagnostic: XERENGE_VULKAN_ONLY_PRIM=N submits just that primitive
+        // type to Vulkan, which isolates which draw contributes a given
+        // artefact when several primitive paths feed the same colour image.
+        static const uint32_t onlyPrim = [] {
+            const char* text = std::getenv("XERENGE_VULKAN_ONLY_PRIM");
+            return text != nullptr ? uint32_t(std::strtoul(text, nullptr, 0)) : 0xFFFFFFFFu;
+        }();
+        const bool primitiveSelected = onlyPrim == 0xFFFFFFFFu || onlyPrim == primitive;
+        // Decided before the texture is decoded, because the decode exists
+        // only to feed the upload. With the Vulkan path off - the default -
+        // nothing consumed the decoded image, so every textured draw paid for
+        // a full decode and hash of the whole texture on top of the software
+        // sampling that actually drew the frame.
+        const bool willSubmitToVulkan = !forceSoftware && vulkanGeometry && primitiveSelected;
         // Convert the tiled guest resource to tightly packed RGBA8.  Hashing
         // the decoded contents keeps unchanged images resident while still
         // detecting guest writes through an unchanged fetch descriptor.
@@ -2834,7 +2865,7 @@ void XenosGpu::rasterizeDraw(uint8_t* guestBase, uint32_t initiator)
         // descriptor merely because the guest resource is block-compressed.
         const bool hasNativeTexture = hasDxt1Texture || hasDxt3Texture || hasDxt5Texture || hasRgba8Texture;
         const size_t nativeTextureBytes = size_t(textureWidth) * textureHeight * 4;
-        if (hasNativeTexture && textureWidth != 0 && textureHeight != 0 &&
+        if (willSubmitToVulkan && hasNativeTexture && textureWidth != 0 && textureHeight != 0 &&
             nativeTextureBytes <= textureUploadCapacity)
         {
             nativeTexture.resize(nativeTextureBytes);
@@ -2889,23 +2920,7 @@ void XenosGpu::rasterizeDraw(uint8_t* guestBase, uint32_t initiator)
                 }
             }
         }
-        static const bool forceSoftware = std::getenv("XERENGE_XENOS_FORCE_SOFTWARE") != nullptr;
-        // The Vulkan geometry path now produces output (see the location fix in
-        // ensureGraphicsPipeline) but not yet correct output: a spurious
-        // large triangle survives, and because resolveToGuest prefers Vulkan
-        // pixels it hides the rasterised frame that is correct. Keep it
-        // opt-in until its geometry matches, so the default picture is the
-        // right one.
-        static const bool vulkanGeometry = std::getenv("XERENGE_VULKAN_GEOMETRY") != nullptr;
-        // Diagnostic: XERENGE_VULKAN_ONLY_PRIM=N submits just that primitive
-        // type to Vulkan, which isolates which draw contributes a given
-        // artefact when several primitive paths feed the same colour image.
-        static const uint32_t onlyPrim = [] {
-            const char* text = std::getenv("XERENGE_VULKAN_ONLY_PRIM");
-            return text != nullptr ? uint32_t(std::strtoul(text, nullptr, 0)) : 0xFFFFFFFFu;
-        }();
-        const bool primitiveSelected = onlyPrim == 0xFFFFFFFFu || onlyPrim == primitive;
-        const bool submittedToVulkan = !forceSoftware && vulkanGeometry && primitiveSelected &&
+        const bool submittedToVulkan = willSubmitToVulkan &&
             drawVulkanGeometry(nativeVertices.data(), nativeOrder.size(),
                 VK_PRIMITIVE_TOPOLOGY_TRIANGLE_LIST,
                 hasNativeTexture && nativeTextureKey != vulkanTextureKey_
