@@ -6737,10 +6737,81 @@ void sub_82461A10(PPCContext& ctx, uint8_t* base)
     {
         static std::atomic<uint32_t> n{0};
         const uint32_t i = n.fetch_add(1, std::memory_order_relaxed);
-        if (i < 2 || (i % 500) == 0)
-            std::cerr << "apt runActions #" << i << '\n';
+        if ((i % 25) == 0)
+            std::cerr << "apt runActions total=" << i << '\n';
     }
     __imp__sub_82461A10(ctx, base);
+}
+
+// The three APT library routines that can reach AptLinker::Update, so which
+// of them is meant to run per frame can be settled by counting.
+extern "C" void __imp__sub_82427538(PPCContext& ctx, uint8_t* base);
+extern "C" void __imp__sub_824285C0(PPCContext& ctx, uint8_t* base);
+extern "C" void __imp__sub_824288F8(PPCContext& ctx, uint8_t* base);
+
+void sub_82427538(PPCContext& ctx, uint8_t* base)
+{
+    // Fixed-timestep accumulator: it only ticks the movie once the time handed
+    // to it reaches one frame's worth. Report what it is actually given, and
+    // the threshold it is compared against.
+    static const bool trace = std::getenv("XERENGE_INPUT_TRACE") != nullptr;
+    if (trace)
+    {
+        const auto word = [base](uint32_t at) {
+            uint32_t value = 0;
+            std::memcpy(&value, base + at, sizeof(value));
+            return __builtin_bswap32(value);
+        };
+        const uint32_t pool = word(0x82D397E0u);
+        uint32_t accumulated = 0, threshold = 0, kind = 0;
+        if (pool != 0)
+        {
+            const uint32_t movie = word(word(word(pool + 0x18)) + 0x50);
+            if (movie != 0)
+            {
+                kind = word(movie + 4) & 0x7Fu;
+                const uint32_t state = word(movie + 0x48);
+                if (state != 0)
+                {
+                    accumulated = word(state + 0x30);
+                    threshold = word(word(state + 0xC) + 0x24);
+                }
+            }
+        }
+        static std::atomic<uint32_t> n{0};
+        const uint32_t i = n.fetch_add(1, std::memory_order_relaxed);
+        if (i < 4 || (i % 500) == 0)
+            std::cerr << "apt tick #" << i << " delta=" << ctx.r3.u32
+                      << " accumulated=" << accumulated << " needs=" << threshold
+                      << " kind=" << kind << '\n';
+    }
+    __imp__sub_82427538(ctx, base);
+}
+
+void sub_824285C0(PPCContext& ctx, uint8_t* base)
+{
+    static const bool trace = std::getenv("XERENGE_INPUT_TRACE") != nullptr;
+    if (trace)
+    {
+        static std::atomic<uint32_t> n{0};
+        const uint32_t i = n.fetch_add(1, std::memory_order_relaxed);
+        if (i < 2 || (i % 500) == 0)
+            std::cerr << "apt top update B #" << i << '\n';
+    }
+    __imp__sub_824285C0(ctx, base);
+}
+
+void sub_824288F8(PPCContext& ctx, uint8_t* base)
+{
+    static const bool trace = std::getenv("XERENGE_INPUT_TRACE") != nullptr;
+    if (trace)
+    {
+        static std::atomic<uint32_t> n{0};
+        const uint32_t i = n.fetch_add(1, std::memory_order_relaxed);
+        if (i < 2 || (i % 500) == 0)
+            std::cerr << "apt top update C #" << i << '\n';
+    }
+    __imp__sub_824288F8(ctx, base);
 }
 
 // AptLinker::Update (0x82453AB8) is the per-frame APT update, and the only
@@ -6753,8 +6824,8 @@ void sub_82453AB8(PPCContext& ctx, uint8_t* base)
     {
         static std::atomic<uint32_t> n{0};
         const uint32_t i = n.fetch_add(1, std::memory_order_relaxed);
-        if (i < 2 || (i % 500) == 0)
-            std::cerr << "apt linker update #" << i << '\n';
+        if ((i % 25) == 0)
+            std::cerr << "apt linker update total=" << i << '\n';
     }
     __imp__sub_82453AB8(ctx, base);
 }
@@ -6770,8 +6841,8 @@ void sub_8247EE88(PPCContext& ctx, uint8_t* base)
     {
         static std::atomic<uint32_t> n{0};
         const uint32_t i = n.fetch_add(1, std::memory_order_relaxed);
-        if (i < 2 || (i % 500) == 0)
-            std::cerr << "apt runFrameActions #" << i << '\n';
+        if ((i % 25) == 0)
+            std::cerr << "apt runFrameActions total=" << i << '\n';
     }
     __imp__sub_8247EE88(ctx, base);
 }
@@ -6834,8 +6905,8 @@ void sub_82439768(PPCContext& ctx, uint8_t* base)
     {
         static std::atomic<uint32_t> n{0};
         const uint32_t i = n.fetch_add(1, std::memory_order_relaxed);
-        if (i < 3 || (i % 5000) == 0)
-            std::cerr << "apt runStream #" << i << '\n';
+        if ((i % 25) == 0)
+            std::cerr << "apt runStream total=" << i << '\n';
     }
     __imp__sub_82439768(ctx, base);
 }
@@ -6847,8 +6918,8 @@ void sub_82437EA8(PPCContext& ctx, uint8_t* base)
     {
         static std::atomic<uint32_t> n{0};
         const uint32_t i = n.fetch_add(1, std::memory_order_relaxed);
-        if (i < 3 || (i % 5000) == 0)
-            std::cerr << "apt getURL #" << i << '\n';
+        if ((i % 25) == 0)
+            std::cerr << "apt getURL total=" << i << '\n';
     }
     __imp__sub_82437EA8(ctx, base);
 }
