@@ -6760,6 +6760,38 @@ void sub_82479968(PPCContext& ctx, uint8_t* base)
     __imp__sub_82479968(ctx, base);
 }
 
+// SelectedOption, the native the attract movie's script actually calls. Its
+// constant pool names localEventHandler(screen, keyCode, controllerId), the
+// INPUTCODE button enum, and MenuScreenManager.SelectedOption - so this, not
+// InputEvent, is where a skip would arrive. Registered twice, by the menu
+// adapter (0x821ADF30) and the post-event one (0x821D04F0).
+extern "C" void __imp__sub_821ADF30(PPCContext& ctx, uint8_t* base);
+extern "C" void __imp__sub_821D04F0(PPCContext& ctx, uint8_t* base);
+
+void sub_821ADF30(PPCContext& ctx, uint8_t* base)
+{
+    static const bool trace = std::getenv("XERENGE_APT_TRACE") != nullptr;
+    if (trace)
+    {
+        static std::atomic<uint32_t> n{0};
+        if (n.fetch_add(1, std::memory_order_relaxed) < 16)
+            std::cerr << "movie called SelectedOption (menu)\n";
+    }
+    __imp__sub_821ADF30(ctx, base);
+}
+
+void sub_821D04F0(PPCContext& ctx, uint8_t* base)
+{
+    static const bool trace = std::getenv("XERENGE_APT_TRACE") != nullptr;
+    if (trace)
+    {
+        static std::atomic<uint32_t> n{0};
+        if (n.fetch_add(1, std::memory_order_relaxed) < 16)
+            std::cerr << "movie called SelectedOption (post event)\n";
+    }
+    __imp__sub_821D04F0(ctx, base);
+}
+
 // The routine the movie's script calls as InputEvent (retail 0x821ADD68,
 // resolved from the registration that binds the name to it). If the script
 // routes a key press anywhere, it is here.
