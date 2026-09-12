@@ -6799,13 +6799,23 @@ void sub_82479480(PPCContext& ctx, uint8_t* base)
 
 void sub_82479868(PPCContext& ctx, uint8_t* base)
 {
+    // It walks an array of listeners: the count is the halfword at +0xA and
+    // the array at +0xC, and it returns at once when the count is zero. It
+    // also ignores any event whose kind is not 0 or 1.
     static const bool trace = std::getenv("XERENGE_APT_TRACE") != nullptr;
     if (trace)
     {
+        const uint32_t pool = ctx.r3.u32;
+        uint16_t count = 0, registered = 0;
+        std::memcpy(&count, base + pool + 0xA, sizeof(count));
+        std::memcpy(&registered, base + pool + 0x8, sizeof(registered));
         static std::atomic<uint32_t> n{0};
         const uint32_t i = n.fetch_add(1, std::memory_order_relaxed);
         if (i < 12)
-            std::cerr << "apt ProcessListenerEvents code=" << ctx.r4.u32 << '\n';
+            std::cerr << "apt listener dispatch code=" << ctx.r4.u32
+                      << " kind=" << ctx.r5.u32
+                      << " listeners=" << __builtin_bswap16(count)
+                      << " limit=" << __builtin_bswap16(registered) << '\n';
     }
     __imp__sub_82479868(ctx, base);
 }
