@@ -3813,8 +3813,31 @@ public:
                 static const auto began = now;
                 const auto elapsed = std::chrono::duration_cast<std::chrono::milliseconds>(
                     now - began).count();
-                if ((elapsed % 3000) < 400)
-                    buttons |= autopadButtons;
+                // One button per pulse, taken in turn, rather than all of
+                // them at once: the screens want different buttons - A
+                // confirms the language, Start skips the attract - and holding
+                // both together is not the same input as either alone.
+                static const std::vector<uint16_t> autopadSequence = [] {
+                    std::vector<uint16_t> ordered;
+                    for (uint32_t bit = 0; bit < 16; ++bit)
+                        if ((autopadButtons >> bit) & 1u)
+                            ordered.push_back(uint16_t(1u << bit));
+                    return ordered;
+                }();
+                const bool pulsing = (elapsed % 3000) < 400;
+                const uint16_t current = autopadSequence.empty()
+                    ? uint16_t(0)
+                    : autopadSequence[(elapsed / 3000) % autopadSequence.size()];
+                if (pulsing)
+                    buttons |= current;
+                // Publish the synthetic press where a real one is published,
+                // so anything reading the pad state - the skip aid included -
+                // sees one consistent picture instead of only this call's
+                // return value.
+                const uint16_t published = gInputButtons.load(std::memory_order_relaxed);
+                gInputButtons.store(pulsing
+                    ? uint16_t(published | current)
+                    : uint16_t(published & ~autopadButtons), std::memory_order_relaxed);
             }
             if (buttons != inputButtons_)
             {
@@ -7283,6 +7306,49 @@ void sub_822076D8(PPCContext& ctx, uint8_t* base)
                       << std::dec << '\n';
     }
     __imp__sub_822076D8(ctx, base);
+}
+
+// The title screen and the main menu (retail CB4TitleState::Action 0x822079A0,
+// CB4MainMenuState::Action 0x8220E140), and the state machine's own handover
+// (CGtFSM::StateChange 0x820A38E8). The intro is meant to reach the title
+// screen - background clip with the title over it, waiting for Start - before
+// any attract movie, so whether that state is ever entered is the question.
+extern "C" void __imp__sub_822079A0(PPCContext& ctx, uint8_t* base);
+extern "C" void __imp__sub_8220E140(PPCContext& ctx, uint8_t* base);
+extern "C" void __imp__sub_820A38E8(PPCContext& ctx, uint8_t* base);
+
+void sub_822079A0(PPCContext& ctx, uint8_t* base)
+{
+    static const bool trace = std::getenv("XERENGE_VIDEO_TRACE") != nullptr;
+    if (trace)
+    {
+        static std::atomic<uint32_t> lastAction{~0u};
+        if (lastAction.exchange(ctx.r4.u32, std::memory_order_relaxed) != ctx.r4.u32)
+            std::cerr << "title state action=" << ctx.r4.u32 << " arg1=" << ctx.r6.u32
+                      << '\n';
+    }
+    __imp__sub_822079A0(ctx, base);
+}
+
+void sub_8220E140(PPCContext& ctx, uint8_t* base)
+{
+    static const bool trace = std::getenv("XERENGE_VIDEO_TRACE") != nullptr;
+    if (trace)
+    {
+        static std::atomic<uint32_t> lastAction{~0u};
+        if (lastAction.exchange(ctx.r4.u32, std::memory_order_relaxed) != ctx.r4.u32)
+            std::cerr << "main menu state action=" << ctx.r4.u32 << '\n';
+    }
+    __imp__sub_8220E140(ctx, base);
+}
+
+void sub_820A38E8(PPCContext& ctx, uint8_t* base)
+{
+    static const bool trace = std::getenv("XERENGE_VIDEO_TRACE") != nullptr;
+    if (trace)
+        std::cerr << "state change to 0x" << std::hex << ctx.r4.u64 << " from 0x"
+                  << static_cast<uint32_t>(ctx.lr) << std::dec << '\n';
+    __imp__sub_820A38E8(ctx, base);
 }
 
 // CB4AttractState::Action (retail 0x82207508). The attract sequence is left
