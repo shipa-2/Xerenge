@@ -43,6 +43,7 @@
 #include "xaudio_backend.h"
 #endif
 #include "xbox_media.h"
+#include "host_movie.h"
 
 #ifdef XERENGE_HAS_PPC
 namespace
@@ -6230,6 +6231,19 @@ void sub_821FEBC0(PPCContext& ctx, uint8_t* base)
         ? reinterpret_cast<const char*>(base + namePointer) : "(none)";
     if (trace)
         std::cerr << "intro clip requested: " << name << '\n';
+    // Take over the picture for this clip. The guest keeps opening the file and
+    // running its own decoder - it owns the draw that places the video and the
+    // status the title's states wait on - but the frames come from here, where
+    // there is the throughput to deliver them on time.
+    static const bool hostMovies = std::getenv("XERENGE_GUEST_MOVIE_DECODE") == nullptr;
+    if (hostMovies)
+    {
+        const std::string clipPath = hostMoviePathForClip(name);
+        if (!clipPath.empty())
+            gHostMovie.open(clipPath);
+        else
+            gHostMovie.close();
+    }
     // Remember whether the clip now starting is the attract movie, so the
     // skip aid can restrict itself to that one and leave every other screen -
     // the language selector above all - untouched.

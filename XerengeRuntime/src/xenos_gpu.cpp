@@ -1,4 +1,6 @@
 #include "xenos_gpu.h"
+
+#include "host_movie.h"
 #include <cstdio>
 #include <cstdlib>
 #include <filesystem>
@@ -2237,6 +2239,19 @@ void XenosGpu::rasterizeDraw(uint8_t* guestBase, uint32_t initiator)
             (gpuPhysicalToGuest(((texture1 >> 12) & 0xFFFFFu) << 12) == movieSurfaceGuest_) &&
             !movieYuvOff)
         {
+            // Prefer a frame decoded on the host. The guest's own decoder still
+            // runs and still decides that a video belongs here, which is what
+            // the condition above tests; this only replaces the pixels, with a
+            // frame chosen by the clip's own timeline rather than by however
+            // fast the recompiled decoder managed to go. Bumping the decode
+            // generation is what tells the composite cache below that this is a
+            // genuinely new frame.
+            if (uint64_t hostGeneration = 0;
+                gHostMovie.nextFrame(movieFrameRgba_, movieFrameWidth_,
+                    movieFrameHeight_, hostGeneration))
+                ++movieDecodeGeneration_;
+            if (movieFrameRgba_.empty() || movieFrameWidth_ == 0 || movieFrameHeight_ == 0)
+                return;
             RasterVertex q3 = triangle[1];
             q3.position[0] = triangle[0].position[0] + triangle[2].position[0] -
                 triangle[1].position[0];

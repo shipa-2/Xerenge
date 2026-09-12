@@ -24,6 +24,12 @@ public:
     // on an .iso.
     bool extractTo(const std::string& outDir) const;
 
+    // The file's location on the host, for the cases a host library has to
+    // open it itself rather than read it through the guest's file handles -
+    // the movie decoder is the one that does. Empty when the media is an .iso,
+    // where the file has no standalone host path.
+    std::string hostPath(const std::string& xboxPath) const;
+
     bool openFile(const std::string& xboxPath, uint32_t& handle, uint64_t& size);
     bool readFile(uint32_t handle, void* destination, uint32_t size, uint32_t& bytesRead);
     bool seekFile(uint32_t handle, int64_t distance, uint32_t method, uint64_t& position);

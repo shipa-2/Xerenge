@@ -215,6 +215,17 @@ bool XboxMedia::parseNode(uint64_t tableOffset, uint32_t tableSize, uint64_t nod
     return true;
 }
 
+std::string XboxMedia::hostPath(const std::string& xboxPath) const
+{
+    std::lock_guard lock(mutex_);
+    if (!directoryMode_)
+        return {};
+    const std::string key = normalize(xboxPath);
+    if (key.empty())
+        return {};
+    return root_ + "/" + key;
+}
+
 bool XboxMedia::openFile(const std::string& xboxPath, uint32_t& handle, uint64_t& size)
 {
     std::lock_guard lock(mutex_);

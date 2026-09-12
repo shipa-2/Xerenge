@@ -30,17 +30,24 @@ find_library(XERENGE_ALSA_LIBRARY NAMES asound REQUIRED
 add_library(Xerenge::Alsa UNKNOWN IMPORTED)
 set_target_properties(Xerenge::Alsa PROPERTIES IMPORTED_LOCATION "${XERENGE_ALSA_LIBRARY}")
 
+# The title's movies are ordinary ASF/WMV3 files, so they are decoded by a
+# host library rather than by the recompiled decoder, which has to share the
+# core budget with everything else the title does.
+pkg_check_modules(FFMPEG REQUIRED IMPORTED_TARGET
+    libavcodec libavformat libavutil libswscale)
+
 add_executable(xerenge-runtime
     src/main.cpp
     src/xenos_gpu.cpp
     src/xbox_media.cpp
+    src/host_movie.cpp
     src/shader_cache_runtime.cpp
     src/xaudio_backend.cpp
     ../XenosRecomp/thirdparty/smol-v/source/smolv.cpp
 )
 
 target_link_libraries(xerenge-runtime PRIVATE Vulkan::Vulkan OpenGL::GL Xerenge::Crypto Xerenge::Zstd
-    PkgConfig::GLFW3 Xerenge::Alsa ${CMAKE_DL_LIBS})
+    PkgConfig::GLFW3 PkgConfig::FFMPEG Xerenge::Alsa ${CMAKE_DL_LIBS})
 target_compile_definitions(xerenge-runtime PRIVATE GLFW_INCLUDE_NONE)
 target_include_directories(xerenge-runtime PRIVATE "${CMAKE_CURRENT_SOURCE_DIR}/src"
     "${CMAKE_CURRENT_SOURCE_DIR}/../XenosRecomp/thirdparty/xxHash"
