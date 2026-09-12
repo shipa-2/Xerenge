@@ -103,6 +103,44 @@ The fixes:
 The diagnostics compare the uniform buffer against the register file, report the
 shader interface masks, and trace the swap-time channel order.
 
+## Moving to plume
+
+The Xenia-derived GPU plugin is not the path the mature project on this SDK
+takes. re:Blue calls `rexglue_setup_target` with no `GPU_PLUGINS` at all: it
+hooks the guest's D3D entry points with `REX_HOOK` and drives
+[plume](https://github.com/zolaware/plume) directly, so it never parses a PM4
+packet, never emulates EDRAM, and never touches the guest's gamma LUT. Both
+defects still open here live in precisely those places.
+
+plume is another separate checkout, at `../plume`, and needs three of its own
+submodules:
+
+```
+git clone --depth 1 https://github.com/zolaware/plume.git ../plume
+git -C ../plume submodule update --init --depth 1 \
+    contrib/volk contrib/Vulkan-Headers contrib/VulkanMemoryAllocator
+```
+
+`src/plume_selftest.cpp` was the first step: it brings up the render interface,
+lists the devices it sees and creates one, which is all that needed proving
+before any of the translation layer is written. It reported the adapter and a
+created device here.
+
+It is kept out of the executable, and the reason matters before the renderer is
+written: plume pulls in volk, which declares the Vulkan entry points as its own
+function-pointer globals. Linking it put an uninitialised `vkCreateInstance`
+into the binary, shadowing the loader's, and the title then stopped getting past
+language select and lost its video. Whoever writes the renderer has to settle
+that first - either the whole process resolves Vulkan through volk, or plume
+stays behind its own boundary.
+
+The layer itself is the work, and its size is worth being plain about: the
+equivalent in re:Blue is 105 files and about 34000 lines - device, pipelines,
+constant buffers, texture upload, vertex declarations, resolve, present,
+samplers. None of it mentions their title, so it is generic Xenos-to-plume
+translation rather than game-specific code, which makes it a shape to follow
+rather than invent.
+
 ## Where it stands
 
 The title boots, runs its logos, reaches the title screen, loads a save from the
