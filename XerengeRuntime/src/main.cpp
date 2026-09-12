@@ -3799,9 +3799,17 @@ public:
             {
                 // Discrete presses, not a held button: menus act on the
                 // transition, so hold briefly then release.
-                static std::atomic<uint32_t> autopadPoll{0};
-                const uint32_t phase = autopadPoll.fetch_add(1, std::memory_order_relaxed) % 90u;
-                if (phase < 8u)
+                //
+                // Paced by the clock rather than by how often the title asks.
+                // It polls very unevenly - around once a second while an intro
+                // clip plays - so counting polls made the press land a few
+                // times at startup and then effectively never again, which
+                // looks exactly like a title that ignores the button.
+                const auto now = std::chrono::steady_clock::now();
+                static const auto began = now;
+                const auto elapsed = std::chrono::duration_cast<std::chrono::milliseconds>(
+                    now - began).count();
+                if ((elapsed % 3000) < 400)
                     buttons |= autopadButtons;
             }
             if (buttons != inputButtons_)
@@ -6716,6 +6724,25 @@ void sub_821FE9C8(PPCContext& ctx, uint8_t* base)
     __imp__sub_821FE9C8(ctx, base);
     if (trace && state() != before)
         std::cerr << "video manager state " << before << " -> " << state() << '\n';
+}
+
+// CB4AttractState::Action (retail 0x82207508). The attract sequence is left
+// by an action delivered to this state, so whether a button press reaches it
+// at all is answered here rather than by watching for the menu to appear.
+extern "C" void __imp__sub_82207508(PPCContext& ctx, uint8_t* base);
+void sub_82207508(PPCContext& ctx, uint8_t* base)
+{
+    static const bool trace = std::getenv("XERENGE_VIDEO_TRACE") != nullptr;
+    if (trace)
+    {
+        static std::atomic<uint64_t> last{~0ull};
+        const uint64_t signature = (uint64_t(ctx.r4.u32) << 32) ^
+            (uint64_t(ctx.r6.u32) << 16) ^ ctx.r7.u32;
+        if (last.exchange(signature, std::memory_order_relaxed) != signature)
+            std::cerr << "attract state action=" << ctx.r4.u32 << " arg1=" << ctx.r6.u32
+                      << " arg2=" << int32_t(ctx.r7.u32) << '\n';
+    }
+    __imp__sub_82207508(ctx, base);
 }
 
 // CB4VideoManager::PrepareVideo (retail 0x821F9058) only does anything in
