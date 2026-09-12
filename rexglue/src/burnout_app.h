@@ -6,9 +6,6 @@
 
 #include <rex/rex_app.h>
 
-namespace burnout {
-void PlumeSelfTest();
-}  // namespace burnout
 
 class BurnoutApp : public rex::ReXApp {
  public:
@@ -20,9 +17,8 @@ class BurnoutApp : public rex::ReXApp {
         PPCImageConfig));
   }
 
-  void OnPostInitLogging() override { burnout::PlumeSelfTest(); }
-
   // Override virtual hooks for customization:
+  // void OnPostInitLogging() override {}
   // void OnPreSetup(rex::RuntimeConfig& config) override {}
   // void OnLoadXexImage(std::string& xex_image) override {}
   // void OnPostLoadXexImage() override {}

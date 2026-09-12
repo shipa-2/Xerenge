@@ -13,7 +13,6 @@ include(generated/rexglue.cmake)
 # Sources
 set(BURNOUT_SOURCES
     src/main.cpp
-    src/plume_selftest.cpp
 )
 
 if(WIN32)
@@ -34,5 +33,10 @@ target_include_directories(burnout PRIVATE "${REXSDK_DIR}/thirdparty/imgui")
 # system provides and the SDK also builds.
 set(PLUME_SDL_VULKAN_ENABLED ON CACHE BOOL "" FORCE)
 set(PLUME_BUILD_EXAMPLES OFF CACHE BOOL "" FORCE)
+# NOT linked into the executable yet, and that matters: volk defines the Vulkan
+# entry points as its own function-pointer globals, so linking it puts an
+# uninitialised vkCreateInstance into the binary that shadows the loader's. Doing
+# so stopped the title getting past language select and killed its video. The
+# renderer that uses plume will have to resolve that - by having the whole
+# process go through volk, or by keeping plume behind its own boundary.
 add_subdirectory("${CMAKE_CURRENT_SOURCE_DIR}/../Xerenge/plume" plume EXCLUDE_FROM_ALL)
-target_link_libraries(burnout PRIVATE plume)
