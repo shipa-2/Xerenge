@@ -34,6 +34,7 @@
 #include <dlfcn.h>
 #include <execinfo.h>
 #include <signal.h>
+#include <sys/prctl.h>
 #include <unistd.h>
 
 #include "ppc_recomp_shared.h"
@@ -3337,6 +3338,24 @@ public:
             if (sizeAddress != 0)
                 storeU32(base, sizeAddress, size);
             ctx.r3.u32 = allocation != 0 ? 0 : 0xC0000017u; // STATUS_NO_MEMORY
+            return;
+        }
+        if (service == "NtFreeVirtualMemory")
+        {
+            // The counterpart of NtAllocateVirtualMemory above, and until now
+            // absent: every VirtualAlloc the title made was kept forever. The
+            // video decoder takes its frame buffers this way, around a
+            // megabyte at a time per clip, so the guest heap ran out partway
+            // through the intro and the attract clip could not be created.
+            //
+            // Xbox ABI: r3 points at the base address, r4 at the region size.
+            const uint32_t baseAddress = ctx.r3.u32;
+            const uint32_t region = baseAddress != 0 ? loadU32(base, baseAddress) : 0;
+            if (region != 0)
+                release(region);
+            if (ctx.r4.u32 != 0)
+                storeU32(base, ctx.r4.u32, 0);
+            ctx.r3.u32 = 0;
             return;
         }
         if (service == "XamFree" || service == "ExFreePool")
@@ -7012,6 +7031,18 @@ int main(int argc, char** argv)
     // are still running recompiled code against the guest arena and have no
     // cancellation ABI, so unwinding through static destructors would deadlock
     // or crash rather than tidy anything up.
+    // Yama restricts ptrace to a tracer that is already an ancestor, so a
+    // debugger started separately cannot attach to a run launched from a
+    // different shell - which is exactly the case when a hang has to be
+    // examined after the fact. A process may waive that for itself.
+    if (std::getenv("XERENGE_ALLOW_DEBUGGER") != nullptr)
+    {
+        if (prctl(PR_SET_PTRACER, PR_SET_PTRACER_ANY, 0, 0, 0) == 0)
+            std::cerr << "debugger attach allowed; pid " << ::getpid() << '\n';
+        else
+            std::cerr << "could not allow debugger attach\n";
+    }
+
     if (const char* seconds = std::getenv("XERENGE_RUN_SECONDS"))
     {
         const int limit = std::atoi(seconds);
