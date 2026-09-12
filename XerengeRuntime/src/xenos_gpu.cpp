@@ -12,6 +12,7 @@
 #include <filesystem>
 #include <cstdio>
 #include <fstream>
+#include <set>
 #include <iostream>
 
 #define XXH_INLINE_ALL
@@ -2470,35 +2471,36 @@ void XenosGpu::rasterizeDraw(uint8_t* guestBase, uint32_t initiator)
                 (((outerInnerBytes >> 5) & 7u) << 8) +
                 ((outerInnerBytes >> 8) << 12));
         };
-        // Write one texture's guest bytes out so its layout can be checked
-        // against a known-good decoder instead of guessed at. Names the format,
-        // size, pitch and tiling alongside, since the bytes alone do not say
-        // how they are meant to be read.
-        static const char* const dumpTexture = std::getenv("XERENGE_DUMP_TEXTURE");
-        if (dumpTexture != nullptr && (hasDxt1Texture || hasRgba8Texture))
+        // Write each distinct texture's guest bytes out once, so a layout can
+        // be checked against a known-good decoder offline instead of by
+        // rebuilding and looking at the screen. The name carries everything
+        // needed to read them back: the bytes alone do not say how they are
+        // meant to be addressed.
+        static const bool dumpTextures = std::getenv("XERENGE_DUMP_TEXTURES") != nullptr;
+        if (dumpTextures && (hasDxt1Texture || hasDxt3Texture || hasRgba8Texture))
         {
-            static bool dumped = false;
-            unsigned wantedWidth = 0, wantedHeight = 0, wantedFormat = 0;
-            std::sscanf(dumpTexture, "%ux%ux%u", &wantedWidth, &wantedHeight,
-                        &wantedFormat);
-            if (!dumped && textureWidth == wantedWidth &&
-                textureHeight == wantedHeight && textureFormat == wantedFormat)
+            static std::set<uint32_t> dumped;
+            if (dumped.size() < 32u && dumped.insert(textureBase).second)
             {
-                dumped = true;
-                const uint32_t blocksWide = hasDxt1Texture
-                    ? std::max(texturePitchBlocks, (textureWidth + 3u) / 4u)
-                    : texturePitchPixels;
-                const uint32_t rows = hasDxt1Texture
-                    ? (textureHeight + 3u) / 4u : textureHeight;
-                const uint32_t bytes = blocksWide * rows * (hasDxt1Texture ? 8u : 4u);
-                std::ofstream out("/tmp/texture.bin", std::ios::binary);
-                out.write(reinterpret_cast<const char*>(guestBase + textureBase), bytes);
-                std::cerr << "dumped texture base=0x" << std::hex << textureBase
-                          << std::dec << " format=" << textureFormat
-                          << " size=" << textureWidth << 'x' << textureHeight
-                          << " pitch=" << (hasDxt1Texture ? texturePitchBlocks
-                                                          : texturePitchPixels)
-                          << " tiled=" << textureTiled << " bytes=" << bytes << '\n';
+                const uint32_t blockShift = hasRgba8Texture ? 0u : 2u;
+                const uint32_t bytesPerBlock = hasDxt1Texture ? 8u : hasDxt3Texture ? 16u : 4u;
+                const uint32_t pitch = hasRgba8Texture ? texturePitchPixels : texturePitchBlocks;
+                uint32_t rows = std::max(1u,
+                    (textureHeight + (1u << blockShift) - 1u) >> blockShift);
+                // A tiled resource is padded out to whole 32x32 macro tiles,
+                // so its storage is taller than its height suggests.
+                if (textureTiled)
+                    rows = (rows + 31u) & ~31u;
+                const uint32_t bytes = pitch * rows * bytesPerBlock;
+                char name[160];
+                std::snprintf(name, sizeof(name),
+                    "/tmp/xtex/%08x_%ux%u_fmt%u_pitch%u_tiled%u_endian%u.bin",
+                    textureBase, textureWidth, textureHeight, textureFormat,
+                    pitch, textureTiled ? 1u : 0u, textureEndian);
+                std::ofstream out(name, std::ios::binary);
+                if (out)
+                    out.write(reinterpret_cast<const char*>(guestBase + textureBase), bytes);
+                std::cerr << "dumped " << name << " (" << bytes << " bytes)\n";
             }
         }
         auto sampleTexture = [&](float u, float v)
@@ -2535,7 +2537,19 @@ void XenosGpu::rasterizeDraw(uint8_t* guestBase, uint32_t initiator)
                 if (textureEndian == 1u)
                     std::swap(texel[0], texel[1]);
                 else if (textureEndian == 2u)
-                    std::swap(texel[0], texel[3]), std::swap(texel[1], texel[2]);
+                {
+                    // One 32-bit texel stored as a single big-endian word, and
+                    // the word is ARGB: the bytes arrive as A, R, G, B.
+                    // Reversing them yields B, G, R, A, which renders with red
+                    // and blue exchanged - the Swedish flag on the language
+                    // screen came out red with a cyan cross instead of blue
+                    // with a yellow one. Rotate the alpha to the end instead.
+                    const uint8_t alpha = texel[0];
+                    texel[0] = texel[1];
+                    texel[1] = texel[2];
+                    texel[2] = texel[3];
+                    texel[3] = alpha;
+                }
                 else if (textureEndian == 3u)
                     std::swap(texel[0], texel[2]), std::swap(texel[1], texel[3]);
                 std::copy(std::begin(texel), std::end(texel), result.begin());
