@@ -22,3 +22,9 @@ XenosRecomp/
 XenonRecomp/
 XenonRecomp-next/
 XenonRecompUnlimited/
+
+# The ReXGlue SDK is a separate checkout, not vendored: see rexglue/README.md.
+rexglue-sdk/
+# Generated recompiler output and builds of the ReXGlue project.
+rexglue/generated/
+rexglue/build/

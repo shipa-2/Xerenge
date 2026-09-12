@@ -1,0 +1,19 @@
+# Two branch targets the analyser found outside any function it discovered.
+#
+# 0x8256C6F0 is a five-instruction leaf - increment a counter through a pointer
+# and return - with zero padding after it, so it has no .pdata record of its
+# own and nothing falls through into it.
+#
+# 0x8256DB78 is reached by a tail branch and ends in a bctr; its size is the
+# one already established for it while bringing this image up on the previous
+# runtime.
+[functions]
+0x8256C6F0 = { size = 0x14 }
+0x8256DB78 = { size = 0xC8 }
+
+# Reached only through a vtable slot, so no static analysis can see it: a
+# seven-instruction leaf that fills in a small descriptor and returns, with
+# zero padding after it.
+0x8256CF20 = { size = 0x1C }
+0x82362C78 = { size = 0x8 }
+0x82575F38 = { size = 0x8 }
