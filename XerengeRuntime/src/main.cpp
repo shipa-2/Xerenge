@@ -1521,11 +1521,11 @@ extern "C" void PPCTraceFunction(uint32_t address, PPCContext& ctx, uint8_t* bas
     }
 
     static std::atomic<uint32_t> waitTraceCount = 0;
-    if (address == 0x825AC688 && waitTraceCount.fetch_add(1, std::memory_order_relaxed) < 8)
+    if (address == 0x825AD0D8 && waitTraceCount.fetch_add(1, std::memory_order_relaxed) < 8)
         std::cerr << "wait wrapper entry r3=0x" << std::hex << ctx.r3.u32
                   << " r7=0x" << ctx.r7.u32 << " r8=0x" << ctx.r8.u32
                   << " r28=0x" << ctx.r28.u32 << std::dec << '\n';
-    if (address == 0x82381C60)
+    if (address == 0x82382710)
     {
         static std::atomic<uint32_t> queueTraceCount = 0;
         if (queueTraceCount.fetch_add(1, std::memory_order_relaxed) < 8)
@@ -1541,7 +1541,7 @@ extern "C" void PPCTraceFunction(uint32_t address, PPCContext& ctx, uint8_t* bas
                       << " r5=0x" << ctx.r5.u32 << std::dec << '\n';
         }
     }
-    if (address == 0x82382250)
+    if (address == 0x82382D00)
     {
         static std::atomic<uint32_t> allocatorQueueTraceCount = 0;
         if (allocatorQueueTraceCount.fetch_add(1, std::memory_order_relaxed) < 8)
@@ -1559,7 +1559,7 @@ extern "C" void PPCTraceFunction(uint32_t address, PPCContext& ctx, uint8_t* bas
                       << std::dec << '\n';
         }
     }
-    if (address == 0x82382390)
+    if (address == 0x82382E40)
     {
         static std::atomic<uint32_t> allocatorSetupTraceCount = 0;
         if (allocatorSetupTraceCount.fetch_add(1, std::memory_order_relaxed) < 16)
@@ -1580,7 +1580,7 @@ extern "C" void PPCTraceFunction(uint32_t address, PPCContext& ctx, uint8_t* bas
                       << std::dec << '\n';
         }
     }
-    if (address == 0x82566CE0 || address == 0x8256EC30 || address == 0x8256F540)
+    if (address == 0x82566CE0 || address == 0x8256F6E0 || address == 0x8256FFF0)
     {
         static std::atomic<uint32_t> callbackTraceCount = 0;
         if (callbackTraceCount.fetch_add(1, std::memory_order_relaxed) < 12)
@@ -1602,12 +1602,12 @@ extern "C" void PPCTraceFunction(uint32_t address, PPCContext& ctx, uint8_t* bas
         }
     }
     static std::atomic<uint32_t> initTraceCount = 0;
-    if ((address == 0x820A3AF0 || address == 0x8211A958 || address == 0x8211B0D0) &&
+    if ((address == 0x820A3AF0 || address == 0x8211A9F0 || address == 0x8211B168) &&
         initTraceCount.fetch_add(1, std::memory_order_relaxed) < 12)
         std::cerr << "init function entry 0x" << std::hex << address
                   << " r3=0x" << ctx.r3.u32 << std::dec << '\n';
     static std::atomic<uint32_t> allocatorTraceCount = 0;
-    if ((address == 0x820D59E0 || address == 0x820BF280 || address == 0x822D5000 || address == 0x82350708 || address == 0x82101820 || address == 0x82365F30) &&
+    if ((address == 0x820D5A38 || address == 0x820BF2D8 || address == 0x822D5000 || address == 0x823511D8 || address == 0x82101820 || address == 0x82366A00) &&
         allocatorTraceCount.fetch_add(1, std::memory_order_relaxed) < 12)
         std::cerr << "allocator path entry 0x" << std::hex << address
                   << " r3=0x" << ctx.r3.u32 << " r4=0x" << ctx.r4.u32
@@ -1621,7 +1621,7 @@ extern "C" void PPCTraceFunction(uint32_t address, PPCContext& ctx, uint8_t* bas
                   }()
                   << std::dec << '\n';
     static std::atomic<uint32_t> mathInitTraceCount = 0;
-    if (address == 0x8226B940 && mathInitTraceCount.fetch_add(1, std::memory_order_relaxed) < 4)
+    if (address == 0x8226BB18 && mathInitTraceCount.fetch_add(1, std::memory_order_relaxed) < 4)
     {
         auto guestWord = [base](uint32_t address) {
             uint32_t value = 0;
@@ -1653,8 +1653,8 @@ extern "C" void PPCTraceFunction(uint32_t address, PPCContext& ctx, uint8_t* bas
                   << " manager=0x" << guestWord(0x82d14ec0)
                   << std::dec << '\n';
     }
-    if (address == 0x820DDB88 || address == 0x820B5B28 ||
-        address == 0x82355688 || address == 0x82355880)
+    if (address == 0x820DDBE0 || address == 0x820B5B28 ||
+        address == 0x82355688 || address == 0x82356350)
     {
         auto guestWord = [base](uint32_t guestAddress) {
             uint32_t value = 0;
@@ -1668,14 +1668,14 @@ extern "C" void PPCTraceFunction(uint32_t address, PPCContext& ctx, uint8_t* bas
                   << std::dec << '\n';
     }
     static std::atomic<uint32_t> renderTraceCount = 0;
-    if ((address == 0x82150418 || address == 0x8234CBE0 ||
-         address == 0x8238C960 || address == 0x82387D00 ||
-         address == 0x82346708 || address == 0x82349C80 ||
-         address == 0x82349B38 || address == 0x8237FCD0 ||
-         address == 0x8237FD58 ||
-         address == 0x8237FF98 || address == 0x82380FE8 ||
-         address == 0x82381688 || address == 0x82382578 ||
-         address == 0x82388688) &&
+    if ((address == 0x82150520 || address == 0x8234D6B0 ||
+         address == 0x8238C960 || address == 0x823887B0 ||
+         address == 0x82346708 || address == 0x8234A758 ||
+         address == 0x82349B38 || address == 0x82380780 ||
+         address == 0x82380808 ||
+         address == 0x8237FF98 || address == 0x82381A98 ||
+         address == 0x82382138 || address == 0x82382578 ||
+         address == 0x82389138) &&
         renderTraceCount.fetch_add(1, std::memory_order_relaxed) < 128)
     {
         std::cerr << "render path entry 0x" << std::hex << address
@@ -1687,11 +1687,11 @@ extern "C" void PPCTraceFunction(uint32_t address, PPCContext& ctx, uint8_t* bas
                   << " r8=0x" << ctx.r8.u32 << std::dec << '\n';
     }
     static std::atomic<uint32_t> timerTraceCount = 0;
-    if ((address == 0x82423640 || address == 0x824236F8 ||
-         address == 0x824237D8 || address == 0x824238F0 ||
-         address == 0x8235F998 || address == 0x8235F828 ||
-         address == 0x8235F658 || address == 0x8235F6F0 ||
-         address == 0x8235F798 || address == 0x8235F1D0) &&
+    if ((address == 0x82424040 || address == 0x824240F8 ||
+         address == 0x824241D8 || address == 0x824242F0 ||
+         address == 0x8235F998 || address == 0x823602F8 ||
+         address == 0x82360128 || address == 0x823601C0 ||
+         address == 0x82360268 || address == 0x8235FCA0) &&
         timerTraceCount.fetch_add(1, std::memory_order_relaxed) < 32)
     {
         std::cerr << "timer path entry 0x" << std::hex << address
@@ -1702,7 +1702,7 @@ extern "C" void PPCTraceFunction(uint32_t address, PPCContext& ctx, uint8_t* bas
                   << " r7=0x" << ctx.r7.u32
                   << " r8=0x" << ctx.r8.u32 << std::dec << '\n';
     }
-    if (address == 0x82380FE8 && ctx.r4.u32 != 0 && ctx.r5.u32 != 0 &&
+    if (address == 0x82381A98 && ctx.r4.u32 != 0 && ctx.r5.u32 != 0 &&
         ctx.r5.u32 < 0x10000u)
     {
         // This is a CPU copy into the ring, not a GPU submission. Executing
@@ -1731,7 +1731,7 @@ extern "C" void PPCTraceFunction(uint32_t address, PPCContext& ctx, uint8_t* bas
         if (previous != address && gPpcFunctionTransitions.fetch_add(1, std::memory_order_relaxed) < 5000)
         {
             std::cerr << "guest function: 0x" << std::hex << address;
-            if (address == 0x825AC688)
+            if (address == 0x825AD0D8)
                 std::cerr << " r3=0x" << ctx.r3.u32 << " r8=0x" << ctx.r8.u32
                           << " r10=0x" << ctx.r10.u32 << " r11=0x" << ctx.r11.u32;
             std::cerr << std::dec << '\n';
@@ -1995,6 +1995,15 @@ extern "C" void PPCGuestMmioStore(uint8_t* base, uint32_t address, uint64_t valu
 
 const bool gSpinningWaitTrace = std::getenv("XERENGE_SPINNING_WAITS") != nullptr;
 
+// Beta 5's resource worker entry point. The retail image has no equivalent
+// workaround, and reusing Beta 5's address there would match nothing at best
+// and an unrelated function at worst.
+#if defined(XERENGE_TARGET_BETA5) && XERENGE_TARGET_BETA5
+constexpr uint32_t kResourceWorkerEntry = 0x821109F8u;
+#else
+constexpr uint32_t kResourceWorkerEntry = 0u;
+#endif
+
 class XboxServiceLayer
 {
 public:
@@ -2210,17 +2219,21 @@ public:
             if (handle != 0 && startAddress != 0)
             {
                 // CREATE_SUSPENDED is part of the Xbox thread contract. Keep
-                // it for ordinary workers. This prototype never resumes its
-                // resource worker after creating it, so its state is prepared
-                // above and the worker is released here to drain the loader
-                // queue.
-                const bool resourceWorker = startAddress == 0x821109F8u;
+                // it for ordinary workers. Beta 5 never resumes its resource
+                // worker after creating it, so there its state is prepared
+                // below and the worker released here to drain the loader
+                // queue. That entry point is Beta 5's; in the retail image the
+                // same address is not a thread entry at all - it lands inside
+                // CB4MemoryCardManager::UpdateLoadSaveAndShare - so the
+                // workaround has nothing to recognise and must not be live.
+                const bool resourceWorker =
+                    kResourceWorkerEntry != 0 && startAddress == kResourceWorkerEntry;
                 threadSuspendCounts_[handle] =
                     ((ctx.r9.u32 & 1u) != 0 && !resourceWorker) ? 1u : 0u;
                 if (threadTraceEnabled)
                     std::cerr << "thread queued handle=0x" << std::hex << handle
                               << " suspended=" << ((ctx.r9.u32 & 1u) != 0 &&
-                                  startAddress != 0x821109F8u)
+                                  !resourceWorker)
                               << " start=0x" << startAddress << std::dec << '\n';
                 // The title's resource-worker context is allocated from the
                 // zeroed guest heap, while the PPC constructor leaves its
@@ -2228,7 +2241,7 @@ public:
                 // initialization entry; without it 821109F8 repeatedly
                 // dispatches the invalid state 0 branch and never reaches
                 // the resource queue.
-                if (startAddress == 0x821109F8u && loadU32(base, startContext + 48) == 0)
+                if (resourceWorker && loadU32(base, startContext + 48) == 0)
                 {
                     gResourceStateWatchAddress.store(startContext + 48, std::memory_order_relaxed);
                     storeU32(base, startContext + 48, 2);
