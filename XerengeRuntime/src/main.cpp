@@ -6726,6 +6726,35 @@ void sub_821FE9C8(PPCContext& ctx, uint8_t* base)
         std::cerr << "video manager state " << before << " -> " << state() << '\n';
 }
 
+// The Flash layer turning a named command from the movie into an FSM event
+// (retail AptCBCommand 0x821F60B8), and the layer's input entry (0x821F5B10). A skip has
+// to travel this way: press, movie script, command, event.
+extern "C" void __imp__sub_821F60B8(PPCContext& ctx, uint8_t* base);
+extern "C" void __imp__sub_821F5B10(PPCContext& ctx, uint8_t* base);
+
+void sub_821F60B8(PPCContext& ctx, uint8_t* base)
+{
+    static const bool trace = std::getenv("XERENGE_INPUT_TRACE") != nullptr;
+    if (trace)
+        std::cerr << "flash command '"
+                  << (ctx.r3.u32 ? reinterpret_cast<const char*>(base + ctx.r3.u32) : "?")
+                  << "'\n";
+    __imp__sub_821F60B8(ctx, base);
+}
+
+void sub_821F5B10(PPCContext& ctx, uint8_t* base)
+{
+    static const bool trace = std::getenv("XERENGE_INPUT_TRACE") != nullptr;
+    if (trace)
+    {
+        static std::atomic<uint32_t> n{0};
+        const uint32_t i = n.fetch_add(1, std::memory_order_relaxed);
+        if ((i % 300) == 0)
+            std::cerr << "flash HandleInput called " << i << " times\n";
+    }
+    __imp__sub_821F5B10(ctx, base);
+}
+
 // The front end's own input entry points (retail
 // CB4InputManager::AnyInput 0x8210F1C0, ::GetMenuButton 0x8210F090). The pad
 // state reaching XamInputGetState says nothing about whether the title's menu
@@ -6776,7 +6805,8 @@ void sub_822076D8(PPCContext& ctx, uint8_t* base)
         if (lastAction.exchange(ctx.r4.u32, std::memory_order_relaxed) != ctx.r4.u32)
             std::cerr << "criterion state action=" << ctx.r4.u32
                       << " arg1=" << ctx.r6.u32 << " arg2=" << int32_t(ctx.r7.u32)
-                      << '\n';
+                      << " from 0x" << std::hex << static_cast<uint32_t>(ctx.lr)
+                      << std::dec << '\n';
     }
     __imp__sub_822076D8(ctx, base);
 }
@@ -6795,7 +6825,8 @@ void sub_82207508(PPCContext& ctx, uint8_t* base)
             (uint64_t(ctx.r6.u32) << 16) ^ ctx.r7.u32;
         if (last.exchange(signature, std::memory_order_relaxed) != signature)
             std::cerr << "attract state action=" << ctx.r4.u32 << " arg1=" << ctx.r6.u32
-                      << " arg2=" << int32_t(ctx.r7.u32) << '\n';
+                      << " arg2=" << int32_t(ctx.r7.u32) << " from 0x" << std::hex
+                      << static_cast<uint32_t>(ctx.lr) << std::dec << '\n';
     }
     __imp__sub_82207508(ctx, base);
 }
