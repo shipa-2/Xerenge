@@ -6751,6 +6751,29 @@ void sub_825861E8(PPCContext& ctx, uint8_t* base)
 
 int main(int argc, char** argv)
 {
+    // A run that has to be stopped by hand is awkward to script and easy to
+    // leave behind: the guest keeps executing after the interesting part is
+    // over, and an abandoned process holds the audio device and the window.
+    // XERENGE_RUN_SECONDS ends the run by itself. It leaves the same way the
+    // window-close path does and for the same reason - detached guest threads
+    // are still running recompiled code against the guest arena and have no
+    // cancellation ABI, so unwinding through static destructors would deadlock
+    // or crash rather than tidy anything up.
+    if (const char* seconds = std::getenv("XERENGE_RUN_SECONDS"))
+    {
+        const int limit = std::atoi(seconds);
+        if (limit > 0)
+        {
+            std::thread([limit] {
+                std::this_thread::sleep_for(std::chrono::seconds(limit));
+                std::cerr << "run limit of " << limit << "s reached; stopping\n";
+                std::cout.flush();
+                std::cerr.flush();
+                _exit(0);
+            }).detach();
+        }
+    }
+
     if (argc > 1 && (std::string(argv[1]) == "--validate" || std::string(argv[1]) == "--inspect"))
     {
         if (argc != 3)
