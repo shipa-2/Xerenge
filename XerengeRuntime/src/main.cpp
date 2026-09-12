@@ -257,6 +257,10 @@ std::atomic<uint32_t> gResourceStateWatchAddress = 0;
 std::atomic<bool> gResourceBootstrapReady = false;
 std::atomic<uint32_t> gPpcBootTraceThreadIds = 0;
 std::atomic<uint16_t> gInputButtons = 0;
+// Whether the clip now playing is the attract movie, so the skip aid can act
+// on that one alone.
+std::atomic<bool> gAttractClipPlaying{false};
+std::atomic<uint32_t> gSkipHoldFrames{0};
 std::atomic<uint16_t> gKeyboardButtons = 0;
 std::atomic<int16_t> gGamepadLeftX = 0;
 std::atomic<int16_t> gGamepadLeftY = 0;
@@ -6203,6 +6207,11 @@ void sub_821FEBC0(PPCContext& ctx, uint8_t* base)
         ? reinterpret_cast<const char*>(base + namePointer) : "(none)";
     if (trace)
         std::cerr << "intro clip requested: " << name << '\n';
+    // Remember whether the clip now starting is the attract movie, so the
+    // skip aid can restrict itself to that one and leave every other screen -
+    // the language selector above all - untouched.
+    gAttractClipPlaying.store(std::strncmp(name, "ATTR", 4) == 0,
+                              std::memory_order_relaxed);
 
     __imp__sub_821FEBC0(ctx, base);
 }
@@ -7145,6 +7154,8 @@ void sub_821F60B8(PPCContext& ctx, uint8_t* base)
     __imp__sub_821F60B8(ctx, base);
 }
 
+extern "C" void __imp__sub_821F91D8(PPCContext& ctx, uint8_t* base);
+
 void sub_821F5B10(PPCContext& ctx, uint8_t* base)
 {
     static const bool trace = std::getenv("XERENGE_INPUT_TRACE") != nullptr;
@@ -7156,6 +7167,66 @@ void sub_821F5B10(PPCContext& ctx, uint8_t* base)
             std::cerr << "flash HandleInput called " << i << " times\n";
     }
     __imp__sub_821F5B10(ctx, base);
+
+    // Skipping the attract movie on Start. The title's own path out of it runs
+    // when the clip ends, so rather than forging that condition this ends the
+    // clip: CB4VideoManager::ReleaseVideo tears it down, the manager reports
+    // it finished through its ordinary states, and the attract state then
+    // takes the transition it already has.
+    //
+    // Restricted to the attract clip. An earlier version fired on any Start
+    // and wrote the Flash manager's video state directly, which broke the
+    // language selector - it needs that field itself.
+    static const bool skipIntro = std::getenv("XERENGE_SKIP_INTRO") != nullptr;
+    if (!skipIntro)
+        return;
+    // For a few frames after the skip, keep the Flash manager's view of the
+    // video on "finished" so the state sees it when it processes the queued
+    // event rather than the "playing" the movie's rendering writes back every
+    // frame. Scoped to the frames right after a skip, so no other screen is
+    // affected.
+    if (const uint32_t held = gSkipHoldFrames.load(std::memory_order_relaxed))
+    {
+        gSkipHoldFrames.store(held - 1, std::memory_order_relaxed);
+        const uint32_t finished = __builtin_bswap32(1u);
+        std::memcpy(base + 0x82A538C0u + 0x574Cu, &finished, sizeof(finished));
+    }
+    if (!gAttractClipPlaying.load(std::memory_order_relaxed))
+        return;
+    constexpr uint16_t kStart = 0x0010u;
+    static bool wasPressed = false;
+    const bool pressed = (gInputButtons.load(std::memory_order_relaxed) & kStart) != 0;
+    const bool edge = pressed && !wasPressed;
+    wasPressed = pressed;
+    if (!edge)
+        return;
+    gAttractClipPlaying.store(false, std::memory_order_relaxed);
+    constexpr uint32_t kVideoManager = 0x82A532C8u;
+    constexpr uint32_t kFrontEndStateMachine = 0x82A59E98u;
+    const uint64_t savedLink = ctx.lr;
+    const uint64_t savedStack = ctx.r1.u64;
+    // Tear the clip down, then raise the event the attract state is waiting
+    // for. Releasing alone leaves the state with nothing to act on, and the
+    // event alone is examined against a video the manager still calls playing,
+    // so both are needed.
+    ctx.r3.u32 = kVideoManager;
+    __imp__sub_821F91D8(ctx, base);
+    // Then take the transition the attract state itself takes when its clip
+    // ends. The target is not a guess: CB4AttractState builds this identifier
+    // inline before its own StateChange call, so this is the same handover the
+    // title performs, only triggered from here.
+    constexpr uint32_t kStateChange = 0x820A38E8u;
+    constexpr uint64_t kAfterAttract = 0x96260DA03A3CFFFFull;
+    ctx.r3.u32 = kFrontEndStateMachine;
+    ctx.r4.u64 = kAfterAttract;
+    ctx.r5.u32 = 0;
+    ctx.r6.u32 = 0;
+    ctx.lr = savedLink;
+    PPCDispatchIndirect(ctx, base, kStateChange);
+    ctx.lr = savedLink;
+    ctx.r1.u64 = savedStack;
+    gSkipHoldFrames.store(30, std::memory_order_relaxed);
+    std::cerr << "intro: ended the attract clip on Start\n";
 }
 
 // The front end's own input entry points (retail
