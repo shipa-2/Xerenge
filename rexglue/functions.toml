@@ -17,3 +17,8 @@
 0x8256CF20 = { size = 0x1C }
 0x82362C78 = { size = 0x8 }
 0x82575F38 = { size = 0x8 }
+
+# Reached while loading a save from the memory card, and only through a vtable
+# slot, so the analyser cannot see it either. The size is the one already
+# established for this address on the previous runtime.
+0x82363918 = { size = 0x30 }

@@ -105,9 +105,17 @@ shader interface masks, and trace the swap-time channel order.
 
 ## Where it stands
 
-The title boots, runs its logos, reaches the title screen and the save/load
-prompt, and renders the 3D world at 60 fps. Audio comes up on its own. Videos
-and the 3D world are colour-correct.
+The title boots, runs its logos, reaches the title screen, loads a save from the
+memory card and reaches the car select menu with that profile's rank and cars,
+and renders the 3D world at 60 fps. Audio comes up on its own. Videos and the 3D
+world are colour-correct.
+
+Loading a save used to kill the process on a call to an unregistered function.
+That address, like the five before it, is reached only through a vtable slot and
+is now declared in `functions.toml`; nothing about the content path itself was
+wrong. The `Unregistered symbolic link: rmcsave:` line a trace shows is not a
+fault either - the registration and the teardown land in the same millisecond,
+which is a content mount being opened and closed.
 
 One defect is open: the 2D layer's tint is wrong, and every symptom follows from
 it - the red logo reads magenta, amber text reads pink, a dark panel reads vivid

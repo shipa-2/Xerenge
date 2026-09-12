@@ -13,6 +13,7 @@ include(generated/rexglue.cmake)
 # Sources
 set(BURNOUT_SOURCES
     src/main.cpp
+    src/plume_selftest.cpp
 )
 
 if(WIN32)
@@ -27,3 +28,11 @@ rexglue_setup_target(burnout GPU_PLUGINS xenos)
 # imgui's include directory to consumers, so a project that uses the app
 # framework has to name it itself.
 target_include_directories(burnout PRIVATE "${REXSDK_DIR}/thirdparty/imgui")
+
+# plume - the render interface re:Blue uses, added ahead of the renderer that
+# will drive it. Vulkan only here; its SDL integration needs SDL3, which the
+# system provides and the SDK also builds.
+set(PLUME_SDL_VULKAN_ENABLED ON CACHE BOOL "" FORCE)
+set(PLUME_BUILD_EXAMPLES OFF CACHE BOOL "" FORCE)
+add_subdirectory("${CMAKE_CURRENT_SOURCE_DIR}/../Xerenge/plume" plume EXCLUDE_FROM_ALL)
+target_link_libraries(burnout PRIVATE plume)
