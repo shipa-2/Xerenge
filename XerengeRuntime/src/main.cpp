@@ -2737,6 +2737,23 @@ public:
         }
         if (service == "NtReadFile")
         {
+            // A disc read on the real machine takes milliseconds; here it
+            // returns instantly. That is not always harmless: a title that
+            // streams into a fixed buffer can fill it inside a single call and
+            // then wait for room that only the consumer it has not run yet can
+            // free. XERENGE_MEDIA_READ_DELAY_US reintroduces some latency so
+            // that can be tested rather than argued about.
+            static const unsigned readDelayMicroseconds = [] {
+                const char* configured = std::getenv("XERENGE_MEDIA_READ_DELAY_US");
+                return configured != nullptr ? unsigned(std::atoi(configured)) : 0u;
+            }();
+            if (readDelayMicroseconds != 0)
+            {
+                lock.unlock();
+                std::this_thread::sleep_for(
+                    std::chrono::microseconds(readDelayMicroseconds));
+                lock.lock();
+            }
             uint32_t bytesRead = 0;
             uint64_t byteOffset = 0;
             bool hasExplicitOffset = false;
@@ -6255,6 +6272,31 @@ void sub_82480310(PPCContext& ctx, uint8_t* base)
 {
     static const bool trace = std::getenv("XERENGE_VIDEO_TRACE") != nullptr;
     const uint32_t out = ctx.r4.u32;
+    const uint32_t player = ctx.r3.u32;
+    if (player == 0)
+    {
+        // There is no player to ask. On the console reading its vtable through
+        // a null pointer faults, so this call could not have returned at all;
+        // here guest address 0 is ordinary readable memory, so it quietly
+        // reads zeros and reports state zero. That is not one of the eight
+        // states CGtVideoDecoder::Update's frame pump switches on, and its
+        // loop has no exit for it - the thread spins forever, which is what
+        // freezes the title while releasing a clip that never started.
+        //
+        // Report the terminal state instead. The pump treats it exactly as it
+        // treats a clip that has finished: it stops, and the caller carries on.
+        if (out != 0)
+        {
+            const uint32_t finished = __builtin_bswap32(8u);
+            std::memcpy(base + out, &finished, sizeof(finished));
+        }
+        static std::atomic<bool> reported{false};
+        if (!reported.exchange(true, std::memory_order_relaxed))
+            std::cerr << "movie player asked for status with no player; "
+                         "reporting the clip as finished\n";
+        ctx.r3.u32 = 0;
+        return;
+    }
     __imp__sub_82480310(ctx, base);
     if (trace)
     {
@@ -6269,8 +6311,9 @@ void sub_82480310(PPCContext& ctx, uint8_t* base)
         // still being asked.
         if (lastReported.exchange(state, std::memory_order_relaxed) != state ||
             (sample % 2000000u) == 0)
-            std::cerr << "XMV player status=" << state << " result=0x" << std::hex
-                      << ctx.r3.u32 << std::dec << " sample=" << sample << '\n';
+            std::cerr << "XMV player status=" << state << " player=0x" << std::hex
+                      << player << " result=0x" << ctx.r3.u32 << std::dec
+                      << " sample=" << sample << '\n';
     }
 }
 
