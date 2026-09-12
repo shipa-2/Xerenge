@@ -6743,6 +6743,57 @@ void sub_82461A10(PPCContext& ctx, uint8_t* base)
     __imp__sub_82461A10(ctx, base);
 }
 
+// AptAnimationPoolData::ProcessInputs (retail 0x82479968) drains the queue
+// that the delivered events are placed into, and is called once per frame from
+// the APT tick. It is the step between "the event arrived" and "a handler ran".
+extern "C" void __imp__sub_82479968(PPCContext& ctx, uint8_t* base);
+void sub_82479968(PPCContext& ctx, uint8_t* base)
+{
+    static const bool trace = std::getenv("XERENGE_APT_TRACE") != nullptr;
+    if (trace)
+    {
+        static std::atomic<uint32_t> n{0};
+        const uint32_t i = n.fetch_add(1, std::memory_order_relaxed);
+        if ((i % 100) == 0)
+            std::cerr << "apt ProcessInputs total=" << i << '\n';
+    }
+    __imp__sub_82479968(ctx, base);
+}
+
+// The routine the movie's script calls as InputEvent (retail 0x821ADD68,
+// resolved from the registration that binds the name to it). If the script
+// routes a key press anywhere, it is here.
+extern "C" void __imp__sub_821ADD68(PPCContext& ctx, uint8_t* base);
+void sub_821ADD68(PPCContext& ctx, uint8_t* base)
+{
+    static const bool trace = std::getenv("XERENGE_APT_TRACE") != nullptr;
+    if (trace)
+    {
+        static std::atomic<uint32_t> n{0};
+        const uint32_t i = n.fetch_add(1, std::memory_order_relaxed);
+        if (i < 20)
+            std::cerr << "movie called InputEvent, args=" << ctx.r4.u32 << '\n';
+    }
+    __imp__sub_821ADD68(ctx, base);
+}
+
+// AptExtObject::CreateNewAptFunction (retail 0x821AD9D0) receives the routine
+// itself. Logged next to the SetFunction registration, the two interleave and
+// name each native's implementation.
+extern "C" void __imp__sub_821AD9D0(PPCContext& ctx, uint8_t* base);
+void sub_821AD9D0(PPCContext& ctx, uint8_t* base)
+{
+    static const bool trace = std::getenv("XERENGE_APT_TRACE") != nullptr;
+    if (trace)
+    {
+        static std::atomic<uint32_t> n{0};
+        if (n.fetch_add(1, std::memory_order_relaxed) < 400)
+            std::cerr << "apt native routine 0x" << std::hex << ctx.r3.u32
+                      << std::dec << '\n';
+    }
+    __imp__sub_821AD9D0(ctx, base);
+}
+
 // AptExtObject::SetFunction (retail 0x8242BDB0) registers a native routine
 // under a name the movie's script can call. The front-end data contains no
 // FSCommand strings at all, so this is the bridge the movie actually uses, and
@@ -6755,9 +6806,26 @@ void sub_8242BDB0(PPCContext& ctx, uint8_t* base)
     {
         static std::atomic<uint32_t> n{0};
         const uint32_t i = n.fetch_add(1, std::memory_order_relaxed);
-        if (i < 40 && ctx.r4.u32 != 0)
+        if (i < 400 && ctx.r4.u32 != 0)
+        {
+            // The third argument is the wrapper object; the routine it calls
+            // is the first word inside it that looks like guest code.
+            const auto word = [base](uint32_t at) {
+                uint32_t value = 0;
+                std::memcpy(&value, base + at, sizeof(value));
+                return __builtin_bswap32(value);
+            };
+            uint32_t routine = 0;
+            for (uint32_t offset = 0; offset < 0x20 && routine == 0; offset += 4)
+            {
+                const uint32_t candidate = word(ctx.r5.u32 + offset);
+                if (candidate >= 0x82090000u && candidate < 0x825C7D70u)
+                    routine = candidate;
+            }
             std::cerr << "apt native registered: "
-                      << reinterpret_cast<const char*>(base + ctx.r4.u32) << '\n';
+                      << reinterpret_cast<const char*>(base + ctx.r4.u32)
+                      << " -> 0x" << std::hex << routine << std::dec << '\n';
+        }
     }
     __imp__sub_8242BDB0(ctx, base);
 }
