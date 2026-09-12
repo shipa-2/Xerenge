@@ -6726,6 +6726,159 @@ void sub_821FE9C8(PPCContext& ctx, uint8_t* base)
         std::cerr << "video manager state " << before << " -> " << state() << '\n';
 }
 
+// AptAnimationPoolData::runActions (0x82461A10) drains the queue that
+// AptMovie::queueFrameActions fills every frame. If it never runs, the movie's
+// scripts are queued and never executed.
+extern "C" void __imp__sub_82461A10(PPCContext& ctx, uint8_t* base);
+void sub_82461A10(PPCContext& ctx, uint8_t* base)
+{
+    static const bool trace = std::getenv("XERENGE_INPUT_TRACE") != nullptr;
+    if (trace)
+    {
+        static std::atomic<uint32_t> n{0};
+        const uint32_t i = n.fetch_add(1, std::memory_order_relaxed);
+        if (i < 2 || (i % 500) == 0)
+            std::cerr << "apt runActions #" << i << '\n';
+    }
+    __imp__sub_82461A10(ctx, base);
+}
+
+// AptLinker::Update (0x82453AB8) is the per-frame APT update, and the only
+// routine path to draining the movie's action queue.
+extern "C" void __imp__sub_82453AB8(PPCContext& ctx, uint8_t* base);
+void sub_82453AB8(PPCContext& ctx, uint8_t* base)
+{
+    static const bool trace = std::getenv("XERENGE_INPUT_TRACE") != nullptr;
+    if (trace)
+    {
+        static std::atomic<uint32_t> n{0};
+        const uint32_t i = n.fetch_add(1, std::memory_order_relaxed);
+        if (i < 2 || (i % 500) == 0)
+            std::cerr << "apt linker update #" << i << '\n';
+    }
+    __imp__sub_82453AB8(ctx, base);
+}
+
+extern "C" void __imp__sub_8247EE88(PPCContext& ctx, uint8_t* base);
+extern "C" void __imp__sub_8247EF98(PPCContext& ctx, uint8_t* base);
+extern "C" void __imp__sub_8247ECD8(PPCContext& ctx, uint8_t* base);
+
+void sub_8247EE88(PPCContext& ctx, uint8_t* base)
+{
+    static const bool trace = std::getenv("XERENGE_INPUT_TRACE") != nullptr;
+    if (trace)
+    {
+        static std::atomic<uint32_t> n{0};
+        const uint32_t i = n.fetch_add(1, std::memory_order_relaxed);
+        if (i < 2 || (i % 500) == 0)
+            std::cerr << "apt runFrameActions #" << i << '\n';
+    }
+    __imp__sub_8247EE88(ctx, base);
+}
+
+void sub_8247EF98(PPCContext& ctx, uint8_t* base)
+{
+    static const bool trace = std::getenv("XERENGE_INPUT_TRACE") != nullptr;
+    if (trace)
+    {
+        static std::atomic<uint32_t> n{0};
+        const uint32_t i = n.fetch_add(1, std::memory_order_relaxed);
+        if (i < 2 || (i % 500) == 0)
+            std::cerr << "apt queueFrameActions #" << i << '\n';
+    }
+    __imp__sub_8247EF98(ctx, base);
+}
+
+void sub_8247ECD8(PPCContext& ctx, uint8_t* base)
+{
+    static const bool trace = std::getenv("XERENGE_INPUT_TRACE") != nullptr;
+    if (trace)
+    {
+        static std::atomic<uint32_t> n{0};
+        const uint32_t i = n.fetch_add(1, std::memory_order_relaxed);
+        if (i < 2 || (i % 500) == 0)
+            std::cerr << "apt doFrameControls #" << i << '\n';
+    }
+    __imp__sub_8247ECD8(ctx, base);
+}
+
+// The function CB4AptManager::HandleInput calls when a mapped button is
+// pressed (retail 0x82427030): it delivers the event into the APT movie. This
+// is the last step before the movie's own script would run.
+extern "C" void __imp__sub_82427030(PPCContext& ctx, uint8_t* base);
+void sub_82427030(PPCContext& ctx, uint8_t* base)
+{
+    static const bool trace = std::getenv("XERENGE_INPUT_TRACE") != nullptr;
+    if (trace)
+    {
+        static std::atomic<uint32_t> n{0};
+        if (n.fetch_add(1, std::memory_order_relaxed) < 10)
+            std::cerr << "apt event delivered: id=" << ctx.r3.u32
+                      << " arg=" << ctx.r4.u32 << " kind=" << ctx.r5.u32 << '\n';
+    }
+    __imp__sub_82427030(ctx, base);
+}
+
+// The APT action interpreter: the bytecode loop itself, and the path a movie
+// uses to reach the host - getURL with an FSCommand prefix, recognised and
+// dispatched.
+extern "C" void __imp__sub_82439768(PPCContext& ctx, uint8_t* base);
+extern "C" void __imp__sub_82437EA8(PPCContext& ctx, uint8_t* base);
+extern "C" void __imp__sub_82437CC0(PPCContext& ctx, uint8_t* base);
+extern "C" void __imp__sub_82437C68(PPCContext& ctx, uint8_t* base);
+
+void sub_82439768(PPCContext& ctx, uint8_t* base)
+{
+    static const bool trace = std::getenv("XERENGE_INPUT_TRACE") != nullptr;
+    if (trace)
+    {
+        static std::atomic<uint32_t> n{0};
+        const uint32_t i = n.fetch_add(1, std::memory_order_relaxed);
+        if (i < 3 || (i % 5000) == 0)
+            std::cerr << "apt runStream #" << i << '\n';
+    }
+    __imp__sub_82439768(ctx, base);
+}
+
+void sub_82437EA8(PPCContext& ctx, uint8_t* base)
+{
+    static const bool trace = std::getenv("XERENGE_INPUT_TRACE") != nullptr;
+    if (trace)
+    {
+        static std::atomic<uint32_t> n{0};
+        const uint32_t i = n.fetch_add(1, std::memory_order_relaxed);
+        if (i < 3 || (i % 5000) == 0)
+            std::cerr << "apt getURL #" << i << '\n';
+    }
+    __imp__sub_82437EA8(ctx, base);
+}
+
+void sub_82437CC0(PPCContext& ctx, uint8_t* base)
+{
+    static const bool trace = std::getenv("XERENGE_INPUT_TRACE") != nullptr;
+    if (trace)
+    {
+        static std::atomic<uint32_t> n{0};
+        const uint32_t i = n.fetch_add(1, std::memory_order_relaxed);
+        if (i < 3 || (i % 5000) == 0)
+            std::cerr << "apt doFSCommand #" << i << '\n';
+    }
+    __imp__sub_82437CC0(ctx, base);
+}
+
+void sub_82437C68(PPCContext& ctx, uint8_t* base)
+{
+    static const bool trace = std::getenv("XERENGE_INPUT_TRACE") != nullptr;
+    if (trace)
+    {
+        static std::atomic<uint32_t> n{0};
+        const uint32_t i = n.fetch_add(1, std::memory_order_relaxed);
+        if (i < 3 || (i % 5000) == 0)
+            std::cerr << "apt isFSCommand #" << i << '\n';
+    }
+    __imp__sub_82437C68(ctx, base);
+}
+
 // The Flash layer turning a named command from the movie into an FSM event
 // (retail AptCBCommand 0x821F60B8), and the layer's input entry (0x821F5B10). A skip has
 // to travel this way: press, movie script, command, event.
