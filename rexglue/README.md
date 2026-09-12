@@ -19,10 +19,14 @@ the repository (game data is never committed); adjust them for your layout.
 ## Building
 
 The SDK lives outside this repository, at `../rexglue-sdk` relative to the
-project (it is a separate checkout, deliberately not vendored here). It needs
-its submodules and Clang:
+project - a separate checkout, deliberately not vendored here. Use our fork,
+[rexglue-xerenge](https://github.com/shipa-2/rexglue-xerenge), which carries the
+changes described below; it is a GitHub fork of
+[rexglue/rexglue-sdk](https://github.com/rexglue/rexglue-sdk), so upstream stays
+a remote and the changes stay rebasable onto it.
 
 ```
+git clone git@github.com:shipa-2/rexglue-xerenge.git ../rexglue-sdk
 git -C ../rexglue-sdk submodule update --init --recursive --depth 1
 cmake --preset linux-amd64 -S ../rexglue-sdk
 cmake --build ../rexglue-sdk/out/build/linux-amd64 --config Release --target rexglue
@@ -72,10 +76,11 @@ Each of those is needed:
 Keyboard stands in for a pad: **A = Space**, **Start = Return**, **B = Quote**,
 sticks on WASD.
 
-## Patches to the SDK
+## What our SDK fork changes
 
-`sdk-patches/xerenge-sdk-changes.patch` applies to the SDK commit named in
-`sdk-patches/BASE`. It carries three fixes and three diagnostics.
+[rexglue-xerenge](https://github.com/shipa-2/rexglue-xerenge) branches from
+upstream's v0.10.0 and carries three fixes and a set of diagnostics. The first
+two fixes are not specific to this title and are worth sending upstream.
 
 The fixes:
 

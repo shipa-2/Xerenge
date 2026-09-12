@@ -1,53 +1,50 @@
 # Xerenge
 
-Xerenge is a source-only integration effort for processing legacy Xbox 360
-shader containers with the Xenos and Xenon recompilation tools.
+Bringing Burnout Revenge (Xbox 360, retail) up as a native binary: the game's
+PowerPC code is recompiled to C++ ahead of time and linked into an executable,
+with the console's hardware and operating system emulated around it. There is
+no CPU interpreter and no JIT.
 
-The implementation lives in two public forks:
+## Two lines of work
 
-- [XenosRecomp-xerenge](https://github.com/shipa-2/XenosRecomp-xerenge)
-- [XenonRecomp-xerenge](https://github.com/shipa-2/XenonRecomp-xerenge)
+**`main` - ReXGlue.** Current. The recompiler and system layer come from
+[ReXGlue](https://github.com/rexglue/rexglue-sdk), used through our fork
+[rexglue-xerenge](https://github.com/shipa-2/rexglue-xerenge), which carries
+fixes and diagnostics found while bringing this title up. The project itself -
+manifest, function boundaries, app skeleton, build glue - is in
+[`rexglue/`](rexglue/), with build and run instructions in
+[`rexglue/README.md`](rexglue/README.md).
 
-The detailed development plan is in [`docs/next-steps.md`](docs/next-steps.md).
-Game images, extracted/decrypted data, build directories, and generated shader
-outputs are deliberately excluded from this repository and from the two forks.
+**`legacy` - XenonRecomp.** Frozen, and still buildable. A runtime written for
+this project ([`XerengeRuntime/`](XerengeRuntime/)) on top of
+[XenonRecomp-xerenge](https://github.com/shipa-2/XenonRecomp-xerenge) and
+[XenosRecomp-xerenge](https://github.com/shipa-2/XenosRecomp-xerenge). It
+remains useful as a reference: it renders the frontend's colours correctly,
+which is how the one open defect on the ReXGlue side was isolated to a single
+shader constant rather than to the graphics pipeline.
 
-The first runnable milestone is in [`XerengeRuntime`](XerengeRuntime/). It
-validates an XEX2 image, initializes GLFW and Vulkan, opens a diagnostic window,
-initializes an OpenGL diagnostic framebuffer, and reads one pixel back from the
-GPU. This is only the bootstrap for the game renderer; it is not Burnout
-rendering yet.
+The move was not about the recompilation approach, which is the same in both. It
+was about the system layer. The previous line reached the point of needing a
+texture cache for every Xenos format, an EDRAM render target cache, and a shader
+cache kept in step with whatever the title binds - all of which ReXGlue already
+has, with shader translation happening at runtime so there is no cache to keep
+in step at all.
 
-```sh
-cmake -S . -B build-runtime
-cmake --build build-runtime
-ctest --test-dir build-runtime --output-on-failure
-./build-runtime/xerenge-runtime path/to/game.xex
-./build-runtime/xerenge-runtime --inspect path/to/game.xex
-./build-runtime/xerenge-runtime --extract-image path/to/plain.xex image.bin
-./build-runtime/xerenge-runtime --map-image path/to/game.xex
-./build-runtime/xerenge-runtime --imports path/to/game.xex
-./build-runtime/xerenge-runtime --services path/to/game.xex
-```
+## Where it stands
 
-`--inspect` currently reads the XEX2 header and security metadata. It does not
-execute the image yet. `--extract-image` now unwraps AES image keys using the
-retail/devkit candidates and expands the XEX basic compression format. The
-Burnout beta image is recovered as a valid PE image; its local output matches
-the independently produced decrypted image byte-for-byte. Normal LZX
-compression and PPC execution remain separate stages.
+The title boots, plays its logo videos, reaches the title screen and the
+save/load prompt, and renders the 3D world at 60 fps. Audio comes up on its own.
+The 3D world and the videos are colour-correct.
 
-`--map-image` validates the decoded PE32 image, creates its guest address-space
-layout, checks the entry point and section ranges, and prints the mapped section
-table. It does not call guest code yet.
+One defect is open: the tint constant the 2D layer multiplies by arrives wrong,
+so the red logo reads magenta, amber text reads pink, a dark panel reads vivid
+blue, and unselected menu items are not dimmed. It is bounded by measurement
+rather than guesswork - the whole GPU chain was verified faithful, and the same
+guest code produces the correct constant on the legacy runtime.
+[`rexglue/README.md`](rexglue/README.md) records the measurements.
 
-`--imports` parses the XEX import-library metadata and reports the service
-groups that must be bound before guest code can run.
+## What is not here
 
-`--services` creates one diagnostic trap binding for every import descriptor.
-These traps are intentionally explicit: unsupported Xbox services stop with
-their library, import index, and guest thunk address instead of silently
-returning an invalid value.
-
-The interactive runtime reports a framebuffer readback after its first
-diagnostic frame. No screenshot is required for this check.
+Game images, decrypted data, extracted assets, build directories and generated
+recompiler output are deliberately excluded, here and in the forks. The ReXGlue
+SDK is a separate checkout rather than vendored.
