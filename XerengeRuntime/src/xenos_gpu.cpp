@@ -1415,6 +1415,29 @@ void XenosGpu::writeGpuRegister(uint32_t index, uint32_t value)
     if (index < gpuRegisters_.size())
     {
         gpuRegisters_[index] = value;
+        // The frontend's tint. Its vertex shader passes float constant c2 out as
+        // the colour its pixel shader multiplies the texture by, so this is the
+        // value the whole 2D layer's colour depends on. Logged here to compare
+        // against what the same guest code produces on another runtime, where
+        // its third and fourth components arrive as 255/64 and force blue on.
+        static const bool tintTrace = std::getenv("XERENGE_TINT_TRACE") != nullptr;
+        if (tintTrace && index >= 0x4008u && index <= 0x400Bu)
+        {
+            static uint32_t words[4]{};
+            words[index - 0x4008u] = value;
+            if (index == 0x400Bu)
+            {
+                float c[4];
+                for (uint32_t i = 0; i < 4; ++i)
+                    std::memcpy(&c[i], &words[i], sizeof(float));
+                static std::set<uint64_t> seen;
+                const uint64_t key = (uint64_t(words[0]) << 32) ^ uint64_t(words[2]) ^
+                    (uint64_t(words[1]) << 16) ^ (uint64_t(words[3]) << 48);
+                if (seen.size() < 24 && seen.insert(key).second)
+                    std::cerr << "tint c2 = (" << c[0] << ',' << c[1] << ',' << c[2] << ','
+                              << c[3] << ")\n";
+            }
+        }
         static const bool xenosStateTraceEnabled = std::getenv("XERENGE_XENOS_STATE_TRACE") != nullptr;
         if (xenosStateTraceEnabled &&
             

@@ -1,4 +1,5 @@
 #include "guest_heap_bounds.h"
+#include <set>
 #include <GLFW/glfw3.h>
 #include <GL/gl.h>
 #include <openssl/evp.h>
@@ -6251,6 +6252,33 @@ void sub_821FEBC0(PPCContext& ctx, uint8_t* base)
                               std::memory_order_relaxed);
 
     __imp__sub_821FEBC0(ctx, base);
+}
+
+// D3DDevice_BeginShaderConstantF4 (retail 0x82379F58) hands the caller a
+// pointer into the command buffer for a run of float4 shader constants, and
+// the caller writes the values itself. The frontend's tint is one of those
+// constants, so this is where to learn which guest function computes it - the
+// value differs between runtimes, so the computation is what has to be
+// compared.
+extern "C" void __imp__sub_82379F58(PPCContext& ctx, uint8_t* base);
+void sub_82379F58(PPCContext& ctx, uint8_t* base)
+{
+    static const bool trace = std::getenv("XERENGE_TINT_TRACE") != nullptr;
+    const uint32_t index = ctx.r4.u32;
+    const uint32_t count = ctx.r5.u32;
+    const uint32_t caller = static_cast<uint32_t>(ctx.lr);
+    __imp__sub_82379F58(ctx, base);
+    if (trace)
+    {
+        // c2 is the tint; report every caller that covers it.
+        if (index <= 2u && index + count > 2u)
+        {
+            static std::set<uint32_t> seen;
+            if (seen.size() < 16 && seen.insert(caller).second)
+                std::cerr << "shader constant run [" << index << ".." << (index + count - 1)
+                          << "] written from 0x" << std::hex << caller << std::dec << '\n';
+        }
+    }
 }
 
 // The movie player's status lives in one field, written only through this
