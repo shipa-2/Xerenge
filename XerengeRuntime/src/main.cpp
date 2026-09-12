@@ -7156,6 +7156,44 @@ void sub_821F5B10(PPCContext& ctx, uint8_t* base)
             std::cerr << "flash HandleInput called " << i << " times\n";
     }
     __imp__sub_821F5B10(ctx, base);
+
+    // A testing aid, not a fix. The intro's states advance on one event - the
+    // "clip finished" the previous state raises for itself - and the press that
+    // should produce it reaches the movie and goes unanswered for reasons still
+    // being traced. Raising that event on a Start press gets past the intro so
+    // the rest of the title can be worked on, and says whether everything after
+    // the intro is in order. It bypasses the title's own logic, so it is
+    // explicitly opt-in and never on by default.
+    static const bool skipIntro = std::getenv("XERENGE_SKIP_INTRO") != nullptr;
+    if (!skipIntro)
+        return;
+    constexpr uint16_t kStart = 0x0010u;
+    static bool wasPressed = false;
+    const bool pressed = (gInputButtons.load(std::memory_order_relaxed) & kStart) != 0;
+    const bool edge = pressed && !wasPressed;
+    wasPressed = pressed;
+    if (!edge)
+        return;
+    constexpr uint32_t kFrontEndStateMachine = 0x82A59E98u;
+    constexpr uint32_t kSendEvent = 0x82203858u;
+    constexpr uint32_t kClipFinished = 2u;
+    // The state examines the Flash manager's own view of the clip before it
+    // will move: 2 means playing and it returns, 1 means finished and it
+    // proceeds. Raising the event alone therefore does nothing mid-clip, so
+    // this aid has to claim the clip is over as well.
+    constexpr uint32_t kAptManagerVideoState = 0x82A538C0u + 0x574Cu;
+    const uint32_t finished = __builtin_bswap32(1u);
+    std::memcpy(base + kAptManagerVideoState, &finished, sizeof(finished));
+    const uint64_t savedLink = ctx.lr;
+    const uint64_t savedStack = ctx.r1.u64;
+    ctx.r3.u32 = kFrontEndStateMachine;
+    ctx.r4.u32 = kClipFinished;
+    ctx.r5.u32 = 0;
+    ctx.lr = savedLink;
+    PPCDispatchIndirect(ctx, base, kSendEvent);
+    ctx.lr = savedLink;
+    ctx.r1.u64 = savedStack;
+    std::cerr << "intro: raised the clip-finished event on Start\n";
 }
 
 // The front end's own input entry points (retail
