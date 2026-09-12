@@ -6260,6 +6260,71 @@ void sub_8248D398(PPCContext& ctx, uint8_t* base)
     __imp__sub_8248D398(ctx, base);
 }
 
+// Every intro screen - the three logos and the attract - advances on one word:
+// the APT manager's video status at 0x82A5900C. CB4AptManager::RenderVideoComponent
+// is the only thing that drives it, through a five-way jump table at 0x821FF5A0:
+// 1 parses the descriptor and starts the clip, 2 waits for the player to reach
+// state 0x1C, 3 renders a frame, and 0 and 4 both stop the player and wait for
+// it to report 0x37 or 1 before going back to 1. The states themselves leave
+// only when the status is neither 0 nor 2, so in practice status 4 is the one
+// that releases them - and that is set only when the Flash component stops being
+// visible, or when the decoder says the clip reached its end. Tracing the status
+// alongside the player's own state is what distinguishes those two from a clip
+// that simply never finishes.
+extern "C" void __imp__sub_821FF558(PPCContext& ctx, uint8_t* base);
+void sub_821FF558(PPCContext& ctx, uint8_t* base)
+{
+    static const bool trace = std::getenv("XERENGE_VIDEO_TRACE") != nullptr;
+    if (!trace)
+    {
+        __imp__sub_821FF558(ctx, base);
+        return;
+    }
+
+    const auto word = [&](uint32_t address) {
+        uint32_t value = 0;
+        std::memcpy(&value, base + address, sizeof(value));
+        return __builtin_bswap32(value);
+    };
+
+    const uint32_t statusBefore = word(0x82A5900C);
+    const uint32_t playerBefore = word(0x82A53360);
+    const bool visible = base[0x82A59041] != 0;
+    const bool wanted = (ctx.r5.u32 & 0xFFu) != 0;
+
+    __imp__sub_821FF558(ctx, base);
+
+    const uint32_t statusAfter = word(0x82A5900C);
+    const uint32_t playerAfter = word(0x82A53360);
+    if (statusAfter != statusBefore || playerAfter != playerBefore)
+        std::cerr << "apt video status " << statusBefore << " -> " << statusAfter
+                  << "  player " << playerBefore << " -> " << playerAfter
+                  << "  visible=" << visible << " wanted=" << wanted
+                  << "  component=0x" << std::hex << word(0x82A59010) << std::dec
+                  << '\n';
+}
+
+// The decoder's own answer to "has this clip reached its end" (retail
+// 0x82357CC0). RenderVideoComponent asks it every frame while the clip plays
+// and only moves the status to 4 when it says yes, so a clip that never ends
+// here is a clip no intro screen can leave.
+extern "C" void __imp__sub_82357CC0(PPCContext& ctx, uint8_t* base);
+void sub_82357CC0(PPCContext& ctx, uint8_t* base)
+{
+    static const bool trace = std::getenv("XERENGE_VIDEO_TRACE") != nullptr;
+    __imp__sub_82357CC0(ctx, base);
+    if (trace)
+    {
+        static uint32_t last = 0xFFFFFFFFu;
+        const uint32_t answer = ctx.r3.u32 & 0xFFu;
+        if (answer != last)
+        {
+            last = answer;
+            std::cerr << "decoder reports clip finished = " << answer << '\n';
+        }
+    }
+}
+
 // The call inside WMCDecSetDecodePatternForStreams whose negative result
 // becomes the 0x10 the decoder reports (retail 0x82488EF8). Its arguments say
 // what it was asked to do when it refused.
@@ -7084,6 +7149,36 @@ void sub_8247ECD8(PPCContext& ctx, uint8_t* base)
     __imp__sub_8247ECD8(ctx, base);
 }
 
+// AptCIH::tick (retail 0x8247C6C0) advances one clip instance by exactly one
+// frame - it takes no time delta, so how fast an APT animation plays is
+// decided purely by how often it is called. The title's logo is supposed to
+// fly in letter by letter over many frames; seeing it arrive already finished
+// means its timeline was run to the end in a single rendered frame, which this
+// counts by reporting ticks against wall-clock time rather than totals.
+extern "C" void __imp__sub_8247C6C0(PPCContext& ctx, uint8_t* base);
+void sub_8247C6C0(PPCContext& ctx, uint8_t* base)
+{
+    static const bool trace = std::getenv("XERENGE_APT_TICK_TRACE") != nullptr;
+    if (trace)
+    {
+        using clock = std::chrono::steady_clock;
+        static std::atomic<uint32_t> ticks{0};
+        static clock::time_point window = clock::now();
+        const uint32_t n = ticks.fetch_add(1, std::memory_order_relaxed) + 1;
+        const auto now = clock::now();
+        const auto span = std::chrono::duration_cast<std::chrono::milliseconds>(now - window);
+        if (span.count() >= 500)
+        {
+            window = now;
+            static uint32_t previous = 0;
+            std::cerr << "apt clip ticks: " << (n - previous) << " in " << span.count()
+                      << " ms (total " << n << ")\n";
+            previous = n;
+        }
+    }
+    __imp__sub_8247C6C0(ctx, base);
+}
+
 // The function CB4AptManager::HandleInput calls when a mapped button is
 // pressed (retail 0x82427030): it delivers the event into the APT movie. This
 // is the last step before the movie's own script would run.
@@ -7345,6 +7440,23 @@ void sub_8220E140(PPCContext& ctx, uint8_t* base)
 void sub_820A38E8(PPCContext& ctx, uint8_t* base)
 {
     static const bool trace = std::getenv("XERENGE_VIDEO_TRACE") != nullptr;
+    // Leaving the intro out entirely, for working on what comes after it.
+    // The language selector hands over to the first logo state; sending that
+    // one handover to the state the attract itself hands over to when its clip
+    // ends skips all four clips at once. Both identifiers are the title's own -
+    // CB4LanguageSelectState builds the first inline and CB4AttractState the
+    // second - so this substitutes one of the game's transitions for another
+    // rather than inventing a destination. Only that single handover is
+    // rewritten, so every later transition, the language screen included,
+    // behaves exactly as it does without the switch.
+    static const bool disableIntro = std::getenv("XERENGE_DISABLE_INTRO") != nullptr;
+    constexpr uint64_t kFirstLogoState = 0x94413F043B966BD3ull;
+    constexpr uint64_t kAfterAttract = 0x96260DA03A3CFFFFull;
+    if (disableIntro && ctx.r4.u64 == kFirstLogoState)
+    {
+        ctx.r4.u64 = kAfterAttract;
+        std::cerr << "intro: skipped the logo and attract clips\n";
+    }
     if (trace)
         std::cerr << "state change to 0x" << std::hex << ctx.r4.u64 << " from 0x"
                   << static_cast<uint32_t>(ctx.lr) << std::dec << '\n';
