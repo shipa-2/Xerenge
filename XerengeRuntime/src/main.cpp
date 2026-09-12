@@ -13,6 +13,7 @@
 #include <cstring>
 #include <cstdint>
 #include <deque>
+#include <map>
 #include <fstream>
 #include <iomanip>
 #include <iostream>
@@ -3073,7 +3074,7 @@ public:
         {
             // r4 carries the physical allocation in the Xbox ABI.
             if (ctx.r4.u32 != 0)
-                allocations_.erase(ctx.r4.u32);
+                release(ctx.r4.u32);
             ctx.r3.u32 = 0;
             return;
         }
@@ -3340,14 +3341,14 @@ public:
         }
         if (service == "XamFree" || service == "ExFreePool")
         {
-            allocations_.erase(ctx.r3.u32);
+            release(ctx.r3.u32);
             ctx.r3.u32 = 1;
             return;
         }
         if (service == "RtlFreeHeap")
         {
             // NT ABI: RtlFreeHeap(heapHandle, flags, allocation).
-            allocations_.erase(ctx.r5.u32);
+            release(ctx.r5.u32);
             ctx.r3.u32 = 1;
             return;
         }
@@ -3375,7 +3376,7 @@ public:
             if (newAddress != 0 && oldAddress != 0 && oldSize != 0)
                 std::memcpy(base + newAddress, base + oldAddress,
                     std::min(oldSize, ctx.r6.u32));
-            allocations_.erase(oldAddress);
+            release(oldAddress);
             ctx.r3.u32 = newAddress;
             return;
         }
@@ -4317,7 +4318,7 @@ public:
             {
                 const uint32_t buffer = loadU32(base, string + 4);
                 if (buffer != 0)
-                    allocations_.erase(buffer);
+                    release(buffer);
                 storeU16(base, string, 0);
                 storeU16(base, string + 2, 0);
                 storeU32(base, string + 4, 0);
@@ -4586,16 +4587,83 @@ private:
 
     uint32_t allocate(uint32_t size, uint8_t* base, bool clear = true)
     {
+        const uint32_t alignedSize = uint32_t((uint64_t(size) + 15u) & ~uint64_t(15u));
+        if (alignedSize < size)
+            return 0;
+
+        // Reuse freed memory before taking more. Without this the allocator
+        // only ever moved its cursor forward, so anything freed stayed
+        // unusable for the rest of the run - which is what exhausted the guest
+        // heap partway through the intro: each movie clip allocates and frees
+        // the same tens of megabytes of decoder buffers, and by the fifth the
+        // heap had nothing left to give.
+        for (auto block = freeBlocks_.begin(); block != freeBlocks_.end(); ++block)
+        {
+            if (block->second < alignedSize)
+                continue;
+            const uint32_t address = block->first;
+            const uint32_t remainder = block->second - alignedSize;
+            freeBlocks_.erase(block);
+            if (remainder != 0)
+                freeBlocks_.emplace(address + alignedSize, remainder);
+            allocations_.emplace(address, alignedSize);
+            if (clear)
+                std::memset(base + address, 0, alignedSize);
+            return address;
+        }
+
         const auto checkedSize = guestHeapAllocationSize(heapCursor_, heapLimit_, size);
         if (!checkedSize)
             return 0;
-        const uint32_t alignedSize = *checkedSize;
         const uint32_t address = heapCursor_;
-        heapCursor_ += alignedSize;
-        allocations_.emplace(address, alignedSize);
+        heapCursor_ += *checkedSize;
+        allocations_.emplace(address, *checkedSize);
         if (clear)
-            std::memset(base + address, 0, alignedSize);
+            std::memset(base + address, 0, *checkedSize);
         return address;
+    }
+
+    // Give a block back. Neighbouring free blocks are merged so that a run of
+    // small frees can satisfy a later large request, and a block at the top of
+    // the heap is returned to the cursor outright.
+    void release(uint32_t address)
+    {
+        const auto allocated = allocations_.find(address);
+        if (allocated == allocations_.end())
+            return;
+        uint32_t size = allocated->second;
+        allocations_.erase(allocated);
+
+        if (address + size == heapCursor_)
+        {
+            heapCursor_ = address;
+            while (!freeBlocks_.empty())
+            {
+                const auto last = std::prev(freeBlocks_.end());
+                if (last->first + last->second != heapCursor_)
+                    break;
+                heapCursor_ = last->first;
+                freeBlocks_.erase(last);
+            }
+            return;
+        }
+
+        auto next = freeBlocks_.upper_bound(address);
+        if (next != freeBlocks_.end() && address + size == next->first)
+        {
+            size += next->second;
+            next = freeBlocks_.erase(next);
+        }
+        if (next != freeBlocks_.begin())
+        {
+            const auto previous = std::prev(next);
+            if (previous->first + previous->second == address)
+            {
+                previous->second += size;
+                return;
+            }
+        }
+        freeBlocks_.emplace(address, size);
     }
 
     static void clear(uint8_t* base, uint32_t address, uint32_t size)
@@ -4641,7 +4709,7 @@ private:
         else
         {
             objects_.erase(it);
-            allocations_.erase(object);
+            release(object);
         }
     }
 
@@ -4690,6 +4758,9 @@ private:
     static constexpr uint32_t heapLimit_ = 0x80000000u;
     static constexpr uint32_t kVtableBase = 0x81000000u;
     std::unordered_map<uint32_t, uint32_t> allocations_;
+    // Freed guest memory, kept sorted by address so neighbouring blocks can be
+    // merged back together.
+    std::map<uint32_t, uint32_t> freeBlocks_;
     std::unordered_map<uint32_t, uint32_t> objects_;
     std::unordered_map<uint32_t, bool> events_;
     // How many times each event has been signalled. A wait that never
@@ -6143,17 +6214,193 @@ extern "C" void __imp__sub_82488E18(PPCContext& ctx, uint8_t* base);
 // memory. If it does not run for every clip the pool never recovers.
 // The two lookups StrmDecInit makes after allocating: the codec decoder for
 // the stream, and the DRM object.
+// The codec's own init (retail 0x824C0590), the same function for every clip,
+// reached through the pointer DecoderGetDecoder hands back. This is the call
+// that refuses the attract clip.
+// The two video-decoder entry points the codec init calls: WMVideoDecInit
+// (retail 0x824CCC18) and WMVideoDecDecodeSequenceHeader (0x824CCE88).
+// The codec library's own allocator (retail 0x824AC088). It returns a pointer,
+// so zero means it could not satisfy the request - which is what makes
+// WMVideoDecInit report its internal code 2.
+// WMVideoDecInit returns whatever this returns (retail 0x824CC6A0).
+// XMemAlloc (retail 0x821F8968) is where the video decoder's buffers come
+// from, and a null return is what makes VodecConstruct report its internal
+// code 2 - which is the whole reason the attract clip never starts.
+// The decoder also takes memory straight from VirtualAlloc (retail
+// 0x825B3AE8), which this runtime serves, and from two helpers that wrap
+// XMemAlloc. Any of them returning nothing makes the frame-area
+// initialisation report its code 2.
+extern "C" void __imp__sub_825B3AE8(PPCContext& ctx, uint8_t* base);
+extern "C" void __imp__sub_82511228(PPCContext& ctx, uint8_t* base);
+extern "C" void __imp__sub_824E6CD0(PPCContext& ctx, uint8_t* base);
+
+void sub_825B3AE8(PPCContext& ctx, uint8_t* base)
+{
+    static const bool trace = std::getenv("XERENGE_VIDEO_TRACE") != nullptr;
+    const uint32_t bytes = ctx.r4.u32;
+    __imp__sub_825B3AE8(ctx, base);
+    if (trace)
+        std::cerr << "VirtualAlloc " << bytes << " bytes -> 0x" << std::hex
+                  << ctx.r3.u32 << std::dec
+                  << (ctx.r3.u32 == 0 ? "   REFUSED" : "") << '\n';
+}
+
+void sub_82511228(PPCContext& ctx, uint8_t* base)
+{
+    static const bool trace = std::getenv("XERENGE_VIDEO_TRACE") != nullptr;
+    __imp__sub_82511228(ctx, base);
+    if (trace && ctx.r3.u32 != 0)
+        std::cerr << "multithread buffers -> " << ctx.r3.u32 << '\n';
+}
+
+void sub_824E6CD0(PPCContext& ctx, uint8_t* base)
+{
+    static const bool trace = std::getenv("XERENGE_VIDEO_TRACE") != nullptr;
+    __imp__sub_824E6CD0(ctx, base);
+    if (trace && ctx.r3.u32 == 0)
+        std::cerr << "picture buffer allocation refused\n";
+}
+
+extern "C" void __imp__sub_824EAA28(PPCContext& ctx, uint8_t* base);
+extern "C" void __imp__sub_824EACA0(PPCContext& ctx, uint8_t* base);
+extern "C" void __imp__sub_824EF000(PPCContext& ctx, uint8_t* base);
+extern "C" void __imp__sub_82511098(PPCContext& ctx, uint8_t* base);
+extern "C" void __imp__sub_8250BBF8(PPCContext& ctx, uint8_t* base);
+
+void sub_824EAA28(PPCContext& ctx, uint8_t* base)
+{
+    static const bool trace = std::getenv("XERENGE_VIDEO_TRACE") != nullptr;
+    __imp__sub_824EAA28(ctx, base);
+    if (trace && ctx.r3.u32 != 0)
+        std::cerr << "vodec seq independent memory -> " << ctx.r3.u32 << '\n';
+}
+
+void sub_824EACA0(PPCContext& ctx, uint8_t* base)
+{
+    static const bool trace = std::getenv("XERENGE_VIDEO_TRACE") != nullptr;
+    __imp__sub_824EACA0(ctx, base);
+    if (trace && ctx.r3.u32 != 0)
+        std::cerr << "vodec frame area memory -> " << ctx.r3.u32 << '\n';
+}
+
+void sub_824EF000(PPCContext& ctx, uint8_t* base)
+{
+    static const bool trace = std::getenv("XERENGE_VIDEO_TRACE") != nullptr;
+    __imp__sub_824EF000(ctx, base);
+    if (trace && ctx.r3.u32 != 0)
+        std::cerr << "vodec multires -> " << ctx.r3.u32 << '\n';
+}
+
+void sub_82511098(PPCContext& ctx, uint8_t* base)
+{
+    static const bool trace = std::getenv("XERENGE_VIDEO_TRACE") != nullptr;
+    __imp__sub_82511098(ctx, base);
+    if (trace && ctx.r3.u32 != 0)
+        std::cerr << "vodec multithread vars -> " << ctx.r3.u32 << '\n';
+}
+
+void sub_8250BBF8(PPCContext& ctx, uint8_t* base)
+{
+    static const bool trace = std::getenv("XERENGE_VIDEO_TRACE") != nullptr;
+    __imp__sub_8250BBF8(ctx, base);
+    if (trace && ctx.r3.u32 != 0)
+        std::cerr << "vodec effects -> " << ctx.r3.u32 << '\n';
+}
+
+extern "C" void __imp__sub_821F8968(PPCContext& ctx, uint8_t* base);
+void sub_821F8968(PPCContext& ctx, uint8_t* base)
+{
+    static const bool trace = std::getenv("XERENGE_VIDEO_TRACE") != nullptr;
+    const uint32_t bytes = ctx.r3.u32, flags = ctx.r4.u32;
+    __imp__sub_821F8968(ctx, base);
+    if (trace && ctx.r3.u32 == 0)
+        std::cerr << "XMemAlloc could not supply " << bytes << " bytes (flags=0x"
+                  << std::hex << flags << std::dec << ")\n";
+}
+
+extern "C" void __imp__sub_824CC6A0(PPCContext& ctx, uint8_t* base);
+void sub_824CC6A0(PPCContext& ctx, uint8_t* base)
+{
+    static const bool trace = std::getenv("XERENGE_VIDEO_TRACE") != nullptr;
+    __imp__sub_824CC6A0(ctx, base);
+    if (trace)
+        std::cerr << "video member init -> " << ctx.r3.u32 << '\n';
+}
+
+extern "C" void __imp__sub_824AC088(PPCContext& ctx, uint8_t* base);
+void sub_824AC088(PPCContext& ctx, uint8_t* base)
+{
+    static const bool trace = std::getenv("XERENGE_VIDEO_TRACE") != nullptr;
+    const uint32_t bytes = ctx.r3.u32;
+    __imp__sub_824AC088(ctx, base);
+    if (trace)
+    {
+        static std::atomic<uint32_t> n{0};
+        const uint32_t i = n.fetch_add(1, std::memory_order_relaxed);
+        if (ctx.r3.u32 == 0 || i < 8 || bytes >= 0x5000)
+            std::cerr << "codec allocator #" << i << " " << bytes << " bytes -> 0x"
+                      << std::hex << ctx.r3.u32 << std::dec
+                      << (ctx.r3.u32 == 0 ? "   REFUSED" : "") << '\n';
+    }
+}
+
+extern "C" void __imp__sub_824CCC18(PPCContext& ctx, uint8_t* base);
+extern "C" void __imp__sub_824CCE88(PPCContext& ctx, uint8_t* base);
+
+void sub_824CCC18(PPCContext& ctx, uint8_t* base)
+{
+    static const bool trace = std::getenv("XERENGE_VIDEO_TRACE") != nullptr;
+    __imp__sub_824CCC18(ctx, base);
+    if (trace)
+        std::cerr << "video dec init -> 0x" << std::hex << ctx.r3.u32 << std::dec
+                  << '\n';
+}
+
+void sub_824CCE88(PPCContext& ctx, uint8_t* base)
+{
+    static const bool trace = std::getenv("XERENGE_VIDEO_TRACE") != nullptr;
+    __imp__sub_824CCE88(ctx, base);
+    if (trace)
+        std::cerr << "video sequence header -> 0x" << std::hex << ctx.r3.u32
+                  << std::dec << '\n';
+}
+
+extern "C" void __imp__sub_824C0590(PPCContext& ctx, uint8_t* base);
+void sub_824C0590(PPCContext& ctx, uint8_t* base)
+{
+    static const bool trace = std::getenv("XERENGE_VIDEO_TRACE") != nullptr;
+    const uint32_t a=ctx.r3.u32, b=ctx.r4.u32, c=ctx.r5.u32, d=ctx.r6.u32,
+                   e=ctx.r7.u32, f=ctx.r8.u32, g=ctx.r9.u32;
+    __imp__sub_824C0590(ctx, base);
+    if (trace)
+        std::cerr << "codec init -> 0x" << std::hex << ctx.r3.u32
+                  << "  args " << a << ',' << b << ',' << c << ',' << d << ','
+                  << e << ',' << f << ',' << g << std::dec << '\n';
+}
+
 extern "C" void __imp__sub_824ABFF8(PPCContext& ctx, uint8_t* base);
 extern "C" void __imp__sub_824ABF70(PPCContext& ctx, uint8_t* base);
 
 void sub_824ABFF8(PPCContext& ctx, uint8_t* base)
 {
+    // Its third argument receives the codec object. StrmDecInit then calls that
+    // object's first field as a function - the codec's own init - and that call
+    // is the last unexamined step before the refusal, so report which function
+    // it is.
     static const bool trace = std::getenv("XERENGE_VIDEO_TRACE") != nullptr;
-    const uint32_t a = ctx.r3.u32, b = ctx.r4.u32;
+    const uint32_t out = ctx.r5.u32;
     __imp__sub_824ABFF8(ctx, base);
-    if (trace)
-        std::cerr << "codec decoder lookup arg=0x" << std::hex << a << ',' << b
-                  << " -> 0x" << ctx.r3.u32 << std::dec << '\n';
+    if (!trace)
+        return;
+    const auto word = [base](uint32_t at) {
+        uint32_t value = 0;
+        std::memcpy(&value, base + at, sizeof(value));
+        return __builtin_bswap32(value);
+    };
+    const uint32_t codec = out != 0 ? word(out) : 0;
+    std::cerr << "codec object=0x" << std::hex << codec << " init=0x"
+              << (codec != 0 ? word(codec) : 0) << " result=0x" << ctx.r3.u32
+              << std::dec << '\n';
 }
 
 void sub_824ABF70(PPCContext& ctx, uint8_t* base)
