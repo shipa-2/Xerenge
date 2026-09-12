@@ -6130,6 +6130,184 @@ void sub_8248D398(PPCContext& ctx, uint8_t* base)
     __imp__sub_8248D398(ctx, base);
 }
 
+// The call inside WMCDecSetDecodePatternForStreams whose negative result
+// becomes the 0x10 the decoder reports (retail 0x82488EF8). Its arguments say
+// what it was asked to do when it refused.
+extern "C" void __imp__sub_82488EF8(PPCContext& ctx, uint8_t* base);
+extern "C" void __imp__sub_82488E18(PPCContext& ctx, uint8_t* base);
+// CB4VideoManager::PrepareVideo sizes the decoder's memory pool from this
+// lookup (retail 0x8210D3F0) before constructing the allocator the WMC decoder
+// allocates from. If it answers with the wrong size the pool is too small and
+// the decoder fails to initialise, which is what a failed AppSvcAlloc means.
+// CGtVideoDecoder::Release (retail 0x82357C00) returns the clip's decoder
+// memory. If it does not run for every clip the pool never recovers.
+// The two lookups StrmDecInit makes after allocating: the codec decoder for
+// the stream, and the DRM object.
+extern "C" void __imp__sub_824ABFF8(PPCContext& ctx, uint8_t* base);
+extern "C" void __imp__sub_824ABF70(PPCContext& ctx, uint8_t* base);
+
+void sub_824ABFF8(PPCContext& ctx, uint8_t* base)
+{
+    static const bool trace = std::getenv("XERENGE_VIDEO_TRACE") != nullptr;
+    const uint32_t a = ctx.r3.u32, b = ctx.r4.u32;
+    __imp__sub_824ABFF8(ctx, base);
+    if (trace)
+        std::cerr << "codec decoder lookup arg=0x" << std::hex << a << ',' << b
+                  << " -> 0x" << ctx.r3.u32 << std::dec << '\n';
+}
+
+void sub_824ABF70(PPCContext& ctx, uint8_t* base)
+{
+    static const bool trace = std::getenv("XERENGE_VIDEO_TRACE") != nullptr;
+    __imp__sub_824ABF70(ctx, base);
+    if (trace && ctx.r3.s32 < 0)
+        std::cerr << "drm object lookup refused -> 0x" << std::hex << ctx.r3.u32
+                  << std::dec << '\n';
+}
+
+extern "C" void __imp__sub_82357C00(PPCContext& ctx, uint8_t* base);
+void sub_82357C00(PPCContext& ctx, uint8_t* base)
+{
+    static const bool trace = std::getenv("XERENGE_VIDEO_TRACE") != nullptr;
+    if (trace)
+        std::cerr << "video decoder released\n";
+    __imp__sub_82357C00(ctx, base);
+}
+
+extern "C" void __imp__sub_8210D3F0(PPCContext& ctx, uint8_t* base);
+void sub_8210D3F0(PPCContext& ctx, uint8_t* base)
+{
+    static const bool trace = std::getenv("XERENGE_VIDEO_TRACE") != nullptr;
+    const uint32_t id = ctx.r4.u32;
+    __imp__sub_8210D3F0(ctx, base);
+    if (trace)
+    {
+        static std::atomic<uint32_t> n{0};
+        if (n.fetch_add(1, std::memory_order_relaxed) < 24)
+            std::cerr << "size lookup id=0x" << std::hex << id << " -> "
+                      << std::dec << ctx.r3.u32 << " bytes\n";
+    }
+}
+
+extern "C" void __imp__sub_82490318(PPCContext& ctx, uint8_t* base);
+
+void sub_82490318(PPCContext& ctx, uint8_t* base)
+{
+    static const bool trace = std::getenv("XERENGE_VIDEO_TRACE") != nullptr;
+    const uint32_t bytes = ctx.r4.u32;
+    const uint32_t pool = ctx.r3.u32;
+    __imp__sub_82490318(ctx, base);
+    if (trace)
+    {
+        static std::atomic<uint32_t> n{0};
+        const bool failed = ctx.r3.s32 < 0;
+        const uint32_t i = n.fetch_add(1, std::memory_order_relaxed);
+        if (failed || i % 16 == 0)
+            std::cerr << "wmc alloc #" << i << " pool=0x" << std::hex << pool
+                      << " bytes=" << std::dec << bytes << " -> 0x" << std::hex
+                      << ctx.r3.u32 << std::dec << (failed ? "   FAILED" : "")
+                      << '\n';
+    }
+}
+
+extern "C" void __imp__sub_824906B0(PPCContext& ctx, uint8_t* base);
+extern "C" void __imp__sub_824918E0(PPCContext& ctx, uint8_t* base);
+extern "C" void __imp__sub_824901A0(PPCContext& ctx, uint8_t* base);
+extern "C" void __imp__sub_82491D70(PPCContext& ctx, uint8_t* base);
+extern "C" void __imp__sub_8248FE88(PPCContext& ctx, uint8_t* base);
+
+void sub_824906B0(PPCContext& ctx, uint8_t* base)
+{
+    static const bool trace = std::getenv("XERENGE_VIDEO_TRACE") != nullptr;
+    __imp__sub_824906B0(ctx, base);
+    if (trace && ctx.r3.s32 < 0)
+        std::cerr << "wmc stream element refused -> 0x" << std::hex << ctx.r3.u32
+                  << std::dec << '\n';
+}
+
+void sub_824918E0(PPCContext& ctx, uint8_t* base)
+{
+    static const bool trace = std::getenv("XERENGE_VIDEO_TRACE") != nullptr;
+    __imp__sub_824918E0(ctx, base);
+    if (trace && ctx.r3.s32 < 0)
+        std::cerr << "wmc decoder new refused -> 0x" << std::hex << ctx.r3.u32
+                  << std::dec << '\n';
+}
+
+void sub_824901A0(PPCContext& ctx, uint8_t* base)
+{
+    static const bool trace = std::getenv("XERENGE_VIDEO_TRACE") != nullptr;
+    __imp__sub_824901A0(ctx, base);
+    if (trace && ctx.r3.s32 < 0)
+        std::cerr << "wmc post message refused -> 0x" << std::hex << ctx.r3.u32
+                  << std::dec << '\n';
+}
+
+void sub_82491D70(PPCContext& ctx, uint8_t* base)
+{
+    static const bool trace = std::getenv("XERENGE_VIDEO_TRACE") != nullptr;
+    __imp__sub_82491D70(ctx, base);
+    if (trace && ctx.r3.s32 < 0)
+        std::cerr << "wmc decoder init refused -> 0x" << std::hex << ctx.r3.u32
+                  << std::dec << '\n';
+}
+
+void sub_8248FE88(PPCContext& ctx, uint8_t* base)
+{
+    static const bool trace = std::getenv("XERENGE_VIDEO_TRACE") != nullptr;
+    __imp__sub_8248FE88(ctx, base);
+    if (trace && ctx.r3.s32 < 0)
+        std::cerr << "wmc service init refused -> 0x" << std::hex << ctx.r3.u32
+                  << std::dec << '\n';
+}
+
+extern "C" void __imp__sub_82488B58(PPCContext& ctx, uint8_t* base);
+extern "C" void __imp__sub_82490798(PPCContext& ctx, uint8_t* base);
+
+void sub_82488B58(PPCContext& ctx, uint8_t* base)
+{
+    static const bool trace = std::getenv("XERENGE_VIDEO_TRACE") != nullptr;
+    const uint32_t b = ctx.r4.u32, c = ctx.r5.u32;
+    __imp__sub_82488B58(ctx, base);
+    if (trace && ctx.r3.s32 < 0)
+        std::cerr << "wmc add decoder refused: stream=" << b << " mode=" << c
+                  << " -> 0x" << std::hex << ctx.r3.u32 << std::dec << '\n';
+}
+
+void sub_82490798(PPCContext& ctx, uint8_t* base)
+{
+    static const bool trace = std::getenv("XERENGE_VIDEO_TRACE") != nullptr;
+    const uint32_t b = ctx.r4.u32;
+    __imp__sub_82490798(ctx, base);
+    if (trace && ctx.r3.s32 < 0)
+        std::cerr << "wmc stream lookup refused: stream=" << b << " -> 0x"
+                  << std::hex << ctx.r3.u32 << std::dec << '\n';
+}
+
+
+void sub_82488E18(PPCContext& ctx, uint8_t* base)
+{
+    static const bool trace = std::getenv("XERENGE_VIDEO_TRACE") != nullptr;
+    const uint32_t a = ctx.r3.u32, b = ctx.r4.u32, c = ctx.r5.u32, d = ctx.r6.u32;
+    __imp__sub_82488E18(ctx, base);
+    if (trace && ctx.r3.s32 < 0)
+        std::cerr << "wmc stream select refused: this=0x" << std::hex << a
+                  << " stream=" << std::dec << b << " arg=" << c << " mode=" << d
+                  << " -> 0x" << std::hex << ctx.r3.u32 << std::dec << '\n';
+}
+
+void sub_82488EF8(PPCContext& ctx, uint8_t* base)
+{
+    static const bool trace = std::getenv("XERENGE_VIDEO_TRACE") != nullptr;
+    const uint32_t a = ctx.r3.u32, b = ctx.r4.u32, c = ctx.r5.u32, d = ctx.r6.u32;
+    __imp__sub_82488EF8(ctx, base);
+    if (trace && ctx.r3.s32 < 0)
+        std::cerr << "wmc stream setup refused: this=0x" << std::hex << a
+                  << " stream=" << std::dec << b << " pattern=" << c
+                  << " extra=" << d << " -> 0x" << std::hex << ctx.r3.u32
+                  << std::dec << '\n';
+}
+
 // CCalWmvDecoder::InitializeInput rejects a stream with E_UNEXPECTED at four
 // points, each wrapping one call into the WMC decoder and each losing the
 // decoder's own reason. Report which one refuses.
