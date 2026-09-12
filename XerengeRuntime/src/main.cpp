@@ -6214,6 +6214,12 @@ extern "C" void __imp__sub_82488E18(PPCContext& ctx, uint8_t* base);
 // memory. If it does not run for every clip the pool never recovers.
 // The two lookups StrmDecInit makes after allocating: the codec decoder for
 // the stream, and the DRM object.
+// The title's own Direct3D layer, observed at its entry points. Both mature
+// XenonRecomp titles (UnleashedRecomp, MarathonRecomp) replace this layer
+// outright and drive a real GPU from it, rather than emulating the Xenos
+// underneath it as this runtime does - which is why neither has a line of
+// tiling or DXT code. Before committing to that, check that the call stream is
+// actually available and coherent here.
 // The codec's own init (retail 0x824C0590), the same function for every clip,
 // reached through the pointer DecoderGetDecoder hands back. This is the call
 // that refuses the attract clip.

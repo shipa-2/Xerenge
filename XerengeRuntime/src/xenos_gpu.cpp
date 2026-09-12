@@ -10,6 +10,7 @@
 #include <cstring>
 #include <cmath>
 #include <filesystem>
+#include <cstdio>
 #include <fstream>
 #include <iostream>
 
@@ -2370,6 +2371,7 @@ void XenosGpu::rasterizeDraw(uint8_t* guestBase, uint32_t initiator)
 
         const uint32_t textureFormat = texture1 & 0x3Fu;
         const uint32_t textureEndian = (texture1 >> 6) & 0x3u;
+        const bool textureTiled = (texture0 & 0x80000000u) != 0u;
         const bool textureIsValid = (texture0 & 0x3u) == 2u;
         const bool hasDxt1Texture = textureIsValid && textureFormat == 13u;
         const bool hasDxt3Texture = textureIsValid && textureFormat == 19u;
@@ -2411,7 +2413,8 @@ void XenosGpu::rasterizeDraw(uint8_t* guestBase, uint32_t initiator)
                       << ((texture1 >> 12) & 0xFFFFFu)
                       << " format=" << (texture1 & 0x3Fu)
                       << " size=" << std::dec << textureWidth << 'x' << textureHeight
-                      << " pitch=" << ((texture0 >> 22) & 0x1FFu) << '\n';
+                      << " pitch=" << ((texture0 >> 22) & 0x1FFu)
+                      << " tiled=" << textureTiled << '\n';
         bool alphaTest = false;
         bool pixelShaderPassesInterpolator = false;
         float alphaThreshold = 0.0f;
@@ -2448,6 +2451,13 @@ void XenosGpu::rasterizeDraw(uint8_t* guestBase, uint32_t initiator)
         auto textureAddress = [&](uint32_t x, uint32_t y,
             uint32_t pitchAligned, uint32_t bytesPerBlockLog2)
         {
+            // Only tiled resources are laid out by the Xenos address swizzle.
+            // Applying it to a linear one reads the right bytes in the wrong
+            // order, which looks like the image survived but was shattered
+            // into blocks - the language-select flags were arriving that way.
+            if (!textureTiled)
+                return textureBase +
+                    ((y * pitchAligned + x) << bytesPerBlockLog2);
             const uint32_t outerBlocks =
                 ((y >> 5) * (pitchAligned >> 5) + (x >> 5)) << 6;
             const uint32_t innerBlocks = (((y >> 1) & 7u) << 3) | (x & 7u);
@@ -2460,6 +2470,37 @@ void XenosGpu::rasterizeDraw(uint8_t* guestBase, uint32_t initiator)
                 (((outerInnerBytes >> 5) & 7u) << 8) +
                 ((outerInnerBytes >> 8) << 12));
         };
+        // Write one texture's guest bytes out so its layout can be checked
+        // against a known-good decoder instead of guessed at. Names the format,
+        // size, pitch and tiling alongside, since the bytes alone do not say
+        // how they are meant to be read.
+        static const char* const dumpTexture = std::getenv("XERENGE_DUMP_TEXTURE");
+        if (dumpTexture != nullptr && (hasDxt1Texture || hasRgba8Texture))
+        {
+            static bool dumped = false;
+            unsigned wantedWidth = 0, wantedHeight = 0, wantedFormat = 0;
+            std::sscanf(dumpTexture, "%ux%ux%u", &wantedWidth, &wantedHeight,
+                        &wantedFormat);
+            if (!dumped && textureWidth == wantedWidth &&
+                textureHeight == wantedHeight && textureFormat == wantedFormat)
+            {
+                dumped = true;
+                const uint32_t blocksWide = hasDxt1Texture
+                    ? std::max(texturePitchBlocks, (textureWidth + 3u) / 4u)
+                    : texturePitchPixels;
+                const uint32_t rows = hasDxt1Texture
+                    ? (textureHeight + 3u) / 4u : textureHeight;
+                const uint32_t bytes = blocksWide * rows * (hasDxt1Texture ? 8u : 4u);
+                std::ofstream out("/tmp/texture.bin", std::ios::binary);
+                out.write(reinterpret_cast<const char*>(guestBase + textureBase), bytes);
+                std::cerr << "dumped texture base=0x" << std::hex << textureBase
+                          << std::dec << " format=" << textureFormat
+                          << " size=" << textureWidth << 'x' << textureHeight
+                          << " pitch=" << (hasDxt1Texture ? texturePitchBlocks
+                                                          : texturePitchPixels)
+                          << " tiled=" << textureTiled << " bytes=" << bytes << '\n';
+            }
+        }
         auto sampleTexture = [&](float u, float v)
         {
             std::array<uint8_t, 4> result{255, 255, 255, 255};
