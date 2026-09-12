@@ -6726,6 +6726,61 @@ void sub_821FE9C8(PPCContext& ctx, uint8_t* base)
         std::cerr << "video manager state " << before << " -> " << state() << '\n';
 }
 
+// The front end's own input entry points (retail
+// CB4InputManager::AnyInput 0x8210F1C0, ::GetMenuButton 0x8210F090). The pad
+// state reaching XamInputGetState says nothing about whether the title's menu
+// layer ever sees it.
+extern "C" void __imp__sub_8210F1C0(PPCContext& ctx, uint8_t* base);
+extern "C" void __imp__sub_8210F090(PPCContext& ctx, uint8_t* base);
+
+void sub_8210F1C0(PPCContext& ctx, uint8_t* base)
+{
+    static const bool trace = std::getenv("XERENGE_INPUT_TRACE") != nullptr;
+    __imp__sub_8210F1C0(ctx, base);
+    if (trace)
+    {
+        static std::atomic<uint32_t> calls{0}, positives{0};
+        const uint32_t n = calls.fetch_add(1, std::memory_order_relaxed);
+        if (ctx.r3.u32 != 0)
+            positives.fetch_add(1, std::memory_order_relaxed);
+        if ((n % 200) == 0)
+            std::cerr << "front end AnyInput: " << n << " calls, "
+                      << positives << " saw input\n";
+    }
+}
+
+void sub_8210F090(PPCContext& ctx, uint8_t* base)
+{
+    static const bool trace = std::getenv("XERENGE_INPUT_TRACE") != nullptr;
+    const uint32_t control = ctx.r4.u32;
+    __imp__sub_8210F090(ctx, base);
+    if (trace && ctx.r3.u32 != 0)
+    {
+        static std::atomic<uint32_t> hits{0};
+        if (hits.fetch_add(1, std::memory_order_relaxed) < 12)
+            std::cerr << "front end menu button " << control << " pressed\n";
+    }
+}
+
+// The Criterion logo state (retail 0x822076D8), for contrast: it does advance,
+// so whatever action carries that decision is delivered to it. Comparing what
+// the two states receive separates "the attract state ignores the press" from
+// "nothing is delivered to the attract state at all".
+extern "C" void __imp__sub_822076D8(PPCContext& ctx, uint8_t* base);
+void sub_822076D8(PPCContext& ctx, uint8_t* base)
+{
+    static const bool trace = std::getenv("XERENGE_VIDEO_TRACE") != nullptr;
+    if (trace)
+    {
+        static std::atomic<uint32_t> lastAction{~0u};
+        if (lastAction.exchange(ctx.r4.u32, std::memory_order_relaxed) != ctx.r4.u32)
+            std::cerr << "criterion state action=" << ctx.r4.u32
+                      << " arg1=" << ctx.r6.u32 << " arg2=" << int32_t(ctx.r7.u32)
+                      << '\n';
+    }
+    __imp__sub_822076D8(ctx, base);
+}
+
 // CB4AttractState::Action (retail 0x82207508). The attract sequence is left
 // by an action delivered to this state, so whether a button press reaches it
 // at all is answered here rather than by watching for the menu to appear.
