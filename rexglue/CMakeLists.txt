@@ -15,6 +15,7 @@ set(BURNOUT_SOURCES
     src/main.cpp
     src/movie_trace.cpp
     src/movie_frames.cpp
+    src/tint_trace.cpp
 )
 
 if(WIN32)
