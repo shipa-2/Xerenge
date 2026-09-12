@@ -1993,6 +1993,8 @@ extern "C" void PPCGuestMmioStore(uint8_t* base, uint32_t address, uint64_t valu
     }
 }
 
+const bool gSpinningWaitTrace = std::getenv("XERENGE_SPINNING_WAITS") != nullptr;
+
 class XboxServiceLayer
 {
 public:
@@ -2275,7 +2277,14 @@ public:
                 // completions.  Keep the normal NT type for every other
                 // event and retain this one completion latch until the
                 // request state machine clears it.
-                const bool xmsgCompletionEvent = ctx.lr == 0x825AE9BCu;
+                // Forcing this one latch to manual-reset keeps it signalled,
+                // which is exactly the condition that makes a file state
+                // machine re-enter its current step forever instead of waiting
+                // for the next completion. Switchable so that can be measured.
+                static const bool holdXmsgLatch =
+                    std::getenv("XERENGE_NO_XMSG_LATCH") == nullptr;
+                const bool xmsgCompletionEvent =
+                    holdXmsgLatch && ctx.lr == 0x825AE9BCu;
                 manualResetEvents_[handle] = xmsgCompletionEvent || ctx.r5.u32 == 0;
             }
             if (outputHandle != 0)
@@ -2338,16 +2347,68 @@ public:
                 ? ctx.r5.u32 : ctx.r7.u32;
             adoptInlineEventResetMode(object, base);
             reportEvent("wait begins", object, ctx.lr);
+            // An auto-reset event releases exactly one waiter, and the waiter
+            // it releases is the one that has been waiting longest. Waking all
+            // of them and letting whichever gets the lock first take the signal
+            // is not the same thing: a thread that re-enters the wait in a
+            // tight loop then consumes every signal, and a slower thread
+            // waiting on the same object is never released at all. That is not
+            // hypothetical here - the title's file layer has its main thread
+            // polling the same event its disk worker blocks on, so the worker
+            // stops being given any I/O to do and the main thread waits forever
+            // for I/O that will never be issued.
+            //
+            // Queue the waiters and let only the one at the front take the
+            // signal. Manual-reset events and semaphores are unaffected: the
+            // first releases everyone by definition, and the second counts.
+            struct WaitTicket
+            {
+                std::deque<uint64_t>* queue = nullptr;
+                uint64_t ticket = 0;
+                ~WaitTicket()
+                {
+                    if (queue == nullptr)
+                        return;
+                    const auto at = std::find(queue->begin(), queue->end(), ticket);
+                    if (at != queue->end())
+                        queue->erase(at);
+                }
+            } waitTicket;
+            if (events_.count(object) != 0 && !isManualResetEvent(object) &&
+                object != gGraphicsWaitEvent.load(std::memory_order_acquire))
+            {
+                waitTicket.queue = &eventWaiters_[object];
+                waitTicket.ticket = ++eventTicketCounter_;
+                waitTicket.queue->push_back(waitTicket.ticket);
+            }
             const auto ready = [&]
             {
                 if (object == gGraphicsWaitEvent.load(std::memory_order_acquire))
                     return gGraphicsWaitEventSignaled.load(std::memory_order_acquire);
                 const auto event = events_.find(object);
                 if (event != events_.end() && event->second)
-                    return true;
+                {
+                    if (waitTicket.queue == nullptr ||
+                        waitTicket.queue->front() == waitTicket.ticket)
+                        return true;
+                }
                 const auto semaphore = semaphores_.find(object);
                 return semaphore != semaphores_.end() && semaphore->second > 0;
             };
+            // A wait that is already satisfied every time it is entered is a
+            // busy loop wearing a wait's clothing: the caller believes it is
+            // blocking until something happens, and instead spins. Sample the
+            // call sites doing it, since at these rates printing each one would
+            // be the only thing the process did.
+            if (gSpinningWaitTrace)
+            {
+                static std::atomic<uint64_t> immediate{0};
+                if (ready() &&
+                    (immediate.fetch_add(1, std::memory_order_relaxed) % 1000000u) == 0)
+                    std::cerr << "wait completes without blocking: object=0x" << std::hex
+                              << object << " calledFrom=0x"
+                              << static_cast<uint32_t>(ctx.lr) << std::dec << '\n';
+            }
             if (!ready() && timeoutPointer == 0 &&
                 std::getenv("XERENGE_WAIT_TRACE") != nullptr)
             {
@@ -2860,6 +2921,9 @@ public:
                 storeU32(base, ctx.r4.u32 + 0, ok ? 0u : 0xC0000008u);
                 storeU32(base, ctx.r4.u32 + 4, ok ? ctx.r6.u32 : 0u);
             }
+            if (!ok)
+                std::cerr << "guest seek refused: handle=0x" << std::hex << ctx.r3.u32
+                          << " offset=0x" << offset << std::dec << '\n';
             ctx.r3.u32 = ok ? 0u : 0xC0000008u;
             return;
         }
@@ -4602,6 +4666,11 @@ private:
     // completes is a different problem depending on whether its object was
     // signalled and the wakeup missed, or never signalled at all.
     std::unordered_map<uint32_t, uint64_t> eventSignalCounts_;
+    // Waiters queued per auto-reset event, oldest first, so a signal goes to
+    // the thread that has been waiting longest rather than to whichever one
+    // happens to reach the lock first.
+    std::unordered_map<uint32_t, std::deque<uint64_t>> eventWaiters_;
+    uint64_t eventTicketCounter_ = 0;
     // Where the most recent signal came from, so a starved waiter can name the
     // code that is out-signalling it.
     std::unordered_map<uint32_t, uint32_t> eventSignalCallers_;
@@ -6029,6 +6098,117 @@ void sub_8248D398(PPCContext& ctx, uint8_t* base)
                       << static_cast<uint32_t>(ctx.lr) << std::dec << '\n';
     }
     __imp__sub_8248D398(ctx, base);
+}
+
+// CCalMoviePlayer keeps a second flag word at +0xE4, set by 0x8248D498 and
+// cleared by 0x8248D5D0. VideoRendererThread tests bit 0x4 of it as its very
+// first act and, if set, exits immediately after declaring the clip finished -
+// so a bit left over from the previous clip stops the next one from ever
+// playing.
+extern "C" void __imp__sub_8248D498(PPCContext& ctx, uint8_t* base);
+extern "C" void __imp__sub_8248D5D0(PPCContext& ctx, uint8_t* base);
+
+namespace
+{
+void reportPlayerFlags(const char* what, uint32_t mask, const uint8_t* base,
+                       uint32_t player, uint64_t lr)
+{
+    uint32_t flags = 0;
+    std::memcpy(&flags, base + player + 0xE4, sizeof(flags));
+    std::cerr << "player flags " << what << " mask=0x" << std::hex << mask << " now=0x"
+              << __builtin_bswap32(flags) << " from 0x" << static_cast<uint32_t>(lr)
+              << std::dec << '\n';
+}
+}  // namespace
+
+void sub_8248D498(PPCContext& ctx, uint8_t* base)
+{
+    static const bool trace = std::getenv("XERENGE_VIDEO_TRACE") != nullptr;
+    const uint32_t player = ctx.r3.u32;
+    const uint32_t mask = ctx.r4.u32;
+    const uint64_t lr = ctx.lr;
+    __imp__sub_8248D498(ctx, base);
+    if (trace)
+        reportPlayerFlags("set", mask, base, player, lr);
+}
+
+void sub_8248D5D0(PPCContext& ctx, uint8_t* base)
+{
+    static const bool trace = std::getenv("XERENGE_VIDEO_TRACE") != nullptr;
+    const uint32_t player = ctx.r3.u32;
+    const uint32_t mask = ctx.r4.u32;
+    const uint64_t lr = ctx.lr;
+    __imp__sub_8248D5D0(ctx, base);
+    if (trace)
+        reportPlayerFlags("clear", mask, base, player, lr);
+}
+
+// CB4VideoManager::Update (retail 0x821FE9C8) drives the manager's state
+// machine, whose current state is the word at +0x98. Reporting every change
+// gives the whole progression a clip goes through, and where one stops.
+extern "C" void __imp__sub_821FE9C8(PPCContext& ctx, uint8_t* base);
+void sub_821FE9C8(PPCContext& ctx, uint8_t* base)
+{
+    static const bool trace = std::getenv("XERENGE_VIDEO_TRACE") != nullptr;
+    const uint32_t manager = ctx.r3.u32;
+    const auto state = [base, manager] {
+        uint32_t value = 0;
+        std::memcpy(&value, base + manager + 0x98, sizeof(value));
+        return __builtin_bswap32(value);
+    };
+    const uint32_t before = trace ? state() : 0;
+    __imp__sub_821FE9C8(ctx, base);
+    if (trace && state() != before)
+        std::cerr << "video manager state " << before << " -> " << state() << '\n';
+}
+
+// CB4VideoManager::PrepareVideo (retail 0x821F9058) only does anything in
+// three of its states; in any other it returns immediately without preparing
+// the decoder. Report the state it was called in, and what it returned.
+extern "C" void __imp__sub_821F9058(PPCContext& ctx, uint8_t* base);
+void sub_821F9058(PPCContext& ctx, uint8_t* base)
+{
+    static const bool trace = std::getenv("XERENGE_VIDEO_TRACE") != nullptr;
+    uint32_t state = 0;
+    if (trace)
+    {
+        std::memcpy(&state, base + ctx.r3.u32 + 0x98, sizeof(state));
+        state = __builtin_bswap32(state);
+    }
+    __imp__sub_821F9058(ctx, base);
+    if (trace)
+    {
+        static std::atomic<uint32_t> last{0xFFFFFFFFu};
+        if (last.exchange(state, std::memory_order_relaxed) != state)
+            std::cerr << "prepare video in state " << state << " -> " << ctx.r3.u32
+                      << '\n';
+    }
+}
+
+// A clip that goes straight from created to finished never started. The two
+// calls that decide that are CGtVideoDecoder::Prepare (retail 0x8235B7A0),
+// which opens and parses the stream, and CCalMoviePlayer::Play (0x8248E1B0).
+extern "C" void __imp__sub_8235B7A0(PPCContext& ctx, uint8_t* base);
+extern "C" void __imp__sub_8248E1B0(PPCContext& ctx, uint8_t* base);
+
+void sub_8235B7A0(PPCContext& ctx, uint8_t* base)
+{
+    static const bool trace = std::getenv("XERENGE_VIDEO_TRACE") != nullptr;
+    const uint32_t width = ctx.r4.u32;
+    const uint32_t height = ctx.r5.u32;
+    __imp__sub_8235B7A0(ctx, base);
+    if (trace)
+        std::cerr << "decoder prepare " << width << 'x' << height << " -> "
+                  << (ctx.r3.u32 != 0 ? "ok" : "FAILED") << '\n';
+}
+
+void sub_8248E1B0(PPCContext& ctx, uint8_t* base)
+{
+    static const bool trace = std::getenv("XERENGE_VIDEO_TRACE") != nullptr;
+    __imp__sub_8248E1B0(ctx, base);
+    if (trace)
+        std::cerr << "movie player play -> 0x" << std::hex << ctx.r3.u32 << std::dec
+                  << '\n';
 }
 
 // CCalMoviePlayer::GetStatus (retail 0x8248CC20) reports the player's state
