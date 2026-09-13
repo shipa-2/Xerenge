@@ -54,7 +54,7 @@ mkdir -p logs
 if [ -n "$XERENGE_SDK" ]; then
     SDK_LIB="$XERENGE_SDK/out/linux-amd64"
 else
-    for candidate in ../rexglue-sdk; do
+    for candidate in ../rexglue-sdk ../Xerenge/rexglue-sdk; do
         [ -d "$candidate/out/linux-amd64" ] && SDK_LIB="$candidate/out/linux-amd64" && break
     done
 fi

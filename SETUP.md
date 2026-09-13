@@ -12,7 +12,7 @@ on the machine this was developed on; nothing is assumed.
 34c1bd4d549c2c53f29d814fa5e5d1c04c533c5ca0c39e57b6c2538f44ff59b4
 ```
 
-Another dump is not necessarily unusable, but `xerenge-rex/functions.toml` names
+Another dump is not necessarily unusable, but `rexglue/functions.toml` names
 function addresses found in *this* image, and they will not line up with a
 different build. No game data is in this repository and none will be.
 
@@ -45,7 +45,7 @@ and all of it has to be compiled.
 Then:
 
 ```
-cd xerenge-rex && ./run.sh
+cd rexglue && ./run.sh
 ```
 
 ## Or step by step
@@ -64,7 +64,7 @@ the directory trees and writes the files out: 832 of them, 4.4 GiB.
 
 **`setup-sdk.sh`** clones our fork of the ReXGlue SDK next to the project and
 builds it. The fork is not a convenience: it carries fixes this title needs,
-including the vector pack defect described in `xerenge-rex/README.md`. Upstream is
+including the vector pack defect described in `rexglue/README.md`. Upstream is
 kept as a second remote so the changes stay rebasable.
 
 **`build.sh`** points the manifest at your copy of the game and builds. Code
@@ -74,8 +74,8 @@ unresolved, so a successful build means every reachable function was recovered.
 
 ## Running
 
-`xerenge-rex/run.sh` sets what has to be set and keeps a numbered pair of logs per
-run under `xerenge-rex/logs/`, so runs can be compared rather than overwriting each
+`rexglue/run.sh` sets what has to be set and keeps a numbered pair of logs per
+run under `rexglue/logs/`, so runs can be compared rather than overwriting each
 other. Three things are not optional, and it passes all three:
 
 * `--gpu_plugin xenos`, without which every video call is ignored and nothing
@@ -134,7 +134,7 @@ that the run went through `run.sh`, which forces X11.
 init` does not set.
 
 **`imgui.h` not found.** The SDK's app header includes it publicly without
-carrying the include directory to consumers. `xerenge-rex/CMakeLists.txt` names it;
+carrying the include directory to consumers. `rexglue/CMakeLists.txt` names it;
 a hand-written configure line has to as well.
 
 **The intro logo videos sometimes do not start.** Quit and run again. For

@@ -63,33 +63,36 @@ window appears.
 Keyboard stands in for a pad: **A = Space**, **Start = Return**, **B = Quote**,
 sticks on WASD.
 
-Useful flags beyond the defaults:
-
-```
-./run.sh --movie          trace the intro video path
-./run.sh --trace          GPU diagnostics; very verbose
-./run.sh --no-bloom       turn off sky bloom and the low-resolution gaussian blur
-./run.sh --no-motion-blur turn off motion blur and radial blur
-./run.sh --capture        run under RenderDoc; F12 captures the frame on screen
-./run.sh --gdb            run under a debugger
-```
-
-`--no-bloom` and `--no-motion-blur` mirror boma's Xenia patches for this title.
-They are implemented as hooks in `src/render_patches.cpp`, because the guest code
-is recompiled ahead of time and the byte patches Xenia writes are never executed.
-
-`--capture` runs under RenderDoc and is the tool of choice for anything visual:
-it costs nothing at runtime and the capture can be replayed offline through
-qrenderdoc's python API for constants, shader disassembly and pipeline state.
-`--gdb` is a last resort - stopping the process mid-frame leaves Vulkan work in
-flight, and the driver's reset timeout can take the display with it.
+`--movie`, `--trace`, `--capture` and `--gdb` are described in the script's own
+header. `--capture` runs under RenderDoc and is the tool of choice for anything
+visual: it costs nothing at runtime and the capture can be replayed offline
+through qrenderdoc's python API for textures, constants, shader disassembly and
+pipeline state. `--gdb` is a last resort - stopping the process mid-frame leaves
+Vulkan work in flight, and the driver's reset timeout can take the display with
+it.
 
 ## What our SDK fork changes
 
 [rexglue-xerenge](https://github.com/shipa-2/rexglue-xerenge) branches from
-upstream's v0.10.0, carries four fixes of its own, and has upstream's
-`development` branch merged in. None of the four is specific to this title and
+upstream's v0.10.0, carries five fixes of its own, and has upstream's
+`development` branch merged in. None of the five is specific to this title and
 all are worth sending upstream.
+
+**The Vulkan texture fetch's exponent bias read the wrong word.** It is bits
+13:18 of the fetch constant's word 3, but the translator read them from word 4
+instead - the word already loaded for the LOD bias, whose own field (bits
+12:21) overlaps that range. The D3D12 translator in the same SDK reads word 3,
+correctly; only the Vulkan path had this.
+
+This is what made every car body, and every other object sharing that shader
+shape, render essentially black over an otherwise correct scene. Burnout
+Revenge fetches its car paint with an ordinary negative LOD bias of `-0.5`;
+read as an exponent instead, that came out as `2^-8`, and every texel fetched
+through that instruction was divided by 256. Found by redirecting a chosen
+pixel shader register onto the screen in place of its computed colour
+(`XERENGE_SHADER_PROBE`, also added here) - a capture shows a draw's inputs and
+output but nothing in between, and RenderDoc's Vulkan shader debugger does not
+step every shader that turns up in this title.
 
 **The saturating vector packs, when the destination is also a source.**
 `vpkuhus` and `vpkuwus` were expanded as a byte-at-a-time write straight into
@@ -99,9 +102,16 @@ the upper half of halfword 7, so the second read of that halfword sees a value
 built from a byte just written, and it saturates to `0xFF`. Both now read their
 sources into locals first.
 
-This made the whole frontend draw with the wrong colours; the title converts a
-Flash colour transform through that instruction, and the bad pack turned the
-identity multipliers into garbage before they reached the vertex shader.
+This is what made the whole frontend draw blue, and it is worth following
+because the symptom was so far from the cause. The title converts a Flash colour
+transform to bytes through that instruction, so the identity multipliers came
+out as `0,0,255,255` instead of 128 each. It scales them by `1/128` into vertex
+shader constant c2, whose four components the vertex shader passes straight out
+as the vertex colour, and the frontend's pixel shader multiplies its texture by
+that colour. Every interface texture was therefore multiplied by roughly
+`(0, 0, 2, 2)`: red and green crushed to nothing, blue and alpha saturated. The
+logo read magenta, amber text read pink, panels read vivid blue, the button
+glyphs came out cyan, magenta and violet, and nothing was ever transparent.
 
 **`XHostThread::Execute` never seeded the host floating-point policy.**
 `XThread::Execute` does it before entering guest code, but the host-thread
@@ -167,18 +177,62 @@ rather than invent.
 
 ## Where it stands
 
-The title is fully playable: it boots, reaches the title screen, loads a save,
-runs through car select, and races render at 60 fps. Engine sounds, crashes and
-UI audio work. The frontend, the videos and the 3D world are colour-correct.
+The title is fully playable: it boots, reaches the title screen, loads a save
+from the memory card, reaches car select with that profile's rank and cars, and
+races render at 60 fps. Engine sounds, crashes and UI audio work. The frontend,
+the videos and the 3D world are colour-correct - car bodies included, now that
+the exponent-bias fix above is in.
 
-Three things are open.
+Loading a save used to kill the process on a call to an unregistered function.
+That address, like the others before it, is reached only through a vtable slot
+and is now declared in `functions.toml`; nothing about the content path itself
+was wrong. The `Unregistered symbolic link: rmcsave:` line a trace shows is not
+a fault either - the registration and the teardown land in the same millisecond,
+which is a content mount being opened and closed.
 
-**The licensed soundtrack does not play yet.** Everything else in the mix -
-engine, impacts, UI - is there.
+Open:
 
-**The intro logo videos sometimes fail to start.** Quit and run again; that is
-the workaround for now. `./run.sh --movie` reports which step is not reached when
-debugging.
+* The licensed soundtrack does not play yet - everything else in the mix is
+  there.
+* **The intro videos intermittently fail to start.** The main thread sits in
+  `CCalMoviePlayer::RenderNextFrame` waiting in `KeWaitForSingleObject`; the
+  audio renderer and both end-of-frame callback threads wait too. A failing run
+  is distinguished by two extra stuck waits on auto-reset events that a
+  succeeding run does not have. The SDK's event machinery has been checked and
+  signals correctly, so the question is which guest thread should be
+  signalling those two and why it does not. `./run.sh --movie` reports which
+  step is not reached; quitting and running again is the workaround for now.
+* **The Wayland surface extension** is requested and offered by the loader but
+  never enabled, so runs go through X11.
 
-**The Wayland surface extension** is requested and offered by the loader but
-never enabled, so runs go through X11.
+## How the colour defect was found
+
+Worth recording, because the search cost far more than the fix and the same
+shape of defect will come up again.
+
+The wrong colours were in the frontend only; the videos and the 3D world behind
+them were correct. A RenderDoc capture, replayed offline, settled most of it at
+once: the interface textures were correct in both content and channel order, the
+image view swizzle, blend state, colour write mask and render target format were
+ordinary, and the frontend's pixel shader turned out to hold no float constants
+at all - so a long line of enquiry into a pixel shader constant had been aimed
+at the wrong shader. The colour came from a vertex constant, and measuring the
+final frame showed every bright interface pixel with blue at exactly 255.
+
+From there it was a matter of walking the value backwards: the constant register
+write, the packet it was read from, the title's own copy of the constants inside
+its device object, the structure that copy is filled from, and finally the bytes
+that structure holds. Each step was measured rather than guessed, which is what
+kept eliminating candidates for good - texture data and channel order, the
+`vupkd3d128` unpack, integer conversion scales, the Flash colour transform, the
+`SQ_VS_CONST` constant base, the swap path and the gamma ramp are all ruled out
+by experiment and should not be revisited for a colour fault.
+
+Two instrumentation lessons, learned expensively. Hooks on hot guest paths -
+anything called per draw or per constant flush - starve the title badly enough
+that its videos stop playing and then nothing renders at all; keep hooks to cold
+functions and make them stop working after their first report. And debugger
+breakpoints freeze the process mid-frame, which leaves Vulkan work in flight and
+trips the driver's reset. What worked in the end was a compare added to the
+store macros in the generated header, which named the writing function through
+an ordinary backtrace without stopping anything.
