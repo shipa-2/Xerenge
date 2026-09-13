@@ -104,6 +104,15 @@ def describe_draw(controller, textures, event, with_shaders):
                 words = len(data) // 4
                 values = struct.unpack("<%df" % words, data[:words * 4])
                 say("    %s (%d bytes)" % (block.name, len(data)))
+                if "fetch" in block.name:
+                    # Fetch constants are packed bit fields, not numbers: as
+                    # floats they are meaningless, and one of their fields - the
+                    # exponent adjust - scales every texel a shader reads.
+                    words = struct.unpack("<%dI" % (len(data) // 4), data)
+                    for at in range(0, min(len(words), 96), 4):
+                        say("      w%-3d %08X %08X %08X %08X"
+                            % ((at,) + words[at:at + 4]))
+                    continue
                 if "system" in block.name:
                     # The fields that decide how colour leaves a draw: the
                     # exponent bias applied to each render target, and the flags
