@@ -10,6 +10,11 @@
 #       point, given as a fraction of the frame - 0.5 0.5 is the middle. This
 #       is how you find the draw responsible for what you can see.
 #
+#   ./scripts/inspect-capture.sh <capture.rdc> pixelxy <x> <y>
+#       the same, but in the target's own pixels - use coordinates read off a
+#       dumped render target, since those hold bands of the frame, not the
+#       picture.
+#
 #   ./scripts/inspect-capture.sh <capture.rdc> draws [min-indices]
 #       one line per draw - geometry size and the textures it binds. Use this
 #       when probing a pixel will not do, which is whenever the guest is drawing
@@ -42,9 +47,9 @@ XE_INSPECT_OUT=$out
 export XE_CAPTURE XE_MODE XE_INSPECT_OUT
 
 case "$mode" in
-    pixel)
+    pixelxy|pixel)
         XE_X=$3; XE_Y=$4
-        [ -n "$XE_X" ] && [ -n "$XE_Y" ] || { echo "pixel needs x and y as fractions" >&2; exit 1; }
+        [ -n "$XE_X" ] && [ -n "$XE_Y" ] || { echo "$mode needs x and y" >&2; exit 1; }
         export XE_X XE_Y ;;
     draw)
         XE_EVENTS=$3

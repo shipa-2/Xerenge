@@ -185,6 +185,36 @@ def main():
                 action.eventId, action.numIndices,
                 "; ".join(bound) if bound else "(no textures)"))
 
+    elif mode == "pixelxy":
+        # The same walk as "pixel", but the point is given in the target's own
+        # pixels. Guest colour targets hold bands of the frame rather than the
+        # picture, so a fraction of the frame means nothing there; coordinates
+        # taken from a dumped target do.
+        x = int(os.environ["XE_X"])
+        y = int(os.environ["XE_Y"])
+        say("probing %d,%d of each draw's target" % (x, y))
+        previous = None
+        for action in draws:
+            controller.SetFrameEvent(action.eventId, True)
+            targets = controller.GetPipelineState().GetOutputTargets()
+            if not targets or targets[0].resource == rd.ResourceId.Null():
+                continue
+            resource = targets[0].resource
+            texture = textures.get(resource)
+            if texture is None or x >= texture.width or y >= texture.height:
+                continue
+            try:
+                value = controller.PickPixel(resource, x, y, rd.Subresource(0, 0, 0),
+                                             rd.CompType.Typeless)
+                colour = tuple(round(component, 4) for component in value.floatValue[:4])
+            except Exception:
+                continue
+            if colour != previous:
+                say("  event %-6d %-40s -> %s  (%d indices)"
+                    % (action.eventId, texture_note(textures, resource), colour,
+                       action.numIndices))
+                previous = colour
+
     elif mode == "pixel":
         fraction_x = float(os.environ["XE_X"])
         fraction_y = float(os.environ["XE_Y"])
