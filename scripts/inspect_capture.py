@@ -247,6 +247,40 @@ def main():
             describe_draw(controller, textures, int(event),
                           os.environ.get("XE_SHADERS") == "1")
 
+    elif mode == "events":
+        # Every action in a range, named as the capture records it - copies,
+        # clears and dispatches as well as draws. A texture filled by a copy
+        # shows up here with the call that filled it.
+        first = int(os.environ["XE_FIRST"])
+        last = int(os.environ["XE_LAST"])
+        structured = controller.GetStructuredFile()
+        for action in actions:
+            if first <= action.eventId <= last:
+                say("  event %-6d %s" % (action.eventId, action.GetName(structured)))
+
+    elif mode == "usage":
+        # Every event that touched a resource, and how. A texture filled by a
+        # resolve rather than by drawing has no draws targeting it, so this is
+        # the only way to find where its content comes from.
+        wanted = os.environ["XE_RESOURCE"]
+        target = None
+        for resource in controller.GetResources():
+            if str(resource.resourceId).endswith(wanted) or str(resource.resourceId) == wanted:
+                target = resource.resourceId
+                break
+        if target is None:
+            say("no resource matching %s" % wanted)
+        else:
+            say("usage of %s" % texture_note(textures, target))
+            names = {}
+            for attribute in dir(rd.ResourceUsage):
+                value = getattr(rd.ResourceUsage, attribute)
+                if isinstance(value, rd.ResourceUsage):
+                    names[int(value)] = attribute
+            for use in controller.GetUsage(target):
+                say("  event %-6d %s" % (use.eventId,
+                                         names.get(int(use.usage), str(use.usage))))
+
     elif mode == "debugpixel":
         # Steps the pixel shader for one pixel and reports what its output was
         # built from. When a shader is thousands of lines long this is the only

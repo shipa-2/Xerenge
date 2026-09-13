@@ -33,6 +33,13 @@
 #       steps the pixel shader for one pixel of that draw and reports the values
 #       its output was built from.
 #
+#   ./scripts/inspect-capture.sh <capture.rdc> events <first> <last>
+#       every action in a range by name - copies and clears as well as draws.
+#
+#   ./scripts/inspect-capture.sh <capture.rdc> usage <resource id>
+#       every event that touched a resource, and how. A texture filled by a
+#       resolve has no draws targeting it, so this is how its source is found.
+#
 #   ./scripts/inspect-capture.sh <capture.rdc> textures <directory> [event]
 #       every texture in the frame, as PNG. Render targets are recycled as the
 #       frame goes on, so name an event to see them as they stood at that draw
@@ -59,6 +66,14 @@ case "$mode" in
         XE_X=$3; XE_Y=$4
         [ -n "$XE_X" ] && [ -n "$XE_Y" ] || { echo "$mode needs x and y" >&2; exit 1; }
         export XE_X XE_Y ;;
+    events)
+        XE_FIRST=$3; XE_LAST=$4
+        [ -n "$XE_FIRST" ] && [ -n "$XE_LAST" ] || { echo "events needs a range" >&2; exit 1; }
+        export XE_FIRST XE_LAST ;;
+    usage)
+        XE_RESOURCE=$3
+        [ -n "$XE_RESOURCE" ] || { echo "usage needs a resource id" >&2; exit 1; }
+        export XE_RESOURCE ;;
     debugpixel)
         XE_EVENTS=$3; XE_X=$4; XE_Y=$5
         [ -n "$XE_X" ] && [ -n "$XE_Y" ] || { echo "debugpixel needs an event, x and y" >&2; exit 1; }
