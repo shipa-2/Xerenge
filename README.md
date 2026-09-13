@@ -5,23 +5,46 @@ PowerPC code is recompiled to C++ ahead of time and linked into an executable,
 with the console's hardware and operating system emulated around it. There is
 no CPU interpreter and no JIT.
 
+## Getting it running
+
+You need a dump of the retail European release - the image hashing to
+`34c1bd4d549c2c53f29d814fa5e5d1c04c533c5ca0c39e57b6c2538f44ff59b4` - and a
+machine with Vulkan. Then:
+
+```
+./scripts/bootstrap.sh /path/to/burnout-revenge.iso
+cd rexglue && ./run.sh
+```
+
+That verifies the image, extracts it, builds the SDK and builds the title.
+[`SETUP.md`](SETUP.md) covers the steps separately, what each one does, and what
+to do when something goes wrong. The scripts are:
+
+| | |
+|---|---|
+| `scripts/check-prerequisites.sh` | says what is missing before a build can fail halfway |
+| `scripts/extract-image.py` | reads the disc image directly; XDVDFS, which ordinary tools do not open |
+| `scripts/setup-sdk.sh` | fetches and builds the recompiler and system layer |
+| `scripts/build.sh` | points the manifest at your game directory and builds |
+| `scripts/bootstrap.sh` | all of the above, in order |
+| `rexglue/run.sh` | runs it, with the flags that are not optional and a log per run |
+
 ## Two lines of work
 
 **`main` - ReXGlue.** Current. The recompiler and system layer come from
 [ReXGlue](https://github.com/rexglue/rexglue-sdk), used through our fork
 [rexglue-xerenge](https://github.com/shipa-2/rexglue-xerenge), which carries
-fixes and diagnostics found while bringing this title up. The project itself -
-manifest, function boundaries, app skeleton, build glue - is in
-[`rexglue/`](rexglue/), with build and run instructions in
-[`rexglue/README.md`](rexglue/README.md).
+fixes found while bringing this title up - including the recompiler defect that
+made the entire frontend draw blue. The project itself - manifest, function
+boundaries, app skeleton, build glue - is in [`rexglue/`](rexglue/), with the
+detail in [`rexglue/README.md`](rexglue/README.md).
 
 **`legacy` - XenonRecomp.** Frozen, and still buildable. A runtime written for
 this project ([`XerengeRuntime/`](XerengeRuntime/)) on top of
 [XenonRecomp-xerenge](https://github.com/shipa-2/XenonRecomp-xerenge) and
-[XenosRecomp-xerenge](https://github.com/shipa-2/XenosRecomp-xerenge). It
-remains useful as a reference: it renders the frontend's colours correctly,
-which is how the one open defect on the ReXGlue side was isolated to a single
-shader constant rather than to the graphics pipeline.
+[XenosRecomp-xerenge](https://github.com/shipa-2/XenosRecomp-xerenge). It stays
+useful as a second opinion: rendering the same frame correctly there is what
+bounded the colour defect to the recompiler rather than the graphics pipeline.
 
 The move was not about the recompilation approach, which is the same in both. It
 was about the system layer. The previous line reached the point of needing a
@@ -32,16 +55,19 @@ in step at all.
 
 ## Where it stands
 
-The title boots, plays its logo videos, reaches the title screen and the
-save/load prompt, and renders the 3D world at 60 fps. Audio comes up on its own.
-The 3D world and the videos are colour-correct.
+The title boots, plays its logo videos, reaches the title screen, loads a save
+from the memory card and reaches the car select menu with that profile's rank
+and cars, and renders the 3D world at 60 fps. Audio comes up on its own. The
+frontend, the videos and the 3D world are colour-correct.
 
-One defect is open: the tint constant the 2D layer multiplies by arrives wrong,
-so the red logo reads magenta, amber text reads pink, a dark panel reads vivid
-blue, and unselected menu items are not dimmed. It is bounded by measurement
-rather than guesswork - the whole GPU chain was verified faithful, and the same
-guest code produces the correct constant on the legacy runtime.
-[`rexglue/README.md`](rexglue/README.md) records the measurements.
+Open:
+
+* The intro videos intermittently fail to start. The main thread sits in the
+  movie player waiting on an event that nothing signals; the failing runs show
+  two extra stuck waits on auto-reset events that the succeeding runs do not.
+* Gameplay races draw nothing over a black background.
+* The Wayland surface extension is offered by the loader but never enabled, so
+  runs go through X11.
 
 ## What is not here
 

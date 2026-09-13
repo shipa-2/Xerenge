@@ -24,8 +24,27 @@ set -e
 cd "$(dirname "$0")"
 mkdir -p logs
 
-SDK_LIB=../Xerenge/rexglue-sdk/out/linux-amd64
-GAME=../xerenge-release/game
+# Resolve the SDK and the game without hard-coding one machine's layout. The
+# SDK sits beside the project in the repository; a working copy kept elsewhere
+# can name it with XERENGE_SDK. The game directory is whatever the manifest was
+# pointed at when the project was built, so there is one place to change it.
+if [ -n "$XERENGE_SDK" ]; then
+    SDK_LIB="$XERENGE_SDK/out/linux-amd64"
+else
+    for candidate in ../rexglue-sdk ../Xerenge/rexglue-sdk; do
+        [ -d "$candidate/out/linux-amd64" ] && SDK_LIB="$candidate/out/linux-amd64" && break
+    done
+fi
+if [ -z "$SDK_LIB" ]; then
+    echo "не нашёл собранный SDK; укажите его через XERENGE_SDK" >&2
+    exit 1
+fi
+
+GAME=${XERENGE_GAME:-$(sed -n 's/^game_root *= *"\(.*\)"/\1/p' burnout_manifest.toml | head -1)}
+if [ -z "$GAME" ] || [ ! -f "$GAME/default.xex" ]; then
+    echo "каталог с игрой не найден ($GAME); проверьте game_root в burnout_manifest.toml" >&2
+    exit 1
+fi
 
 # One numbered pair of logs per run. Runs sharing a file is what made the last
 # comparison impossible: the interesting question is what a run where the movies
