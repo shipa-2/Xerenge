@@ -27,6 +27,7 @@ to do when something goes wrong. The scripts are:
 | `scripts/setup-sdk.sh` | fetches and builds the recompiler and system layer |
 | `scripts/build.sh` | points the manifest at your game directory and builds |
 | `scripts/bootstrap.sh` | all of the above, in order |
+| `scripts/inspect-capture.sh` | reads a RenderDoc capture offline: passes, the draw behind a given pixel, full state, textures |
 | `rexglue/run.sh` | runs it, with the flags that are not optional and a log per run |
 
 ## Two lines of work

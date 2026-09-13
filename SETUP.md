@@ -101,7 +101,19 @@ Useful modes:
 A word on `--gdb`: stopping the process mid-frame leaves Vulkan work in flight,
 and the driver's reset timeout can take the display down with it. It is there
 when nothing else will do, not for routine work. Prefer `--capture`, which
-costs nothing and can be replayed offline.
+costs nothing and can be replayed offline:
+
+```
+./scripts/inspect-capture.sh <capture.rdc> list             # the passes in the frame
+./scripts/inspect-capture.sh <capture.rdc> pixel 0.5 0.6    # what draws that point
+./scripts/inspect-capture.sh <capture.rdc> draw 96 --shaders
+./scripts/inspect-capture.sh <capture.rdc> textures out/
+```
+
+`pixel` takes a point as a fraction of the frame and reports every draw that
+changes its colour, which is the quickest way from something visibly wrong to
+the draw responsible. `draw` then prints that draw's targets, blending, bound
+textures and every constant buffer.
 
 ## When something is wrong
 
