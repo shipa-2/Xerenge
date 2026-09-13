@@ -63,13 +63,26 @@ window appears.
 Keyboard stands in for a pad: **A = Space**, **Start = Return**, **B = Quote**,
 sticks on WASD.
 
-`--movie`, `--trace`, `--capture` and `--gdb` are described in the script's own
-header. `--capture` runs under RenderDoc and is the tool of choice for anything
-visual: it costs nothing at runtime and the capture can be replayed offline
-through qrenderdoc's python API for textures, constants, shader disassembly and
-pipeline state. `--gdb` is a last resort - stopping the process mid-frame leaves
-Vulkan work in flight, and the driver's reset timeout can take the display with
-it.
+Useful flags beyond the defaults:
+
+```
+./run.sh --movie          trace the intro video path
+./run.sh --trace          GPU diagnostics; very verbose
+./run.sh --no-bloom       turn off sky bloom and the low-resolution gaussian blur
+./run.sh --no-motion-blur turn off motion blur and radial blur
+./run.sh --capture        run under RenderDoc; F12 captures the frame on screen
+./run.sh --gdb            run under a debugger
+```
+
+`--no-bloom` and `--no-motion-blur` mirror boma's Xenia patches for this title.
+They are implemented as hooks in `src/render_patches.cpp`, because the guest code
+is recompiled ahead of time and the byte patches Xenia writes are never executed.
+
+`--capture` runs under RenderDoc and is the tool of choice for anything visual:
+it costs nothing at runtime and the capture can be replayed offline through
+qrenderdoc's python API for constants, shader disassembly and pipeline state.
+`--gdb` is a last resort - stopping the process mid-frame leaves Vulkan work in
+flight, and the driver's reset timeout can take the display with it.
 
 ## What our SDK fork changes
 
@@ -86,16 +99,9 @@ the upper half of halfword 7, so the second read of that halfword sees a value
 built from a byte just written, and it saturates to `0xFF`. Both now read their
 sources into locals first.
 
-This is what made the whole frontend draw blue, and it is worth following
-because the symptom was so far from the cause. The title converts a Flash colour
-transform to bytes through that instruction, so the identity multipliers came
-out as `0,0,255,255` instead of 128 each. It scales them by `1/128` into vertex
-shader constant c2, whose four components the vertex shader passes straight out
-as the vertex colour, and the frontend's pixel shader multiplies its texture by
-that colour. Every interface texture was therefore multiplied by roughly
-`(0, 0, 2, 2)`: red and green crushed to nothing, blue and alpha saturated. The
-logo read magenta, amber text read pink, panels read vivid blue, the button
-glyphs came out cyan, magenta and violet, and nothing was ever transparent.
+This made the whole frontend draw with the wrong colours; the title converts a
+Flash colour transform through that instruction, and the bad pack turned the
+identity multipliers into garbage before they reached the vertex shader.
 
 **`XHostThread::Execute` never seeded the host floating-point policy.**
 `XThread::Execute` does it before entering guest code, but the host-thread
@@ -188,35 +194,3 @@ frontend took priority.
 
 **The Wayland surface extension** is requested and offered by the loader but
 never enabled, so runs go through X11.
-
-## How the colour defect was found
-
-Worth recording, because the search cost far more than the fix and the same
-shape of defect will come up again.
-
-The wrong colours were in the frontend only; the videos and the 3D world behind
-them were correct. A RenderDoc capture, replayed offline, settled most of it at
-once: the interface textures were correct in both content and channel order, the
-image view swizzle, blend state, colour write mask and render target format were
-ordinary, and the frontend's pixel shader turned out to hold no float constants
-at all - so a long line of enquiry into a pixel shader constant had been aimed
-at the wrong shader. The colour came from a vertex constant, and measuring the
-final frame showed every bright interface pixel with blue at exactly 255.
-
-From there it was a matter of walking the value backwards: the constant register
-write, the packet it was read from, the title's own copy of the constants inside
-its device object, the structure that copy is filled from, and finally the bytes
-that structure holds. Each step was measured rather than guessed, which is what
-kept eliminating candidates for good - texture data and channel order, the
-`vupkd3d128` unpack, integer conversion scales, the Flash colour transform, the
-`SQ_VS_CONST` constant base, the swap path and the gamma ramp are all ruled out
-by experiment and should not be revisited for a colour fault.
-
-Two instrumentation lessons, learned expensively. Hooks on hot guest paths -
-anything called per draw or per constant flush - starve the title badly enough
-that its videos stop playing and then nothing renders at all; keep hooks to cold
-functions and make them stop working after their first report. And debugger
-breakpoints freeze the process mid-frame, which leaves Vulkan work in flight and
-trips the driver's reset. What worked in the end was a compare added to the
-store macros in the generated header, which named the writing function through
-an ordinary backtrace without stopping anything.

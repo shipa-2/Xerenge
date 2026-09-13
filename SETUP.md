@@ -92,11 +92,18 @@ The keyboard stands in for a pad: **A** is Space, **B** is the quote key,
 Useful modes:
 
 ```
-./run.sh --movie     trace the intro video path, when the videos do not start
-./run.sh --trace     the SDK fork's GPU diagnostics; very verbose
-./run.sh --capture   run under RenderDoc; F12 captures the frame on screen
-./run.sh --gdb       run under a debugger
+./run.sh --movie          trace the intro video path, when the videos do not start
+./run.sh --trace          the SDK fork's GPU diagnostics; very verbose
+./run.sh --no-bloom       turn off sky bloom and the low-resolution gaussian blur
+./run.sh --no-motion-blur turn off motion blur and radial blur
+./run.sh --capture        run under RenderDoc; F12 captures the frame on screen
+./run.sh --gdb            run under a debugger
 ```
+
+`--no-bloom` and `--no-motion-blur` mirror boma's Xenia patches for this title.
+Here they are implemented as hooks in `src/render_patches.cpp`, because the guest
+code is recompiled ahead of time and the byte patches Xenia writes are never
+executed.
 
 A word on `--gdb`: stopping the process mid-frame leaves Vulkan work in flight,
 and the driver's reset timeout can take the display down with it. It is there
