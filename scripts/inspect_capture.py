@@ -143,6 +143,30 @@ def main():
                                                  texture_note(textures, target)))
                 previous = target
 
+    elif mode == "draws":
+        # One line per draw: what it binds and how much geometry it has, which
+        # is how a particular object is found when probing a pixel will not do -
+        # the guest's colour targets are backed by the EDRAM surface, whose
+        # layout is nothing like the picture.
+        least = int(os.environ.get("XE_MIN_INDICES", "0"))
+        for action in draws:
+            if action.numIndices < least:
+                continue
+            controller.SetFrameEvent(action.eventId, True)
+            state = controller.GetPipelineState()
+            bound = []
+            try:
+                for entry in state.GetReadOnlyResources(rd.ShaderStage.Pixel):
+                    descriptor = getattr(entry, "descriptor", entry)
+                    resource = getattr(descriptor, "resource", None)
+                    if resource is not None and resource != rd.ResourceId.Null():
+                        bound.append(texture_note(textures, resource))
+            except Exception:
+                pass
+            say("  event %-6d indices %-7d %s" % (
+                action.eventId, action.numIndices,
+                "; ".join(bound) if bound else "(no textures)"))
+
     elif mode == "pixel":
         fraction_x = float(os.environ["XE_X"])
         fraction_y = float(os.environ["XE_Y"])
@@ -178,6 +202,11 @@ def main():
     elif mode == "textures":
         directory = os.environ["XE_TEXTURE_DIR"]
         os.makedirs(directory, exist_ok=True)
+        # Contents are whatever the replay is standing at, so move to the end of
+        # the frame first: otherwise every render target comes out as it was
+        # before anything was drawn into it.
+        if actions:
+            controller.SetFrameEvent(actions[-1].eventId, True)
         written = 0
         for texture in controller.GetTextures():
             save = rd.TextureSave()

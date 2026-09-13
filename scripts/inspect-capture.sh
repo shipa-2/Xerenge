@@ -10,6 +10,11 @@
 #       point, given as a fraction of the frame - 0.5 0.5 is the middle. This
 #       is how you find the draw responsible for what you can see.
 #
+#   ./scripts/inspect-capture.sh <capture.rdc> draws [min-indices]
+#       one line per draw - geometry size and the textures it binds. Use this
+#       when probing a pixel will not do, which is whenever the guest is drawing
+#       into its EDRAM surface rather than a picture-shaped target.
+#
 #   ./scripts/inspect-capture.sh <capture.rdc> draw <event>[,<event>...] [--shaders]
 #       full state for those draws: targets, blending, bound textures and the
 #       contents of every constant buffer, optionally with the translated
@@ -44,6 +49,8 @@ case "$mode" in
         [ -n "$XE_EVENTS" ] || { echo "draw needs an event number" >&2; exit 1; }
         export XE_EVENTS
         case "$4" in --shaders) XE_SHADERS=1; export XE_SHADERS ;; esac ;;
+    draws)
+        [ -n "$3" ] && XE_MIN_INDICES=$3 && export XE_MIN_INDICES ;;
     textures)
         XE_TEXTURE_DIR=$3
         [ -n "$XE_TEXTURE_DIR" ] || { echo "textures needs a directory" >&2; exit 1; }
