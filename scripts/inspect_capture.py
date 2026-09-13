@@ -35,7 +35,10 @@ def texture_note(textures, resource):
     texture = textures.get(resource)
     if texture is None:
         return str(resource)
-    return "%s %dx%d %s" % (resource, texture.width, texture.height, texture.format.Name())
+    note = "%s %dx%d %s" % (resource, texture.width, texture.height, texture.format.Name())
+    if getattr(texture, "msSamp", 1) > 1:
+        note += " x%d samples" % texture.msSamp
+    return note
 
 
 def sample_point(texture, fraction_x, fraction_y):
@@ -101,6 +104,21 @@ def describe_draw(controller, textures, event, with_shaders):
                 words = len(data) // 4
                 values = struct.unpack("<%df" % words, data[:words * 4])
                 say("    %s (%d bytes)" % (block.name, len(data)))
+                if "system" in block.name:
+                    # The fields that decide how colour leaves a draw: the
+                    # exponent bias applied to each render target, and the flags
+                    # saying how each target is packed - fixed point, float or
+                    # gamma. A target treated as the wrong one crushes darks and
+                    # clips highlights, which is what a badly exposed frame
+                    # looks like.
+                    floats = struct.unpack_from("<4f", data, 288)
+                    formats = struct.unpack_from("<4I", data, 352)
+                    say("      color_exp_bias   %.6f %.6f %.6f %.6f" % floats)
+                    say("      rt_format_flags  %08X %08X %08X %08X" % formats)
+                    say("      rt_base_dwords   %d %d %d %d"
+                        % struct.unpack_from("<4I", data, 336))
+                    say("      flags            %08X" % struct.unpack_from("<I", data, 0))
+                    continue
                 for at in range(0, min(words, int(os.environ.get("XE_CONSTANTS", "12")) * 4), 4):
                     say("      c%-3d %12.6f %12.6f %12.6f %12.6f"
                         % ((at // 4,) + values[at:at + 4]))
@@ -205,13 +223,24 @@ def main():
         # Contents are whatever the replay is standing at, so move to the end of
         # the frame first: otherwise every render target comes out as it was
         # before anything was drawn into it.
-        if actions:
+        # Render targets are recycled as the frame goes on, so by the end most
+        # of them are blank. XE_AT_EVENT dumps them as they stood at a chosen
+        # draw instead, which is the only way to see what a pass actually wrote.
+        at = os.environ.get("XE_AT_EVENT")
+        if at:
+            controller.SetFrameEvent(int(at), True)
+        elif actions:
             controller.SetFrameEvent(actions[-1].eventId, True)
         written = 0
         for texture in controller.GetTextures():
             save = rd.TextureSave()
             save.resourceId = texture.resourceId
             save.destType = rd.FileType.PNG
+            # The guest's colour targets are multisampled, and a multisampled
+            # texture saved without naming a sample comes out blank.
+            if getattr(texture, "msSamp", 1) > 1:
+                save.sample.sampleIndex = 0
+                save.sample.mapToArray = False
             name = "%s_%dx%d_%s.png" % (texture.resourceId, texture.width, texture.height,
                                         texture.format.Name().replace(" ", ""))
             try:

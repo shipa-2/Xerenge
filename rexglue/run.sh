@@ -9,6 +9,10 @@
 #                       says which step is not reached.
 #   ./run.sh --trace    also enables this fork's GPU diagnostics (very verbose:
 #                       it reports per draw and per swap)
+#   ./run.sh --no-msaa
+#                       turns off the guest's 2x multisampling. A multisampled
+#                       target cannot be read back from a capture, so this is
+#                       what to use when a frame has to be taken apart.
 #   ./run.sh --capture
 #                       runs under RenderDoc. Get to the screen with the wrong
 #                       colours and press F12 to capture that frame; the capture
@@ -59,6 +63,7 @@ CONSOLE=logs/console$N.log
 
 TRACE=
 TINT=
+NOMSAA=
 MOVIE=
 MODE=run
 for arg in "$@"; do
@@ -68,6 +73,7 @@ for arg in "$@"; do
         --gdb)   MODE=gdb ;;
         --capture) MODE=capture ;;
         --tint) TINT=1 ;;
+        --no-msaa) NOMSAA=1 ;;
     esac
 done
 
@@ -78,7 +84,16 @@ done
 export SDL_VIDEODRIVER=x11
 export LD_LIBRARY_PATH="$SDK_LIB${LD_LIBRARY_PATH:+:$LD_LIBRARY_PATH}"
 
-set -- --game_data_root "$GAME" \
+# The guest's colour targets are 2x multisampled, and a multisampled target
+# cannot be read back from a capture, which makes a frame much harder to take
+# apart. Turning it off costs some quality and makes the frame legible.
+if [ -n "$NOMSAA" ]; then
+    set -- --no-native_2x_msaa
+else
+    set --
+fi
+
+set -- "$@" --game_data_root "$GAME" \
        --gpu_plugin xenos \
        --no-vulkan_async_skip_incomplete_frames \
        --log_level info \

@@ -20,8 +20,10 @@
 #       contents of every constant buffer, optionally with the translated
 #       shaders disassembled
 #
-#   ./scripts/inspect-capture.sh <capture.rdc> textures <directory>
-#       every texture in the frame, as PNG
+#   ./scripts/inspect-capture.sh <capture.rdc> textures <directory> [event]
+#       every texture in the frame, as PNG. Render targets are recycled as the
+#       frame goes on, so name an event to see them as they stood at that draw
+#       rather than blank at the end.
 #
 # The replay API lives inside qrenderdoc, which is why this goes through it.
 set -e
@@ -53,6 +55,7 @@ case "$mode" in
         [ -n "$3" ] && XE_MIN_INDICES=$3 && export XE_MIN_INDICES ;;
     textures)
         XE_TEXTURE_DIR=$3
+        [ -n "$4" ] && XE_AT_EVENT=$4 && export XE_AT_EVENT
         [ -n "$XE_TEXTURE_DIR" ] || { echo "textures needs a directory" >&2; exit 1; }
         export XE_TEXTURE_DIR ;;
 esac
