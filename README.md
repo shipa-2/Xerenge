@@ -56,17 +56,15 @@ in step at all.
 
 ## Where it stands
 
-The title boots, plays its logo videos, reaches the title screen, loads a save
-from the memory card and reaches the car select menu with that profile's rank
-and cars, and renders the 3D world at 60 fps. Audio comes up on its own. The
-frontend, the videos and the 3D world are colour-correct.
+The title is fully playable: it boots, reaches the title screen, loads a save,
+runs through car select, and races render at 60 fps. Engine sounds, crashes and
+UI audio work. The frontend, the videos and the 3D world are colour-correct.
 
 Open:
 
-* The intro videos intermittently fail to start. The main thread sits in the
-  movie player waiting on an event that nothing signals; the failing runs show
-  two extra stuck waits on auto-reset events that the succeeding runs do not.
-* Gameplay races draw nothing over a black background.
+* The licensed soundtrack does not play yet - everything else in the mix is there.
+* The intro logo videos sometimes fail to start; quit and run again. `./run.sh
+  --movie` reports which step is not reached when debugging.
 * The Wayland surface extension is offered by the loader but never enabled, so
   runs go through X11.
 

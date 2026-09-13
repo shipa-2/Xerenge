@@ -137,6 +137,5 @@ init` does not set.
 carrying the include directory to consumers. `xerenge-rex/CMakeLists.txt` names it;
 a hand-written configure line has to as well.
 
-**The intro videos sometimes do not start.** Known and open. `./run.sh --movie`
-records which step is not reached; the main thread waits on an event nobody
-signals. Closing and starting again is the workaround for now.
+**The intro logo videos sometimes do not start.** Quit and run again. For
+debugging, `./run.sh --movie` records which step is not reached.

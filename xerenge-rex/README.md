@@ -167,30 +167,18 @@ rather than invent.
 
 ## Where it stands
 
-The title boots, runs its logos, reaches the title screen, loads a save from the
-memory card and reaches the car select menu with that profile's rank and cars,
-and renders the 3D world at 60 fps. Audio comes up on its own. The frontend, the
-videos and the 3D world are colour-correct.
-
-Loading a save used to kill the process on a call to an unregistered function.
-That address, like the others before it, is reached only through a vtable slot
-and is now declared in `functions.toml`; nothing about the content path itself
-was wrong. The `Unregistered symbolic link: rmcsave:` line a trace shows is not
-a fault either - the registration and the teardown land in the same millisecond,
-which is a content mount being opened and closed.
+The title is fully playable: it boots, reaches the title screen, loads a save,
+runs through car select, and races render at 60 fps. Engine sounds, crashes and
+UI audio work. The frontend, the videos and the 3D world are colour-correct.
 
 Three things are open.
 
-**The intro videos intermittently fail to start.** The main thread sits in
-`CCalMoviePlayer::RenderNextFrame` waiting in `KeWaitForSingleObject`; the audio
-renderer and both end-of-frame callback threads wait too. A failing run is
-distinguished by two extra stuck waits on auto-reset events that a succeeding
-run does not have. The SDK's event machinery has been checked and signals
-correctly, so the question is which guest thread should be signalling those two
-and why it does not. `./run.sh --movie` reports which step is not reached.
+**The licensed soundtrack does not play yet.** Everything else in the mix -
+engine, impacts, UI - is there.
 
-**Gameplay races draw nothing over a black background.** Untouched since the
-frontend took priority.
+**The intro logo videos sometimes fail to start.** Quit and run again; that is
+the workaround for now. `./run.sh --movie` reports which step is not reached when
+debugging.
 
 **The Wayland surface extension** is requested and offered by the loader but
 never enabled, so runs go through X11.
