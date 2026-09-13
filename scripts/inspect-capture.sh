@@ -25,6 +25,14 @@
 #       contents of every constant buffer, optionally with the translated
 #       shaders disassembled
 #
+#   ./scripts/inspect-capture.sh <capture.rdc> vsout <event>[,<event>...]
+#       what the vertex shader hands on: position and interpolators per vertex.
+#       Lighting computed per vertex arrives this way.
+#
+#   ./scripts/inspect-capture.sh <capture.rdc> debugpixel <event> <x> <y>
+#       steps the pixel shader for one pixel of that draw and reports the values
+#       its output was built from.
+#
 #   ./scripts/inspect-capture.sh <capture.rdc> textures <directory> [event]
 #       every texture in the frame, as PNG. Render targets are recycled as the
 #       frame goes on, so name an event to see them as they stood at that draw
@@ -51,7 +59,11 @@ case "$mode" in
         XE_X=$3; XE_Y=$4
         [ -n "$XE_X" ] && [ -n "$XE_Y" ] || { echo "$mode needs x and y" >&2; exit 1; }
         export XE_X XE_Y ;;
-    draw)
+    debugpixel)
+        XE_EVENTS=$3; XE_X=$4; XE_Y=$5
+        [ -n "$XE_X" ] && [ -n "$XE_Y" ] || { echo "debugpixel needs an event, x and y" >&2; exit 1; }
+        export XE_EVENTS XE_X XE_Y ;;
+    vsout|draw)
         XE_EVENTS=$3
         [ -n "$XE_EVENTS" ] || { echo "draw needs an event number" >&2; exit 1; }
         export XE_EVENTS

@@ -247,6 +247,76 @@ def main():
             describe_draw(controller, textures, int(event),
                           os.environ.get("XE_SHADERS") == "1")
 
+    elif mode == "debugpixel":
+        # Steps the pixel shader for one pixel and reports what its output was
+        # built from. When a shader is thousands of lines long this is the only
+        # way to see where a value goes wrong, rather than reading the whole
+        # thing and guessing.
+        event = int(os.environ["XE_EVENTS"])
+        x = int(os.environ["XE_X"])
+        y = int(os.environ["XE_Y"])
+        controller.SetFrameEvent(event, True)
+        state = controller.GetPipelineState()
+        reflection = state.GetShaderReflection(rd.ShaderStage.Pixel)
+        trace = None
+        for name, attempt in (("DebugPixelInputs",
+                               lambda: controller.DebugPixel(x, y, rd.DebugPixelInputs())),
+                              ("sample/primitive",
+                               lambda: controller.DebugPixel(x, y, 0, 0))):
+            try:
+                trace = attempt()
+                break
+            except Exception as error:
+                say("  (%s: %s)" % (name, error))
+        if trace is None or trace.debugger is None:
+            say("no debugger for this shader - RenderDoc's Vulkan shader "
+                "debugging does not cover every case, and this is one of them")
+        else:
+            states = controller.ContinueDebug(trace.debugger)
+            while states:
+                more = controller.ContinueDebug(trace.debugger)
+                if not more:
+                    break
+                states.extend(more)
+            say("%d steps" % len(states))
+            # The last writes are what produced the output; report them with the
+            # values they were given.
+            tail = int(os.environ.get("XE_STEPS", "40"))
+            for step in states[-tail:]:
+                for change in step.changes:
+                    after = change.after
+                    if not after.name:
+                        continue
+                    values = ", ".join("%.5f" % after.value.f32v[i]
+                                       for i in range(min(after.columns or 1, 4)))
+                    say("  %-24s %s" % (after.name, values))
+            controller.FreeTrace(trace)
+
+    elif mode == "vsout":
+        # What the vertex shader hands the pixel shader. Lighting computed per
+        # vertex arrives this way, so an object shaded far too dark shows up
+        # here as interpolators near zero, with nothing in the pixel shader to
+        # blame.
+        for event in os.environ["XE_EVENTS"].split(","):
+            controller.SetFrameEvent(int(event), True)
+            data = controller.GetPostVSData(0, 0, rd.MeshDataStage.VSOut)
+            say("=" * 70)
+            say("event %s: %d vertices, stride %d" % (event, data.numIndices,
+                                                      data.vertexByteStride))
+            if data.vertexResourceId == rd.ResourceId.Null() or not data.vertexByteStride:
+                say("  (no post-transform data)")
+                continue
+            count = min(data.numIndices, int(os.environ.get("XE_VERTICES", "6")))
+            raw = bytes(controller.GetBufferData(data.vertexResourceId, data.vertexByteOffset,
+                                                 data.vertexByteStride * count))
+            per = data.vertexByteStride // 4
+            for index in range(count):
+                values = struct.unpack_from("<%df" % per, raw, index * data.vertexByteStride)
+                say("  vertex %d:" % index)
+                for at in range(0, per, 4):
+                    say("    %-14s %s" % ("position" if at == 0 else "interpolator %d" % (at // 4 - 1),
+                                          " ".join("%11.5f" % value for value in values[at:at + 4])))
+
     elif mode == "textures":
         directory = os.environ["XE_TEXTURE_DIR"]
         os.makedirs(directory, exist_ok=True)
