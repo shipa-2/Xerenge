@@ -7,7 +7,7 @@
 #   ./scripts/build.sh [--game <game directory>]
 set -e
 root=$(cd "$(dirname "$0")/.." && pwd)
-project="$root/rexglue"
+project="$root/xerenge-rex"
 sdk="$root/rexglue-sdk"
 game=
 

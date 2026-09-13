@@ -13,7 +13,7 @@ machine with Vulkan. Then:
 
 ```
 ./scripts/bootstrap.sh /path/to/burnout-revenge.iso
-cd rexglue && ./run.sh
+cd xerenge-rex && ./run.sh
 ```
 
 That verifies the image, extracts it, builds the SDK and builds the title.
@@ -28,7 +28,7 @@ to do when something goes wrong. The scripts are:
 | `scripts/build.sh` | points the manifest at your game directory and builds |
 | `scripts/bootstrap.sh` | all of the above, in order |
 | `scripts/inspect-capture.sh` | reads a RenderDoc capture offline: passes, the draw behind a given pixel, full state, textures |
-| `rexglue/run.sh` | runs it, with the flags that are not optional and a log per run |
+| `xerenge-rex/run.sh` | runs it, with the flags that are not optional and a log per run |
 
 ## Two lines of work
 
@@ -37,8 +37,8 @@ to do when something goes wrong. The scripts are:
 [rexglue-xerenge](https://github.com/shipa-2/rexglue-xerenge), which carries
 fixes found while bringing this title up - including the recompiler defect that
 made the entire frontend draw blue. The project itself - manifest, function
-boundaries, app skeleton, build glue - is in [`rexglue/`](rexglue/), with the
-detail in [`rexglue/README.md`](rexglue/README.md).
+boundaries, app skeleton, build glue - is in [`xerenge-rex/`](xerenge-rex/), with the
+detail in [`xerenge-rex/README.md`](xerenge-rex/README.md).
 
 **`legacy` - XenonRecomp.** Frozen, and still buildable. A runtime written for
 this project ([`XerengeRuntime/`](XerengeRuntime/)) on top of

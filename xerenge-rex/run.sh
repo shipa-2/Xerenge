@@ -9,6 +9,25 @@
 #                       says which step is not reached.
 #   ./run.sh --trace    also enables this fork's GPU diagnostics (very verbose:
 #                       it reports per draw and per swap)
+#   ./run.sh --reflect
+#                       reports how the reflection map the cars are lit by is
+#                       resolved to memory and read back again.
+#   ./run.sh --flip-swap
+#                       an experiment: inverts the red/blue swap flag on the
+#                       resolves that take the full path, to find out whether
+#                       that path honours it at all.
+#   ./run.sh --probe <register>.<component>
+#                       puts one of each pixel shader's own registers on the
+#                       screen in place of the colour it computes, e.g.
+#                       --probe 1.y. Nothing else shows what a long shader is
+#                       doing in the middle. Add --probe-textures <n> to leave
+#                       shaders binding fewer than n textures alone, which keeps
+#                       the menus usable while probing car bodies.
+#   ./run.sh --no-bloom
+#                       turns off the sky bloom and the low-resolution gaussian
+#                       blur, after boma's Xenia patch for this title.
+#   ./run.sh --no-motion-blur
+#                       turns off motion blur and radial blur, likewise.
 #   ./run.sh --no-msaa
 #                       turns off the guest's 2x multisampling. A multisampled
 #                       target cannot be read back from a capture, so this is
@@ -35,7 +54,7 @@ mkdir -p logs
 if [ -n "$XERENGE_SDK" ]; then
     SDK_LIB="$XERENGE_SDK/out/linux-amd64"
 else
-    for candidate in ../rexglue-sdk ../Xerenge/rexglue-sdk; do
+    for candidate in ../rexglue-sdk; do
         [ -d "$candidate/out/linux-amd64" ] && SDK_LIB="$candidate/out/linux-amd64" && break
     done
 fi
@@ -63,6 +82,12 @@ CONSOLE=logs/console$N.log
 
 TRACE=
 TINT=
+REFLECT=
+FLIPSWAP=
+PROBE=
+PROBETEX=
+NOBLOOM=
+NOMOTIONBLUR=
 NOMSAA=
 MOVIE=
 MODE=run
@@ -73,6 +98,12 @@ for arg in "$@"; do
         --gdb)   MODE=gdb ;;
         --capture) MODE=capture ;;
         --tint) TINT=1 ;;
+        --reflect) REFLECT=1 ;;
+        --flip-swap) FLIPSWAP=1 ;;
+        --probe) PROBE=$2 ;;
+        --probe-textures) PROBETEX=$2 ;;
+        --no-bloom) NOBLOOM=1 ;;
+        --no-motion-blur) NOMOTIONBLUR=1 ;;
         --no-msaa) NOMSAA=1 ;;
     esac
 done
@@ -80,6 +111,14 @@ done
 [ -n "$TRACE" ] && XERENGE_GPU_TRACE=1 && export XERENGE_GPU_TRACE
 [ -n "$MOVIE" ] && XERENGE_MOVIE_TRACE=1 && export XERENGE_MOVIE_TRACE
 [ -n "$TINT" ] && XERENGE_TINT_TRACE=1 && export XERENGE_TINT_TRACE
+# Reports how the small textures the cars are lit by are written and read back:
+# the channel swap, byte order, format and exponent bias on each side.
+[ -n "$REFLECT" ] && XERENGE_REFLECT_TRACE=1 && export XERENGE_REFLECT_TRACE
+[ -n "$FLIPSWAP" ] && XERENGE_RESOLVE_SWAP=flip && export XERENGE_RESOLVE_SWAP
+[ -n "$PROBE" ] && XERENGE_SHADER_PROBE=$PROBE && export XERENGE_SHADER_PROBE
+[ -n "$PROBETEX" ] && XERENGE_SHADER_PROBE_TEXTURES=$PROBETEX && export XERENGE_SHADER_PROBE_TEXTURES
+[ -n "$NOBLOOM" ] && XERENGE_NO_BLOOM=1 && export XERENGE_NO_BLOOM
+[ -n "$NOMOTIONBLUR" ] && XERENGE_NO_MOTION_BLUR=1 && export XERENGE_NO_MOTION_BLUR
 
 export SDL_VIDEODRIVER=x11
 export LD_LIBRARY_PATH="$SDK_LIB${LD_LIBRARY_PATH:+:$LD_LIBRARY_PATH}"

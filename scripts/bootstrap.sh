@@ -41,4 +41,4 @@ echo "== building the title"
 
 echo
 echo "All set. To run:"
-echo "  cd $root/rexglue && ./run.sh"
+echo "  cd $root/xerenge-rex && ./run.sh"

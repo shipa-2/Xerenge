@@ -24,9 +24,10 @@ XenonRecomp-next/
 XenonRecompUnlimited/
 
 # The ReXGlue SDK and plume are separate checkouts, not vendored: see
-# rexglue/README.md.
+# xerenge-rex/README.md.
 rexglue-sdk/
 plume/
 # Generated recompiler output and builds of the ReXGlue project.
-rexglue/generated/
-rexglue/build/
+xerenge-rex/generated/
+xerenge-rex/build/
+xerenge-rex/logs/

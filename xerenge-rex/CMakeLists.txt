@@ -16,6 +16,7 @@ set(BURNOUT_SOURCES
     src/movie_trace.cpp
     src/movie_frames.cpp
     src/tint_trace.cpp
+    src/render_patches.cpp
 )
 
 if(WIN32)
@@ -42,4 +43,4 @@ set(PLUME_BUILD_EXAMPLES OFF CACHE BOOL "" FORCE)
 # so stopped the title getting past language select and killed its video. The
 # renderer that uses plume will have to resolve that - by having the whole
 # process go through volk, or by keeping plume behind its own boundary.
-add_subdirectory("${CMAKE_CURRENT_SOURCE_DIR}/../Xerenge/plume" plume EXCLUDE_FROM_ALL)
+add_subdirectory("${CMAKE_CURRENT_SOURCE_DIR}/../plume" plume EXCLUDE_FROM_ALL)
