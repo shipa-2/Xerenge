@@ -36,6 +36,9 @@
 #                       runs under RenderDoc. Get to the screen with the wrong
 #                       colours and press F12 to capture that frame; the capture
 #                       lands in logs/capture<N>/ and can be handed over as is.
+#   ./run.sh --plume    loads librexgpu-plume.so instead of xenos. Saved
+#                       burnout.toml has gpu_plugin=xenos, so --gpu_backend
+#                       alone is ignored; this flag sets gpu_plugin too.
 #   ./run.sh --gdb      runs under gdb. Attaching to an already-running instance
 #                       does not work here - Yama's ptrace_scope is 1, so only a
 #                       descendant of the debugger can be traced - which is why
@@ -105,8 +108,11 @@ for arg in "$@"; do
         --no-bloom) NOBLOOM=1 ;;
         --no-motion-blur) NOMOTIONBLUR=1 ;;
         --no-msaa) NOMSAA=1 ;;
+        --plume)   GPU_BACKEND=plume ;;
     esac
 done
+
+GPU_BACKEND=${GPU_BACKEND:-xenos}
 
 [ -n "$TRACE" ] && XERENGE_GPU_TRACE=1 && export XERENGE_GPU_TRACE
 [ -n "$MOVIE" ] && XERENGE_MOVIE_TRACE=1 && export XERENGE_MOVIE_TRACE
@@ -133,7 +139,8 @@ else
 fi
 
 set -- "$@" --game_data_root "$GAME" \
-       --gpu_plugin xenos \
+       --gpu_plugin "$GPU_BACKEND" \
+       --gpu_backend "$GPU_BACKEND" \
        --no-vulkan_async_skip_incomplete_frames \
        --log_level info \
        --log_file "$LOG" \
@@ -143,6 +150,7 @@ set -- "$@" --game_data_root "$GAME" \
 # The movie trace writes to stderr, not to the SDK's log file, so keep a console
 # log beside it; both are worth handing over together.
 echo "run $N"
+echo "gpu:  $GPU_BACKEND"
 echo "logs: $(pwd)/$LOG"
 echo "      $(pwd)/$CONSOLE"
 

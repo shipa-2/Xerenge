@@ -6,6 +6,7 @@
 
 #include <rex/rex_app.h>
 
+#include "plume_d3d.h"
 
 class BurnoutApp : public rex::ReXApp {
  public:
@@ -17,12 +18,7 @@ class BurnoutApp : public rex::ReXApp {
         PPCImageConfig));
   }
 
-  // Override virtual hooks for customization:
-  // void OnPostInitLogging() override {}
-  // void OnPreSetup(rex::RuntimeConfig& config) override {}
-  // void OnLoadXexImage(std::string& xex_image) override {}
-  // void OnPostLoadXexImage() override {}
-  // void OnPostSetup() override {}
+  void OnPostSetup() override { xerenge::plume_d3d::InstallPlumeRuntimeHooks(); }
   // void OnCreateDialogs(rex::ui::ImGuiDrawer* drawer) override {}
   // std::unique_ptr<rex::ui::ImGuiDialog> CreateAchievementsOverlay() override;
   // std::unique_ptr<rex::ui::AchievementNotificationDialog>

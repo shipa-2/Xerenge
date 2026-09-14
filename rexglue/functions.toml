@@ -22,3 +22,12 @@
 # slot, so the analyser cannot see it either. The size is the one already
 # established for this address on the previous runtime.
 0x82363918 = { size = 0x30 }
+
+# Plume D3D hooks. BeginVertices cannot be split here (shared epilogues) —
+# it is patched at runtime via FunctionDispatcher::SetFunction.
+0x8246AC38 = { name = "D3DDevice_Swap", size = 0x620 }
+0x8246B538 = { name = "D3DDevice_Reset", size = 0xC8 }
+0x8246B710 = { name = "Direct3D_CreateDevice", size = 0xB4 }
+0x82489F40 = { name = "D3DDevice_Clear", size = 0xBC }
+0x8248FBC8 = { name = "D3DDevice_DrawVerticesUP" }
+0x82490030 = { name = "D3DDevice_DrawIndexedVertices", size = 0x474 }

@@ -17,6 +17,7 @@ set(BURNOUT_SOURCES
     src/movie_frames.cpp
     src/tint_trace.cpp
     src/render_patches.cpp
+    src/plume_d3d_hooks.cpp
 )
 
 if(WIN32)
@@ -25,22 +26,118 @@ else()
     add_executable(burnout ${BURNOUT_SOURCES})
 endif()
 
-rexglue_setup_target(burnout GPU_PLUGINS xenos)
+# plume renderer plugin - volk is confined to this shared library so it cannot
+# shadow the loader's Vulkan entry points in the host executable.
+set(PLUME_ROOT "${CMAKE_CURRENT_SOURCE_DIR}/../plume")
+if(NOT EXISTS "${PLUME_ROOT}/CMakeLists.txt")
+    message(FATAL_ERROR "plume not found at ${PLUME_ROOT}; clone it beside Xerenge")
+endif()
+
+set(PLUME_SDL_VULKAN_ENABLED ON CACHE BOOL "" FORCE)
+set(PLUME_BUILD_EXAMPLES OFF CACHE BOOL "" FORCE)
+add_subdirectory("${PLUME_ROOT}" plume)
+# Static plume linked into a shared plugin must be PIC, and must not inherit
+# the host's -mcmodel=large (TLS local-exec breaks in .so files).
+set_target_properties(plume PROPERTIES POSITION_INDEPENDENT_CODE ON)
+
+set(XENON_RECOMP_ROOT "${CMAKE_CURRENT_SOURCE_DIR}/../XenosRecomp")
+set(XERENGE_SHADER_CACHE_CPP "" CACHE FILEPATH
+    "Generated XenosRecomp shader_cache.cpp for plume backend")
+set(XERENGE_SHADER_CACHE_EXTRA_CPP "" CACHE FILEPATH
+    "Optional auxiliary XenosRecomp cache (prepare_aux_shader_cache.py)")
+set(XERENGE_SHADER_CACHE_BOOTSTRAP_CPP "" CACHE FILEPATH
+    "Optional bootstrap XenosRecomp cache (fetch-patched runtime VS)")
+if(NOT XERENGE_SHADER_CACHE_CPP)
+    set(_generated_shader_cache
+        "${CMAKE_CURRENT_SOURCE_DIR}/generated/shader_cache.cpp")
+    set(_bootstrap_shader_cache
+        "${CMAKE_CURRENT_SOURCE_DIR}/../../xerenge-release/shader-cache-src/shader_cache.cpp")
+    if(EXISTS "${_generated_shader_cache}")
+        file(SIZE "${_generated_shader_cache}" _generated_shader_cache_size)
+        if(_generated_shader_cache_size GREATER 10000)
+            set(XERENGE_SHADER_CACHE_CPP "${_generated_shader_cache}")
+        endif()
+    endif()
+    if(NOT XERENGE_SHADER_CACHE_CPP AND EXISTS "${_bootstrap_shader_cache}")
+        set(XERENGE_SHADER_CACHE_CPP "${_bootstrap_shader_cache}")
+    endif()
+endif()
+if(NOT XERENGE_SHADER_CACHE_EXTRA_CPP)
+    set(_default_shader_cache_extra
+        "${CMAKE_CURRENT_SOURCE_DIR}/../../xerenge-release/shader-cache-src/shader_cache_extra.cpp")
+    if(EXISTS "${_default_shader_cache_extra}")
+        set(XERENGE_SHADER_CACHE_EXTRA_CPP "${_default_shader_cache_extra}")
+    endif()
+endif()
+if(NOT XERENGE_SHADER_CACHE_BOOTSTRAP_CPP)
+    set(_generated_shader_cache_bootstrap
+        "${CMAKE_CURRENT_SOURCE_DIR}/generated/shader_cache_bootstrap.cpp")
+    if(EXISTS "${_generated_shader_cache_bootstrap}")
+        set(XERENGE_SHADER_CACHE_BOOTSTRAP_CPP "${_generated_shader_cache_bootstrap}")
+    endif()
+endif()
+
+set(REXGPU_PLUME_SOURCES
+    src/plume_renderer/plume_graphics_system.cpp
+    src/plume_renderer/plume_shader_cache.cpp
+    src/plume_renderer/plume_swapchain.cpp
+    src/plume_renderer/plume_draw.cpp
+    src/plume_renderer/plugin_main.cpp
+    "${XENON_RECOMP_ROOT}/thirdparty/smol-v/source/smolv.cpp"
+)
+if(XERENGE_SHADER_CACHE_CPP)
+    if(NOT EXISTS "${XERENGE_SHADER_CACHE_CPP}")
+        message(FATAL_ERROR "XERENGE_SHADER_CACHE_CPP does not exist: ${XERENGE_SHADER_CACHE_CPP}")
+    endif()
+    list(APPEND REXGPU_PLUME_SOURCES "${XERENGE_SHADER_CACHE_CPP}")
+    message(STATUS "rexgpu-plume: linking XenosRecomp shader cache ${XERENGE_SHADER_CACHE_CPP}")
+endif()
+if(XERENGE_SHADER_CACHE_EXTRA_CPP)
+    if(NOT EXISTS "${XERENGE_SHADER_CACHE_EXTRA_CPP}")
+        message(FATAL_ERROR "XERENGE_SHADER_CACHE_EXTRA_CPP does not exist: ${XERENGE_SHADER_CACHE_EXTRA_CPP}")
+    endif()
+    list(APPEND REXGPU_PLUME_SOURCES "${XERENGE_SHADER_CACHE_EXTRA_CPP}")
+    message(STATUS "rexgpu-plume: linking extra shader cache ${XERENGE_SHADER_CACHE_EXTRA_CPP}")
+endif()
+if(XERENGE_SHADER_CACHE_BOOTSTRAP_CPP)
+    if(NOT EXISTS "${XERENGE_SHADER_CACHE_BOOTSTRAP_CPP}")
+        message(FATAL_ERROR "XERENGE_SHADER_CACHE_BOOTSTRAP_CPP does not exist: ${XERENGE_SHADER_CACHE_BOOTSTRAP_CPP}")
+    endif()
+    list(APPEND REXGPU_PLUME_SOURCES "${XERENGE_SHADER_CACHE_BOOTSTRAP_CPP}")
+    message(STATUS "rexgpu-plume: linking bootstrap shader cache ${XERENGE_SHADER_CACHE_BOOTSTRAP_CPP}")
+endif()
+
+add_library(rexgpu-plume SHARED ${REXGPU_PLUME_SOURCES})
+set_target_properties(rexgpu-plume PROPERTIES
+    CXX_VISIBILITY_PRESET hidden
+    VISIBILITY_INLINES_HIDDEN ON
+    POSITION_INDEPENDENT_CODE ON
+)
+target_include_directories(rexgpu-plume PRIVATE
+    "${CMAKE_CURRENT_SOURCE_DIR}/src"
+    "${PLUME_ROOT}"
+    "${XENON_RECOMP_ROOT}/thirdparty/smol-v/source"
+)
+if(NOT TARGET xxHash::xxhash)
+    add_subdirectory("${XENON_RECOMP_ROOT}/thirdparty/xxHash/cmake_unofficial" xenos-xxhash)
+endif()
+if(NOT TARGET libzstd)
+    set(ZSTD_BUILD_PROGRAMS OFF CACHE BOOL "" FORCE)
+    set(ZSTD_BUILD_SHARED OFF CACHE BOOL "" FORCE)
+    set(ZSTD_BUILD_STATIC ON CACHE BOOL "" FORCE)
+    add_subdirectory("${XENON_RECOMP_ROOT}/thirdparty/zstd/build/cmake" xenos-zstd)
+endif()
+target_link_libraries(rexgpu-plume PRIVATE plume rex::runtime libzstd xxHash::xxhash)
+if(XERENGE_SHADER_CACHE_CPP)
+    target_compile_definitions(rexgpu-plume PRIVATE XERENGE_HAS_SHADER_CACHE=1)
+endif()
+
+rexglue_setup_target(burnout GPU_PLUGINS xenos plume)
 
 # rex/rex_app.h includes <imgui.h> publicly, but rex::runtime does not carry
 # imgui's include directory to consumers, so a project that uses the app
 # framework has to name it itself.
 target_include_directories(burnout PRIVATE "${REXSDK_DIR}/thirdparty/imgui")
 
-# plume - the render interface re:Blue uses, added ahead of the renderer that
-# will drive it. Vulkan only here; its SDL integration needs SDL3, which the
-# system provides and the SDK also builds.
-set(PLUME_SDL_VULKAN_ENABLED ON CACHE BOOL "" FORCE)
-set(PLUME_BUILD_EXAMPLES OFF CACHE BOOL "" FORCE)
-# NOT linked into the executable yet, and that matters: volk defines the Vulkan
-# entry points as its own function-pointer globals, so linking it puts an
-# uninitialised vkCreateInstance into the binary that shadows the loader's. Doing
-# so stopped the title getting past language select and killed its video. The
-# renderer that uses plume will have to resolve that - by having the whole
-# process go through volk, or by keeping plume behind its own boundary.
-add_subdirectory("${CMAKE_CURRENT_SOURCE_DIR}/../plume" plume EXCLUDE_FROM_ALL)
+# plume is built above and linked only into librexgpu-plume.so (see
+# src/plume_renderer/). The host executable never links plume directly.
