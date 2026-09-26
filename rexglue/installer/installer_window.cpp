@@ -30,7 +30,7 @@ namespace {
 // The retail European image the recompiled code was made from (see SETUP.md).
 constexpr const char* kRetailSha256 =
     "34c1bd4d549c2c53f29d814fa5e5d1c04c533c5ca0c39e57b6c2538f44ff59b4";
-// Files extract-image.py writes for that image, for its progress.
+// Files extract-image writes for that image, for its progress.
 constexpr int kImageFiles = 832;
 
 constexpr const char* kDesktopId = "xerenge-burnout-revenge.desktop";
@@ -328,7 +328,7 @@ void InstallerWindow::StartInstall() {
   // Fetched sources are always built: an update pulled in has to be.
   const bool built = !download_ && QFileInfo::exists(QDir(project_dir_).filePath("build/burnout"));
   if (!download_ && (!extracted || !built) && scripts_dir_.isEmpty()) {
-    Refuse(tr("The setup scripts (extract-image.py, build.sh) were not found next to %1.")
+    Refuse(tr("The setup scripts (extract-image, build.sh) were not found next to %1.")
                .arg(project_dir_));
     return;
   }
@@ -355,12 +355,30 @@ void InstallerWindow::StartInstall() {
   }
   // The disc image, checked against the retail hash, into <install>/game.
   if (!extracted) {
+    const QRegularExpression percent("\\[\\s*(\\d+)%\\]");
+    const auto build_output = [this, percent](const QString& line) {
+      if (auto m = percent.match(line); m.hasMatch()) {
+        SetStepProgress(m.captured(1).toInt() / 100.0);
+      }
+      if (!line.trimmed().isEmpty()) {
+        SetStatus(line.trimmed().left(120));
+      }
+    };
+    steps_.append({tr("Building setup tools"), 1, [this, build_output] {
+                     RunProcess(QDir(scripts_dir_).filePath("build-tools.sh"), {}, build_output);
+                   }});
     steps_.append({tr("Extracting the disc image"), 30, [this, game_dir] {
                      const QRegularExpression checking("checking the image:\\s*(\\d+)%");
                      const QRegularExpression written("files written:\\s*(\\d+)");
-                     RunProcess("python3",
-                                {QDir(scripts_dir_).filePath("extract-image.py"), image_path_,
-                                 game_dir, "--sha256", kRetailSha256},
+                     const QString extract_tool = FirstExisting(
+                         {QDir(scripts_dir_).filePath("extract-image"),
+                          QDir(scripts_dir_).filePath("../tools/bin/extract-image")});
+                     if (extract_tool.isEmpty()) {
+                       StepFinished(tr("extract-image was not built"));
+                       return;
+                     }
+                     RunProcess(extract_tool,
+                                {image_path_, game_dir, "--sha256", kRetailSha256},
                                 [this, checking, written](const QString& line) {
                                   if (auto m = checking.match(line); m.hasMatch()) {
                                     SetStepProgress(0.5 * m.captured(1).toInt() / 100.0);

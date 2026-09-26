@@ -14,8 +14,8 @@
 # first, reaching the screens whose geometry is missing, so the dumps exist.
 #
 # With --from-disc it needs no dumps: the containers are rebuilt from the disc
-# by tools/runtime_shaders.recipe (see build_runtime_shaders.py), which is what
-# a fresh installation does. make_runtime_shader_recipe.py refreshes the recipe
+# by tools/runtime_shaders.recipe (see build_runtime_shaders), which is what
+# a fresh installation does. make_runtime_shader_recipe refreshes the recipe
 # from a set of dumps.
 #
 # Every shader the game loads is dumped and described, not only the ones that
@@ -38,9 +38,9 @@ HEADER=${XENOSRECOMP_HEADER:-$XENOS_ROOT/XenosRecomp/shader_common.h}
 # Our wrappers, not XenosRecomp's: the stock vertex one cannot declare
 # samplers and the stock pixel one cannot declare interpolators, and shaders
 # here need both. Output is otherwise byte-identical to the stock layout.
-VS_WRAP=${XENOSRECOMP_VS_WRAP:-tools/wrap_runtime_vertex_shader.py}
-PS_WRAP=tools/wrap_runtime_pixel_shader.py
-RENAME=${XENOSRECOMP_RENAME:-tools/prepare_aux_shader_cache.py}
+VS_WRAP=${XENOSRECOMP_VS_WRAP:-tools/wrap_runtime_vertex_shader}
+PS_WRAP=tools/wrap_runtime_pixel_shader
+RENAME=${XENOSRECOMP_RENAME:-tools/prepare_aux_shader_cache}
 
 DUMP=generated/ucode-dump
 IMAGE=${XERENGE_GUEST_IMAGE:-generated/xenos-scan/guest-image.bin}
@@ -61,7 +61,7 @@ mkdir -p "$CONTAINERS"
 
 if [ "$FROM_DISC" = 1 ]; then
     GAME_ROOT=$(sed -n 's/^game_root *= *"\(.*\)"/\1/p' burnout_manifest.toml | head -1)
-    python3 tools/build_runtime_shaders.py tools/runtime_shaders.recipe "$IMAGE" \
+    tools/build_runtime_shaders tools/runtime_shaders.recipe "$IMAGE" \
         "${XERENGE_GAME_ROOT:-$GAME_ROOT}" "$CONTAINERS"
     wrapped=$(ls "$CONTAINERS" | wc -l)
     rehosted=$wrapped
@@ -92,7 +92,7 @@ for argfile in $args; do
     # the image, reuse its container: the declarations and constant names then
     # come from the game rather than from anything reconstructed here.
     if [ -f "$IMAGE" ] && \
-       python3 tools/rehost_runtime_shader.py "$IMAGE" "$micro" \
+       tools/rehost_runtime_shader "$IMAGE" "$micro" \
                "$CONTAINERS/$base.container" 2>/dev/null; then
         rehosted=$((rehosted + 1))
         wrapped=$((wrapped + 1))
@@ -108,7 +108,7 @@ for argfile in $args; do
         *) echo "skipping $base: cannot tell vertex from pixel" >&2; continue ;;
     esac
     # shellcheck disable=SC2086 # decl is a deliberate argument list
-    python3 "$wrapper" "$micro" "$CONTAINERS/$base.container" $decl
+    "$wrapper" "$micro" "$CONTAINERS/$base.container" $decl
     echo "wrapped $base (derived declarations)"
     wrapped=$((wrapped + 1))
 done
@@ -120,7 +120,7 @@ done
 # vertex data be placed where the translated shader expects it.
 XENOS_RECOMP_DUMP_SOURCE_DIR="$(pwd)/generated/xenos-hlsl" \
     "$RECOMP" "$CONTAINERS" "$RAW" "$HEADER"
-python3 "$RENAME" "$RAW" "$OUT" --suffix Bootstrap
+"$RENAME" "$RAW" "$OUT" --suffix Bootstrap
 
 echo
 echo "wrote $OUT ($wrapped shader(s): $rehosted from their own template, \

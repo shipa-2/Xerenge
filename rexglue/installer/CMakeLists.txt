@@ -1,4 +1,4 @@
-# The installer: a Qt 6 window over the existing setup scripts (extract-image.py,
+# The installer: a Qt 6 window over the existing setup scripts (extract-image,
 # setup-sdk.sh, build.sh). Kept out of the game's own build so the game does not
 # need Qt.
 #

@@ -24,10 +24,14 @@ when running under X11, which the check below will tell you about.
 ./scripts/check-prerequisites.sh
 ```
 
+Setup and shader utilities are C++ binaries built once with `./scripts/build-tools.sh`
+(installation and `bootstrap.sh` run this for you). Offline RenderDoc analysis uses
+`inspect-capture.sh`, which needs the `renderdoc` package (`qrenderdoc` on PATH).
+
 On Arch that is:
 
 ```
-sudo pacman -S --needed git cmake ninja clang python pkgconf vulkan-icd-loader vulkan-headers libx11 libxcb wayland
+sudo pacman -S --needed git cmake ninja clang openssl pkgconf vulkan-icd-loader vulkan-headers libx11 libxcb wayland renderdoc
 ```
 
 The installer builds from source too, so it needs the same packages; it runs the
@@ -96,13 +100,14 @@ or `./run.sh` alone for the xenos backend.
 ## Or step by step
 
 ```
-./scripts/extract-image.py <image.iso> game --sha256 34c1bd4d549c2c53f29d814fa5e5d1c04c533c5ca0c39e57b6c2538f44ff59b4
+./scripts/build-tools.sh   # once: builds extract-image and other setup tools
+./scripts/extract-image --sha256 34c1bd4d549c2c53f29d814fa5e5d1c04c533c5ca0c39e57b6c2538f44ff59b4 <image.iso> game
 ./scripts/setup-sdk.sh
 ./scripts/setup-deps.sh
 ./scripts/build.sh --game game
 ```
 
-**`extract-image.py`** reads the disc directly. The image is XDVDFS rather than
+**`extract-image`** reads the disc directly. The image is XDVDFS rather than
 ISO 9660, so ordinary tools do not open it - 7-Zip finds a stray UDF header and
 stops - and this avoids depending on `extract-xiso` being installed. It finds
 the game partition (0xFD90000 into this image, after the video partition), walks
@@ -140,7 +145,7 @@ Both are skipped when their output already exists; delete it to translate
 again. With both linked in, the renderer has every shader from the first frame.
 If a newer build of the title ever needs a shader the recipe does not cover,
 `XERENGE_DUMP_UCODE=1` dumps what it loads into `generated/ucode-dump/`, and
-`tools/make_runtime_shader_recipe.py` writes a new recipe from those dumps.
+`tools/make_runtime_shader_recipe` writes a new recipe from those dumps.
 
 ## Running
 
@@ -245,4 +250,4 @@ leave out `--no-bloom`, for the intended look.
 **Geometry missing, or `cache MISS` in the log with plume.** A shader the build
 did not translate. Delete `rexglue/generated/shader_cache_runtime.cpp` and run
 `build.sh` again; if that does not help, see the note on
-`make_runtime_shader_recipe.py` above.
+`make_runtime_shader_recipe` above.

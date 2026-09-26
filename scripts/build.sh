@@ -11,6 +11,10 @@ project="$root/rexglue"
 sdk="$root/rexglue-sdk"
 game=
 
+if [ ! -x "$root/tools/bin/patch_burnout_manifest" ]; then
+    "$root/scripts/build-tools.sh"
+fi
+
 while [ $# -gt 0 ]; do
     case "$1" in
         --game) game=$2; shift 2 ;;
@@ -31,14 +35,7 @@ if [ -n "$game" ]; then
     fi
     # The manifest names the image and the data directory; point both at this
     # copy of the game rather than leaving a path from another machine.
-    python3 - "$project/burnout_manifest.toml" "$game" <<'PY'
-import re, sys
-path, game = sys.argv[1], sys.argv[2]
-text = open(path).read()
-text = re.sub(r'(?m)^game_root = .*$', 'game_root = "%s"' % game, text)
-text = re.sub(r'(?m)^file_path = .*$', 'file_path = "%s/default.xex"' % game, text)
-open(path, 'w').write(text)
-PY
+    "$root/scripts/xerenge-tool" patch_burnout_manifest "$project/burnout_manifest.toml" "$game"
     echo "== the manifest now points at $game"
 fi
 

@@ -66,8 +66,8 @@ sticks on WASD.
 `--movie`, `--trace`, `--capture` and `--gdb` are described in the script's own
 header. `--capture` runs under RenderDoc and is the tool of choice for anything
 visual: it costs nothing at runtime and the capture can be replayed offline
-through qrenderdoc's python API for textures, constants, shader disassembly and
-pipeline state. `--gdb` is a last resort - stopping the process mid-frame leaves
+through `scripts/inspect-capture.sh` for textures, constants, shader disassembly
+and pipeline state (runs inside qrenderdoc's replay API). `--gdb` is a last resort - stopping the process mid-frame leaves
 Vulkan work in flight, and the driver's reset timeout can take the display with
 it.
 

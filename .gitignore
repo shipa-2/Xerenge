@@ -6,6 +6,9 @@ work/
 game/
 game-*/
 
+# Accidental cmake configure in the repo root
+/CMakeFiles/
+
 # Local builds and generated shader outputs
 build/
 build-debug/
@@ -13,6 +16,7 @@ build-runtime/
 build-release/
 build-relfix/
 *_shader_cache*.cpp
+!tools/cxx/
 *.hlsl
 *.dxil
 *.spv
@@ -36,3 +40,16 @@ rexglue/logs/
 rexglue/installer/build/
 rexglue/installer/*.AppImage
 __pycache__/
+
+# C++ setup/shader tools (built by scripts/build-tools.sh)
+tools/cxx/build/
+tools/bin/
+tools/lib/
+scripts/extract-image
+rexglue/tools/build_runtime_shaders
+rexglue/tools/dump_xex_image
+rexglue/tools/prepare_aux_shader_cache
+rexglue/tools/rehost_runtime_shader
+rexglue/tools/wrap_runtime_pixel_shader
+rexglue/tools/wrap_runtime_vertex_shader
+rexglue/tools/make_runtime_shader_recipe

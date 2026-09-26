@@ -1,5 +1,5 @@
 # Runtime-assembled shaders, rebuilt at install time by
-# build_runtime_shaders.py from the user's own disc. Written by
+# build_runtime_shaders from the user's own disc. Written by
 # make_runtime_shader_recipe.py; holds hashes and patch masks only.
 #
 # <stage> <name> <sha256 of result> template <file> <sha256 of template> [patches]

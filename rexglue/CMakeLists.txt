@@ -46,7 +46,7 @@ set(XENON_RECOMP_ROOT "${CMAKE_CURRENT_SOURCE_DIR}/../XenosRecomp")
 set(XERENGE_SHADER_CACHE_CPP "" CACHE FILEPATH
     "Generated XenosRecomp shader_cache.cpp for plume backend")
 set(XERENGE_SHADER_CACHE_EXTRA_CPP "" CACHE FILEPATH
-    "Optional auxiliary XenosRecomp cache (prepare_aux_shader_cache.py)")
+    "Optional auxiliary XenosRecomp cache (prepare_aux_shader_cache)")
 set(XERENGE_SHADER_CACHE_BOOTSTRAP_CPP "" CACHE FILEPATH
     "Optional bootstrap XenosRecomp cache (fetch-patched runtime VS)")
 if(NOT XERENGE_SHADER_CACHE_CPP)

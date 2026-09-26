@@ -36,7 +36,7 @@ to do when something goes wrong. The scripts are:
 | | |
 |---|---|
 | `scripts/check-prerequisites.sh` | says what is missing before a build can fail halfway |
-| `scripts/extract-image.py` | reads the disc image directly; XDVDFS, which ordinary tools do not open |
+| `scripts/extract-image` | reads the disc image directly; XDVDFS, which ordinary tools do not open (built by `scripts/build-tools.sh`) |
 | `scripts/setup-sdk.sh` | fetches and builds the recompiler and system layer |
 | `scripts/setup-deps.sh` | fetches plume and XenosRecomp (our forks) and builds the shader translator |
 | `scripts/build.sh` | points the manifest at your game directory, generates the code, translates the shaders and builds |
@@ -55,8 +55,9 @@ vertex-fetch instructions patched to match the vertex layout. Those are rebuilt
 from the disc by the recipe in `rexglue/tools/runtime_shaders.recipe`, which
 holds only hashes and patch masks, and each result is checked against its hash.
 So every shader is there from the first frame, without running the game once to
-collect them. `rexglue/tools/make_runtime_shader_recipe.py` refreshes the recipe
-from the shaders a run dumps (`XERENGE_DUMP_UCODE=1`).
+collect them. `rexglue/tools/make_runtime_shader_recipe` (built by
+`scripts/build-tools.sh`) refreshes the recipe from the shaders a run dumps
+(`XERENGE_DUMP_UCODE=1`).
 
 ## Two lines of work
 

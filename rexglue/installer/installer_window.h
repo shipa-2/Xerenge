@@ -80,7 +80,7 @@ class InstallerWindow : public QWidget {
   QString install_dir_;
   QString project_dir_;  // holds build/burnout, run.sh, generated/xenos-hlsl
   QString sdk_lib_dir_;  // librexruntime.so and the Xenos plugin
-  QString scripts_dir_;  // extract-image.py, setup-sdk.sh, build.sh
+  QString scripts_dir_;  // extract-image, setup-sdk.sh, build.sh
   bool bloom_ = false;
   bool blur_ = false;
   bool xenia_ = false;

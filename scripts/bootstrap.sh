@@ -24,11 +24,15 @@ echo "== checking the environment"
 "$root/scripts/check-prerequisites.sh"
 
 echo
+echo "== setup tools"
+"$root/scripts/build-tools.sh"
+
+echo
 echo "== extracting the image into $game"
 if [ -f "$game/default.xex" ]; then
     echo "already extracted, skipping"
 else
-    python3 "$root/scripts/extract-image.py" "$image" "$game" --sha256 "$RETAIL_SHA256"
+    "$root/scripts/extract-image" --sha256 "$RETAIL_SHA256" "$image" "$game"
 fi
 
 echo

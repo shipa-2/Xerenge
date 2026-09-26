@@ -1,0 +1,12 @@
+#!/bin/sh
+# Runs a built xerenge tool by name (same basename as the old *.py scripts).
+set -e
+root=$(cd "$(dirname "$0")/.." && pwd)
+name=$1
+shift || true
+bin="$root/tools/bin/$name"
+if [ ! -x "$bin" ]; then
+    echo "missing $bin - run $root/scripts/build-tools.sh first" >&2
+    exit 1
+fi
+exec "$bin" "$@"

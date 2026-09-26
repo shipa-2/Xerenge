@@ -22,7 +22,7 @@ if [ ! -x "$RECOMP" ]; then
     exit 1
 fi
 
-python3 tools/dump_xex_image.py "$XEX" -o "$SCAN/guest-image.bin"
+tools/dump_xex_image "$XEX" -o "$SCAN/guest-image.bin"
 mkdir -p generated/xenos-hlsl
 XENOS_RECOMP_DUMP_SOURCE_DIR="$(pwd)/generated/xenos-hlsl" \
     "$RECOMP" "$SCAN" "$OUT" "$HEADER"
