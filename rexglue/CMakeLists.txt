@@ -123,6 +123,9 @@ target_include_directories(rexgpu-plume PRIVATE
     "${CMAKE_CURRENT_SOURCE_DIR}/src"
     "${PLUME_ROOT}"
     "${XENON_RECOMP_ROOT}/thirdparty/smol-v/source"
+    # rex/ui/renderdoc_api.h includes <renderdoc_app.h>; rex::runtime does not
+    # export that path the way rexui does.
+    "${REXSDK_DIR}/thirdparty/renderdoc"
 )
 if(NOT TARGET xxHash::xxhash)
     add_subdirectory("${XENON_RECOMP_ROOT}/thirdparty/xxHash/cmake_unofficial" xenos-xxhash)
