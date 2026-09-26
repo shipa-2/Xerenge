@@ -4346,6 +4346,22 @@ void PlumeDrawContext::PresentResolvedFrame(plume::RenderCommandList* list,
       frame_resolved_dests_.count(front_buffer) != 0) {
     frame_output_dest_ = front_buffer;
   }
+  // A frame that drew nothing and copied nothing - a clear and a Swap, which a
+  // slow machine hits now and then while the title catches up. A console shows
+  // its front buffer unchanged then; shown from the target it was a black
+  // frame. Show the last picture again.
+  if (frame_output_dest_ == 0 && frame_encoded_draws_ == 0 && last_output_dest_ != 0) {
+    frame_output_dest_ = last_output_dest_;
+    static std::atomic<uint32_t> repeated{0};
+    const uint32_t n = repeated.fetch_add(1, std::memory_order_relaxed);
+    if (n < 8 || (n % 120) == 0) {
+      REXLOG_INFO("plume: frame {} drew nothing; showing the last picture again ({} so far)",
+                  frame_serial_, n + 1);
+    }
+  }
+  if (frame_output_dest_ != 0) {
+    last_output_dest_ = frame_output_dest_;
+  }
   static const bool targets = std::getenv("XERENGE_D3D_TARGETS") != nullptr;
   {
     static std::atomic<uint32_t> shown{0};
@@ -5951,6 +5967,7 @@ void PlumeDrawContext::EncodeDraws(plume::RenderCommandList* list,
           drawn_since_copy ? "target" : "copy", frame_output_dest_, last_copy, draws.size(), tail);
     }
   }
+  frame_encoded_draws_ = encoded;
   {
     // A frame with far fewer draws than the ones around it: the black flashes
     // the user sees now and then. Say what it held.

@@ -36,6 +36,12 @@
 #                       runs under RenderDoc. Get to the screen with the wrong
 #                       colours and press F12 to capture that frame; the capture
 #                       lands in logs/capture<N>/ and can be handed over as is.
+#   ./run.sh --online   pretends to be signed in to Xbox Live and stands in for
+#                       EA's long-gone lobby servers, to reach the online menus.
+#                       A stub: nothing real is contacted. Off by default.
+#   ./run.sh --real-lobby
+#                       --online, but the title talks to a lobby server
+#                       (tools/ealobby) instead of being answered from inside.
 #   ./run.sh --plume    loads librexgpu-plume.so instead of xenos, with the
 #                       switches it is meant to run with (as the installed
 #                       launcher sets them). Saved burnout.toml has
@@ -111,6 +117,8 @@ for arg in "$@"; do
         --no-motion-blur) NOMOTIONBLUR=1 ;;
         --no-msaa) NOMSAA=1 ;;
         --plume)   GPU_BACKEND=plume ;;
+        --online)  ONLINE=1 ;;
+        --real-lobby) ONLINE=1; REAL_LOBBY=1 ;;
     esac
 done
 
@@ -149,6 +157,14 @@ if [ -n "$NOMSAA" ]; then
 else
     set --
 fi
+
+# --online: answer as a console signed in to Xbox Live, and stand in for EA's
+# lobby servers during the login, to reach the online menus. A stub - nothing
+# real is contacted, and there is no one to play against.
+[ -n "$ONLINE" ] && set -- "$@" --online
+# --real-lobby: --online without the stand-ins inside the title, for talking to
+# a real lobby server (tools/ealobby).
+[ -n "$REAL_LOBBY" ] && set -- "$@" --online_fake_lobby=false
 
 set -- "$@" --game_data_root "$GAME" \
        --gpu_plugin "$GPU_BACKEND" \

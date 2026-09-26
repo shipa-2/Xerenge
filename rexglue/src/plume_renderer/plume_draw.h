@@ -531,6 +531,10 @@ class PlumeDrawContext {
   std::vector<float> stage_;
   // Destination of the last resolve made in draw order this frame.
   uint32_t frame_output_dest_ = 0;
+  // Draws encoded this frame, and the copy shown last - a frame that drew
+  // nothing and copied nothing shows that copy again (see PresentResolvedFrame).
+  uint32_t frame_encoded_draws_ = 0;
+  uint32_t last_output_dest_ = 0;
   std::unordered_set<uint32_t> frame_resolved_dests_;
   void* vs_constants_mapped_ = nullptr;
   void* ps_constants_mapped_ = nullptr;

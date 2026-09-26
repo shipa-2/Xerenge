@@ -17,6 +17,7 @@ set(BURNOUT_SOURCES
     src/movie_frames.cpp
     src/tint_trace.cpp
     src/render_patches.cpp
+    src/online_stub.cpp
     src/game_timing.cpp
     src/plume_d3d_hooks.cpp
 )
@@ -150,3 +151,24 @@ target_include_directories(burnout PRIVATE "${REXSDK_DIR}/thirdparty/imgui")
 
 # plume is built above and linked only into librexgpu-plume.so (see
 # src/plume_renderer/). The host executable never links plume directly.
+# The lobby server standing in for EA's (src/ealobby): a library, so the game
+# can run one itself for players on a LAN, and a standalone binary for a
+# server of your own.
+find_package(Threads REQUIRED)
+add_library(ealobby-core STATIC src/ealobby/aries.cpp src/ealobby/server.cpp)
+target_include_directories(ealobby-core PUBLIC "${CMAKE_CURRENT_SOURCE_DIR}/src")
+target_compile_features(ealobby-core PUBLIC cxx_std_17)
+set_target_properties(ealobby-core PROPERTIES POSITION_INDEPENDENT_CODE ON)
+target_link_libraries(ealobby-core PUBLIC Threads::Threads)
+add_executable(ealobby tools/ealobby/main.cpp)
+target_link_libraries(ealobby PRIVATE ealobby-core)
+
+# xdis: a development disassembler for the guest image (tools/xdis), built
+# only where capstone is installed. The game does not need it.
+find_library(CAPSTONE_LIBRARY capstone)
+find_path(CAPSTONE_INCLUDE_DIR capstone/capstone.h)
+if(CAPSTONE_LIBRARY AND CAPSTONE_INCLUDE_DIR)
+    add_executable(xdis tools/xdis/main.cpp)
+    target_include_directories(xdis PRIVATE "${CAPSTONE_INCLUDE_DIR}")
+    target_link_libraries(xdis PRIVATE "${CAPSTONE_LIBRARY}")
+endif()
