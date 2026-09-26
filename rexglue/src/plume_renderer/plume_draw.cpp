@@ -39,6 +39,7 @@
 #include <cstdio>
 #include <fstream>
 #include <cstdlib>
+#include <ctime>
 
 namespace rex::plume_renderer {
 
@@ -2912,10 +2913,36 @@ PlumeDrawContext::MeshCheck PlumeDrawContext::CheckMeshCache(
 }
 
 namespace {
+// The per-stage timings below read the clock around every draw - some twenty
+// reads a draw. Where the kernel's clocksource is not the TSC (HPET on the
+// laptop this was measured on) each read is a system call, and those alone
+// cost milliseconds a frame. So they are taken only with XERENGE_PLUME_TIMING.
+bool PlumeTiming() {
+  static const bool on = std::getenv("XERENGE_PLUME_TIMING") != nullptr;
+  return on;
+}
+
+// Milliseconds for the watchdog and the every-few-seconds reports. The coarse
+// clock is read from the vDSO without a system call on any clocksource.
+uint64_t CoarseMs() {
+#ifdef CLOCK_MONOTONIC_COARSE
+  timespec ts;
+  clock_gettime(CLOCK_MONOTONIC_COARSE, &ts);
+  return uint64_t(ts.tv_sec) * 1000 + uint64_t(ts.tv_nsec) / 1000000;
+#else
+  return static_cast<uint64_t>(std::chrono::duration_cast<std::chrono::milliseconds>(
+                                   std::chrono::steady_clock::now().time_since_epoch())
+                                   .count());
+#endif
+}
+
 // Where FillVertices spends its time, in four parts, reported every few
 // seconds: the garage ran at twenty frames a second on unpacking alone.
 std::atomic<uint64_t> g_fill_ns[4];
 void FillPhase(int phase, std::chrono::steady_clock::time_point& mark) {
+  if (!PlumeTiming()) {
+    return;
+  }
   const auto now = std::chrono::steady_clock::now();
   g_fill_ns[phase].fetch_add(
       std::chrono::duration_cast<std::chrono::nanoseconds>(now - mark).count(),
@@ -3245,7 +3272,8 @@ void PlumeDrawContext::UnpackVertices(const GuestDrawSnapshot& snap,
 
 uint32_t PlumeDrawContext::FillVertices(const GuestDrawSnapshot& snap, memory::Memory* memory,
                                         uint32_t base_vertex, bool passthrough) {
-  auto fill_mark = std::chrono::steady_clock::now();
+  auto fill_mark = PlumeTiming() ? std::chrono::steady_clock::now()
+                                 : std::chrono::steady_clock::time_point{};
   last_fill_cache_offset_ = ~0u;
   last_fill_passthrough_ = passthrough;
   // Every path that refuses a draw says so once. A draw silently returning
@@ -5063,15 +5091,14 @@ std::atomic<uint64_t> g_encode_vs{0};
 std::atomic<uint64_t> g_encode_ps{0};
 std::atomic<uint32_t> g_encode_indices{0};
 
-uint64_t NowMs() {
-  return static_cast<uint64_t>(std::chrono::duration_cast<std::chrono::milliseconds>(
-                                   std::chrono::steady_clock::now().time_since_epoch())
-                                   .count());
-}
+uint64_t NowMs() { return CoarseMs(); }
 
 // Time per encode stage, accumulated as the stage changes and reported every
 // few seconds: where a frame's recording goes.
 void AccountEncodeStage(const char* next) {
+  if (!PlumeTiming()) {
+    return;
+  }
   static const char* current = nullptr;
   static auto since = std::chrono::steady_clock::now();
   static std::map<const char*, uint64_t> totals;
@@ -5333,10 +5360,7 @@ void PlumeDrawContext::EncodeDraws(plume::RenderCommandList* list,
   static EncodeFate fate;
   {
     static std::atomic<uint64_t> last_ms{0};
-    const uint64_t now = static_cast<uint64_t>(
-        std::chrono::duration_cast<std::chrono::milliseconds>(
-            std::chrono::steady_clock::now().time_since_epoch())
-            .count());
+    const uint64_t now = CoarseMs();
     uint64_t was = last_ms.load(std::memory_order_relaxed);
     if (now - was >= 3000 && last_ms.compare_exchange_strong(was, now)) {
       REXLOG_INFO("plume: encode fate: entered {} (Direct3D {}), invalid {}, buffers full {}, "
@@ -5609,10 +5633,7 @@ void PlumeDrawContext::EncodeDraws(plume::RenderCommandList* list,
               snap.vport_zscale, snap.vport_xoffset, snap.vport_yoffset, snap.vport_zoffset);
         }
       }
-      const uint64_t now = static_cast<uint64_t>(
-          std::chrono::duration_cast<std::chrono::milliseconds>(
-              std::chrono::steady_clock::now().time_since_epoch())
-              .count());
+      const uint64_t now = CoarseMs();
       uint64_t was = last_ms.load(std::memory_order_relaxed);
       if (now - was >= 2000 && last_ms.compare_exchange_strong(was, now)) {
         REXLOG_INFO("plume: Direct3D draws: {} with the title's shaders, {} passthrough",
@@ -5643,23 +5664,23 @@ void PlumeDrawContext::EncodeDraws(plume::RenderCommandList* list,
     // Unpacking vertices one at a time on the processor. A scene draw carries
     // thousands of them and a scene frame has hundreds of draws, so this is
     // the first place to look for the two seconds a frame costs.
-    const auto fill_started = std::chrono::steady_clock::now();
+    const auto fill_started = PlumeTiming() ? std::chrono::steady_clock::now()
+                                            : std::chrono::steady_clock::time_point{};
     EncodeStage("unpacking vertices");
     const uint32_t vertex_count = FillVertices(snap, memory, vb_used, passthrough);
     {
       static std::atomic<uint64_t> total_us{0};
       static std::atomic<uint64_t> verts{0};
       static std::atomic<uint64_t> last_ms{0};
-      total_us.fetch_add(static_cast<uint64_t>(
-                             std::chrono::duration_cast<std::chrono::microseconds>(
-                                 std::chrono::steady_clock::now() - fill_started)
-                                 .count()),
-                         std::memory_order_relaxed);
+      if (PlumeTiming()) {
+        total_us.fetch_add(static_cast<uint64_t>(
+                               std::chrono::duration_cast<std::chrono::microseconds>(
+                                   std::chrono::steady_clock::now() - fill_started)
+                                   .count()),
+                           std::memory_order_relaxed);
+      }
       verts.fetch_add(vertex_count, std::memory_order_relaxed);
-      const uint64_t now = static_cast<uint64_t>(
-          std::chrono::duration_cast<std::chrono::milliseconds>(
-              std::chrono::steady_clock::now().time_since_epoch())
-              .count());
+      const uint64_t now = CoarseMs();
       uint64_t was = last_ms.load(std::memory_order_relaxed);
       if (now - was >= 2000 && last_ms.compare_exchange_strong(was, now)) {
         REXLOG_INFO("plume: vertex cache {} hits / {} misses, {} vertices in {} meshes",
