@@ -38,10 +38,9 @@
 
 #include <rex/logging.h>
 
+#include "frame_clock_provider.h"
 #include "plume_renderer/plume_draw.h"
 #include "plume_renderer/shader_source_info.h"
-
-extern "C" void (*rex_frame_clock_provider)(void*, size_t);
 
 namespace rex::plume_renderer {
 namespace {
@@ -185,11 +184,12 @@ void Pair(Instance& inst, const Constants* before, const std::vector<uint16_t>& 
 }  // namespace
 
 void InterpolateFrame(std::vector<GuestDrawSnapshot>& draws) {
-  if (!Enabled() || !rex_frame_clock_provider) {
+  const RexFrameClockProviderFn clock_provider = RexFrameClockProvider();
+  if (!Enabled() || !clock_provider) {
     return;
   }
   FrameClock clock;
-  rex_frame_clock_provider(&clock, sizeof(clock));
+  clock_provider(&clock, sizeof(clock));
   if (!clock.valid) {
     return;
   }
