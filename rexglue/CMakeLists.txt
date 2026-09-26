@@ -17,6 +17,7 @@ set(BURNOUT_SOURCES
     src/movie_frames.cpp
     src/tint_trace.cpp
     src/render_patches.cpp
+    src/game_timing.cpp
     src/plume_d3d_hooks.cpp
 )
 
@@ -82,6 +83,7 @@ set(REXGPU_PLUME_SOURCES
     src/plume_renderer/plume_shader_cache.cpp
     src/plume_renderer/plume_swapchain.cpp
     src/plume_renderer/plume_draw.cpp
+    src/plume_renderer/plume_interp.cpp
     src/plume_renderer/plugin_main.cpp
     "${XENON_RECOMP_ROOT}/thirdparty/smol-v/source/smolv.cpp"
 )

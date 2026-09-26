@@ -12,13 +12,12 @@
 // interrupt-driven retire at all, and draining the counter by hand after each
 // Render was the fix there.
 //
-// This base does NOT need it, and doing it here is harmful. Measured: the
-// counter read before each drain went 1, 2, 2, then 0xFFFFFFFF - it had already
-// been decremented twice by something else between two Renders, so ReXGlue does
-// deliver the completion, and the extra drains push the count below zero and
-// leave the renderer with a negative number of frames in flight. So this is off
-// unless XERENGE_FRAME_RETIRE is set, kept only because the measurement is
-// worth being able to repeat.
+// Xenos delivers that interrupt. Plume walks PM4_INTERRUPT but the movie
+// player still blocks: after BG1_P is cancelled for EAHD the guest never
+// reaches player 28→29, and FrontEnd::Update stops. Drain the counter on
+// plume the same way the previous runtime did. Leave xenos alone — a second
+// drain there underflows to 0xFFFFFFFF. XERENGE_FRAME_RETIRE forces it on
+// either backend.
 #include <atomic>
 #include <cstdint>
 #include <cstdlib>
@@ -27,6 +26,9 @@
 
 #include <rex/hook.h>
 #include <rex/ppc.h>
+#include <rex/runtime.h>
+#include <rex/system/interfaces/graphics.h>
+#include <rex/system/kernel_state.h>
 
 extern "C" void __imp__sub_82482680(PPCContext& __restrict, uint8_t*);  // Render
 extern "C" void __imp__sub_824823F0(PPCContext& __restrict, uint8_t*);  // retire callback
@@ -37,9 +39,18 @@ namespace {
 
 constexpr uint32_t kInFlightOffset = 368;
 
+bool PlumePresentationActive() {
+  auto* kernel_state = REX_KERNEL_STATE();
+  if (!kernel_state || !kernel_state->emulator()) {
+    return false;
+  }
+  auto* graphics = kernel_state->emulator()->graphics_system();
+  return graphics && graphics->uses_direct_presentation();
+}
+
 bool Enabled() {
-  static const bool on = std::getenv("XERENGE_FRAME_RETIRE") != nullptr;
-  return on;
+  static const bool forced = std::getenv("XERENGE_FRAME_RETIRE") != nullptr;
+  return forced || PlumePresentationActive();
 }
 
 bool Tracing() {
@@ -66,6 +77,15 @@ void Retire(PPCContext& ctx, uint8_t* base, uint32_t renderer, uint32_t leave_in
 
 REX_HOOK_RAW(sub_82482680) {
   const uint32_t renderer = ctx.r3.u32;
+  if (Enabled()) {
+    // Render refuses the blit when 3 frames are already outstanding. If the
+    // CP interrupt never retires them, the player retries forever on the
+    // main thread and the title stops.
+    if (InFlight(base, renderer) >= 3) {
+      Retire(ctx, base, renderer, 2);
+      ctx.r3.u32 = renderer;
+    }
+  }
   __imp__sub_82482680(ctx, base);
   if (!Enabled()) {
     return;
@@ -77,7 +97,7 @@ REX_HOOK_RAW(sub_82482680) {
   if (Tracing()) {
     static std::atomic<uint32_t> calls{0};
     const uint32_t n = calls.fetch_add(1, std::memory_order_relaxed);
-    if (n < 4) {
+    if (n < 8) {
       std::cerr << "movie: render #" << n << " in flight " << InFlight(base, renderer) << '\n';
     }
   }

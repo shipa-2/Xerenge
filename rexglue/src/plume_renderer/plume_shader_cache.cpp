@@ -164,6 +164,36 @@ const ShaderCacheEntry* PlumeShaderCache::Find(uint64_t hash) const {
   return nullptr;
 }
 
+const std::vector<uint32_t>& PlumeShaderCache::MicrocodeSizes(uint32_t stage) {
+  std::lock_guard lock(mutex_);
+  if (!microcode_sizes_built_) {
+    microcode_sizes_built_ = true;
+    auto take = [&](const ShaderMicrocodeEntry* entries, size_t count) {
+      if (!entries) {
+        return;
+      }
+      for (size_t i = 0; i < count; ++i) {
+        const uint32_t s = entries[i].stage ? 1u : 0u;
+        if (entries[i].byteSize != 0) {
+          microcode_sizes_[s].push_back(entries[i].byteSize);
+        }
+      }
+    };
+    take(g_shaderMicrocodeEntries, g_shaderMicrocodeEntryCount);
+    if (ExtraAvailable()) {
+      take(g_shaderMicrocodeEntriesExtra, g_shaderMicrocodeEntryCountExtra);
+    }
+    if (BootstrapAvailable()) {
+      take(g_shaderMicrocodeEntriesBootstrap, g_shaderMicrocodeEntryCountBootstrap);
+    }
+    for (auto& sizes : microcode_sizes_) {
+      std::sort(sizes.begin(), sizes.end());
+      sizes.erase(std::unique(sizes.begin(), sizes.end()), sizes.end());
+    }
+  }
+  return microcode_sizes_[stage ? 1 : 0];
+}
+
 const ShaderMicrocodeEntry* PlumeShaderCache::FindByMicrocode(uint64_t microcode_hash) const {
   auto find_micro = [&](uint64_t hash) -> const ShaderMicrocodeEntry* {
     if (const ShaderMicrocodeEntry* it =

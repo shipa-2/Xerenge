@@ -36,6 +36,10 @@ echo "== SDK"
 "$root/scripts/setup-sdk.sh"
 
 echo
+echo "== plume and the shader translator"
+"$root/scripts/setup-deps.sh"
+
+echo
 echo "== building the title"
 "$root/scripts/build.sh" --game "$game"
 

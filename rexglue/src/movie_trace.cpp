@@ -48,12 +48,50 @@ extern "C" void __imp__sub_821FF558(PPCContext& __restrict, uint8_t*);
 extern "C" void __imp__sub_8248D398(PPCContext& __restrict, uint8_t*);
 extern "C" void __imp__sub_82357CC0(PPCContext& __restrict, uint8_t*);
 
+namespace {
+
+// Whether the clip now playing is one of the publisher/developer logos shown
+// before the title gets going. The game lets the last one be skipped but not
+// these, which is a long wait to sit through on every launch while working on
+// the title.
+std::atomic<bool> g_playing_logo{false};
+std::atomic<uint32_t> g_logo_calls{0};
+
+bool SkipLogos() {
+  static const bool on = std::getenv("XERENGE_SKIP_LOGOS") != nullptr;
+  return on;
+}
+
+bool NameIsStartupLogo(const char* name) {
+  if (!name) {
+    return false;
+  }
+  // The menu background must keep playing - it is the backdrop the interface
+  // is drawn over, not an intro. The attract clip is skippable in-game, but
+  // skipping it by hand every launch is the same waste of time as the logos.
+  static const char* const kLogos[] = {"EAHD_E_P", "EA_E_P", "CRRW_E_P", "ATTR_P"};
+  for (const char* logo : kLogos) {
+    if (std::strcmp(name, logo) == 0) {
+      return true;
+    }
+  }
+  return false;
+}
+
+}  // namespace
+
 REX_HOOK_RAW(sub_821FEBC0) {
+  const uint32_t descriptor = ctx.r4.u32;
+  const uint32_t name = descriptor != 0 ? LoadGuestU32(base, descriptor) : 0;
+  const char* name_text = name != 0 ? reinterpret_cast<const char*>(base + name) : nullptr;
   if (Tracing()) {
-    const uint32_t descriptor = ctx.r4.u32;
-    const uint32_t name = descriptor != 0 ? LoadGuestU32(base, descriptor) : 0;
-    std::cerr << "movie: clip requested: "
-              << (name != 0 ? reinterpret_cast<const char*>(base + name) : "(none)") << '\n';
+    std::cerr << "movie: clip requested: " << (name_text ? name_text : "(none)") << '\n';
+  }
+  const bool is_logo = SkipLogos() && NameIsStartupLogo(name_text);
+  g_playing_logo.store(is_logo, std::memory_order_relaxed);
+  g_logo_calls.store(0, std::memory_order_relaxed);
+  if (is_logo) {
+    std::cerr << "movie: skipping logo clip " << name_text << " (XERENGE_SKIP_LOGOS)\n";
   }
   __imp__sub_821FEBC0(ctx, base);
 }
@@ -103,6 +141,16 @@ REX_HOOK_RAW(sub_8248D398) {
 
 REX_HOOK_RAW(sub_82357CC0) {
   __imp__sub_82357CC0(ctx, base);
+  if (g_playing_logo.load(std::memory_order_relaxed)) {
+    // Told "finished" rather than torn down: the player is left to run its own
+    // end-of-clip path, which is what advances the title to the next screen.
+    // A few calls are let through first so the clip is properly started before
+    // it is declared over - answering on the very first call unbalances the
+    // state machine.
+    if (g_logo_calls.fetch_add(1, std::memory_order_relaxed) >= 2) {
+      ctx.r3.u32 = (ctx.r3.u32 & ~0xFFu) | 1u;
+    }
+  }
   if (Tracing()) {
     static std::atomic<uint32_t> last{0xFFFFFFFFu};
     const uint32_t answer = ctx.r3.u32 & 0xFFu;

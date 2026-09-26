@@ -27,7 +27,7 @@ when running under X11, which the check below will tell you about.
 On Arch that is:
 
 ```
-sudo pacman -S --needed git cmake clang python pkgconf vulkan-icd-loader vulkan-headers libx11 libxcb wayland
+sudo pacman -S --needed git cmake ninja clang python pkgconf vulkan-icd-loader vulkan-headers libx11 libxcb wayland
 ```
 
 ## One command
@@ -53,6 +53,7 @@ cd rexglue && ./run.sh
 ```
 ./scripts/extract-image.py <image.iso> game --sha256 34c1bd4d549c2c53f29d814fa5e5d1c04c533c5ca0c39e57b6c2538f44ff59b4
 ./scripts/setup-sdk.sh
+./scripts/setup-deps.sh
 ./scripts/build.sh --game game
 ```
 
@@ -67,7 +68,13 @@ builds it. The fork is not a convenience: it carries fixes this title needs,
 including the vector pack defect described in `rexglue/README.md`. Upstream is
 kept as a second remote so the changes stay rebasable.
 
-**`build.sh`** points the manifest at your copy of the game and builds. Code
+**`setup-deps.sh`** clones our forks of plume (the Vulkan layer the plume
+renderer draws through) and XenosRecomp (the shader translator) beside the
+project, and builds the translator.
+
+**`build.sh`** points the manifest at your copy of the game, translates the
+game's shaders from it (they are the game's own code, so they are made here,
+never kept in the repository) and builds. Code
 generation runs as part of the build; the recompiler recovers the whole retail
 image by itself in a few seconds and refuses to emit anything while a branch is
 unresolved, so a successful build means every reachable function was recovered.

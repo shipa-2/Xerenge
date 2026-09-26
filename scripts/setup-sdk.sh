@@ -8,7 +8,8 @@
 set -e
 root=$(cd "$(dirname "$0")/.." && pwd)
 sdk="$root/rexglue-sdk"
-fork=${XERENGE_SDK_REMOTE:-git@github.com:shipa-2/rexglue-xerenge.git}
+# HTTPS, so that no SSH key is needed to fetch it.
+fork=${XERENGE_SDK_REMOTE:-https://github.com/shipa-2/rexglue-xerenge.git}
 
 if [ ! -d "$sdk/.git" ]; then
     echo "== fetching the SDK into $sdk"

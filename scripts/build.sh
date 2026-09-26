@@ -42,6 +42,21 @@ PY
     echo "== the manifest now points at $game"
 fi
 
+# The title's shaders, translated from this copy of the game: the renderer
+# links them in, so this comes before configuring. They are the game's own
+# code, which is why they are made here and not kept in the repository.
+if [ ! -s "$project/generated/shader_cache.cpp" ]; then
+    echo "== translating the game's shaders"
+    if [ ! -x "$root/XenosRecomp/build/XenosRecomp/XenosRecomp" ]; then
+        echo "no shader translator - run ./scripts/setup-deps.sh first" >&2
+        exit 1
+    fi
+    game_root=$(sed -n 's/^game_root *= *"\(.*\)"/\1/p' "$project/burnout_manifest.toml" | head -1)
+    (cd "$project" && XENOSRECOMP="$root/XenosRecomp/build/XenosRecomp/XenosRecomp" \
+        XENOSRECOMP_HEADER="$root/XenosRecomp/XenosRecomp/shader_common.h" \
+        ./tools/rebuild_plume_shaders.sh "$game_root/default.xex")
+fi
+
 echo "== configuring"
 # Two flags are not optional and are not in the SDK's own project template:
 # the SSSE3 baseline, because the SDK's memory code uses those intrinsics while

@@ -4,9 +4,14 @@
  */
 #pragma once
 
+#include "plume_renderer/plume_draw.h"
+
 #include <cstdint>
 #include <memory>
+#include <string>
 #include <vector>
+
+#include <plume_render_interface_types.h>
 
 struct SDL_Window;
 
@@ -18,9 +23,14 @@ class RenderCommandSemaphore;
 class RenderDevice;
 class RenderFramebuffer;
 class RenderSwapChain;
+class RenderTexture;
 }  // namespace plume
 
 namespace rex::plume_renderer {
+
+// Depth buffer format for the presentation framebuffer. Pipelines that enable
+// depth have to declare the same one, so both sides read it from here.
+inline constexpr plume::RenderFormat kPlumeDepthFormat = plume::RenderFormat::D32_FLOAT;
 
 class PlumeSwapchain {
  public:
@@ -35,10 +45,18 @@ class PlumeSwapchain {
 
   bool IsReady() const { return ready_; }
 
+  // `color` is the offscreen target the draws land on, not the swapchain
+  // image. Guest draws go there so that a resolve - copying what was rendered
+  // into one of the guest's own textures - can happen after the render pass
+  // has ended, which is the only point at which such a copy is legal. The
+  // finished image is then copied to the swapchain for presentation.
   using DrawEncodeFn = void (*)(void* context, plume::RenderCommandList* list, uint32_t width,
-                                uint32_t height);
+                                uint32_t height, plume::RenderTexture* color,
+                                const RenderPassBreak& pass);
+  // Called once the render pass is closed, with the same target.
+  using ResolveFn = DrawEncodeFn;
   void ClearAndPresent(float r, float g, float b, float a, DrawEncodeFn encode = nullptr,
-                       void* encode_context = nullptr);
+                       void* encode_context = nullptr, ResolveFn resolve = nullptr);
 
  private:
   void CreateFramebuffers();
@@ -50,10 +68,39 @@ class PlumeSwapchain {
   std::unique_ptr<plume::RenderCommandQueue> command_queue_;
   std::unique_ptr<plume::RenderCommandList> command_list_;
   std::unique_ptr<plume::RenderCommandFence> submit_fence_;
+  // The last frame's commands have been submitted and not yet waited for.
+  // The wait happens at the start of the next frame, so the GPU works while
+  // the title computes that frame instead of the title waiting for it.
+  bool submit_pending_ = false;
+  // A small square from the middle of each frame, read back after the frame
+  // has finished: a frame far darker than the ones before is reported with
+  // what it held (XERENGE_FRAME_PROBE).
+  std::unique_ptr<plume::RenderBuffer> probe_buffer_;
+  void* probe_mapped_ = nullptr;
+  bool probe_pending_ = false;
+  double probe_average_ = 0.0;
+  uint64_t probe_frames_ = 0;
+  std::string probe_summary_;
+  void CheckProbe();
   std::unique_ptr<plume::RenderSwapChain> swap_chain_;
   std::unique_ptr<plume::RenderCommandSemaphore> acquire_semaphore_;
   std::vector<std::unique_ptr<plume::RenderCommandSemaphore>> release_semaphores_;
   std::vector<std::unique_ptr<plume::RenderFramebuffer>> framebuffers_;
+
+  // One depth buffer shared by every swapchain image. Only one frame is in
+  // flight here - the queue is waited on at the end of each present - so they
+  // cannot overlap. Without it the guest's depth test has nothing to work
+  // against and 3D geometry is drawn in submission order.
+  std::unique_ptr<plume::RenderTexture> depth_texture_;
+
+  // Guest draws render here rather than straight into the swapchain image, so
+  // that the frame can be copied out after the pass closes - both to satisfy
+  // the guest's resolve requests and to reach the swapchain.
+  std::unique_ptr<plume::RenderTexture> scene_texture_;
+  // Render target 1, beside the scene target, when the title's targets are
+  // followed (see PlumeSecondTargetEnabled).
+  std::unique_ptr<plume::RenderTexture> scene_texture1_;
+  std::unique_ptr<plume::RenderFramebuffer> scene_framebuffer_;
 
   uint32_t last_width_ = 0;
   uint32_t last_height_ = 0;

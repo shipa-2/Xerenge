@@ -11,9 +11,16 @@ layout(location = 2) flat out uint v_texid;
 
 void main() {
     gl_Position = in_pos;
-    vec3 c = in_color.rgb;
-    float mag = max(max(abs(c.r), abs(c.g)), abs(c.b));
-    v_color = mag < 0.04 ? vec4(1.0) : vec4(c, 1.0);
+    // Pass the vertex colour through untouched. The C++ side (FillVertices in
+    // plume_draw.cpp) already knows for certain whether a real COLOR0
+    // attribute was bound (HasColorAttr) - when it wasn't, it fills this slot
+    // itself from a resolved UI tint constant, or opaque white if no tint
+    // constant could be found either (ResolveUiTint / the fallback beside its
+    // call site). Guessing here from the colour's magnitude/alpha cannot tell
+    // "no attribute, defaulted to black" from "a real, legitimately dark
+    // colour" (e.g. a genuine black drop-shadow with its own alpha), so it
+    // was liable to paint a white halo around exactly that case.
+    v_color = in_color;
     v_uv = in_uv.xy;
     v_texid = uint(in_texid.x + 0.5);
 }

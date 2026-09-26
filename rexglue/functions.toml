@@ -23,11 +23,45 @@
 # established for this address on the previous runtime.
 0x82363918 = { size = 0x30 }
 
-# Plume D3D hooks. BeginVertices cannot be split here (shared epilogues) —
-# it is patched at runtime via FunctionDispatcher::SetFunction.
-0x8246AC38 = { name = "D3DDevice_Swap", size = 0x620 }
-0x8246B538 = { name = "D3DDevice_Reset", size = 0xC8 }
-0x8246B710 = { name = "Direct3D_CreateDevice", size = 0xB4 }
-0x82489F40 = { name = "D3DDevice_Clear", size = 0xBC }
-0x8248FBC8 = { name = "D3DDevice_DrawVerticesUP" }
-0x82490030 = { name = "D3DDevice_DrawIndexedVertices", size = 0x474 }
+# The Direct3D entry points, at the addresses recovered by matching this
+# build's code against the beta's symbols (tools/name_retail_d3d.py, result in
+# generated/retail-symbols.txt).
+#
+# The addresses here before were guesses, and wrong: they pointed at shared
+# epilogues and mid-function fragments, which the old hooks' own comments
+# recorded ("0x82490030 is a shared epilogue", "0x8246B710 is a mid-function
+# fragment"). A hook on an epilogue fires from the middle of whatever function
+# happened to end there, and Direct3D_CreateDevice never fired at all, which is
+# why the device address had to be recovered by other means.
+#
+# Sizes come from the gap to the next function the analyser found.
+0x823887B0 = { name = "Direct3D_CreateDevice" }
+0x82388B58 = { name = "D3DDevice_Swap" }
+0x82381108 = { name = "D3DDevice_ClearF" }
+0x82383090 = { name = "D3DDevice_BlockUntilIdle" }
+0x8237A948 = { name = "D3DDevice_SetVertexShader" }
+0x8237A5D8 = { name = "D3DDevice_SetPixelShader" }
+0x8237AD28 = { name = "D3DDevice_SetVertexDeclaration" }
+0x8237D790 = { name = "D3DDevice_SetStreamSource" }
+0x8237D890 = { name = "D3DDevice_SetIndices" }
+0x82380388 = { name = "D3DDevice_SetTexture" }
+0x8237DDD0 = { name = "D3DDevice_SetRenderTarget" }
+0x8237FE78 = { name = "D3DDevice_CreateTexture" }
+0x823844D0 = { name = "D3DDevice_CreateVertexBuffer" }
+0x82384600 = { name = "D3DDevice_CreateIndexBuffer" }
+0x8237A9B0 = { name = "D3DDevice_CreateVertexDeclaration" }
+0x823804E0 = { name = "D3DDevice_BeginVertices" }
+0x82380808 = { name = "D3DDevice_DrawVertices" }
+0x82380A48 = { name = "D3DDevice_DrawIndexedVertices" }
+0x82380780 = { name = "D3DDevice_DrawVerticesUP" }
+0x823836C0 = { name = "D3DDevice_BeginTiling" }
+0x82383AF8 = { name = "D3DDevice_EndTiling" }
+
+# The device's remaining wait routines and the ring kick, by the names the beta
+# symbols give them. The title stops finishing frames on entering a scene while
+# spinning in none of the two already hooked, so the other two have to be
+# visible before anything can be said about what it is waiting for.
+0x823819D0 = { name = "D3D_BlockOnPrimaryRange" }
+0x82382798 = { name = "D3D_BlockOnFence" }
+0x82382E40 = { name = "D3D_KickOff" }
+0x82382AB8 = { name = "D3D_MakeSpace" }

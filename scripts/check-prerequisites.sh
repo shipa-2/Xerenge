@@ -26,6 +26,7 @@ need_library() {
 echo "build tools:"
 need_command git       "version control"
 need_command cmake     "the build system, 3.25 or newer"
+need_command ninja     "the SDK's and the shader translator's build presets use it"
 need_command clang     "the project is built with clang; gcc is untested"
 need_command clang++   "likewise"
 need_command python3   "extracting the disc image"
@@ -55,6 +56,6 @@ if [ "$missing" -eq 0 ]; then
     echo "everything is in place."
 else
     echo "missing: $missing."
-    echo "on Arch: sudo pacman -S --needed git cmake clang python pkgconf vulkan-icd-loader vulkan-headers libx11 libxcb wayland"
+    echo "on Arch: sudo pacman -S --needed git cmake ninja clang python pkgconf vulkan-icd-loader vulkan-headers libx11 libxcb wayland"
     exit 1
 fi
