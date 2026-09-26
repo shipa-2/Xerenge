@@ -42,6 +42,13 @@
 #   ./run.sh --real-lobby
 #                       --online, but the title talks to a lobby server
 #                       (tools/ealobby) instead of being answered from inside.
+#                       With no --lobby-server it looks for one on the LAN
+#                       (UDP 31859) and hosts one itself when there is none.
+#   ./run.sh --lobby-server=HOST
+#                       --real-lobby against a server of your own (tools/ealobby).
+#   ./run.sh --online-address=IP
+#                       the address this copy gives its peers and binds to:
+#                       127.0.0.2 and 127.0.0.3 run two copies on one machine.
 #   ./run.sh --plume    loads librexgpu-plume.so instead of xenos, with the
 #                       switches it is meant to run with (as the installed
 #                       launcher sets them). Saved burnout.toml has
@@ -119,6 +126,8 @@ for arg in "$@"; do
         --plume)   GPU_BACKEND=plume ;;
         --online)  ONLINE=1 ;;
         --real-lobby) ONLINE=1; REAL_LOBBY=1 ;;
+        --lobby-server=*) ONLINE=1; REAL_LOBBY=1; LOBBY_SERVER=${arg#*=} ;;
+        --online-address=*) ONLINE_ADDRESS=${arg#*=} ;;
     esac
 done
 
@@ -165,6 +174,8 @@ fi
 # --real-lobby: --online without the stand-ins inside the title, for talking to
 # a real lobby server (tools/ealobby).
 [ -n "$REAL_LOBBY" ] && set -- "$@" --online_fake_lobby=false
+[ -n "$LOBBY_SERVER" ] && set -- "$@" --lobby_server="$LOBBY_SERVER"
+[ -n "$ONLINE_ADDRESS" ] && set -- "$@" --online_address="$ONLINE_ADDRESS"
 
 set -- "$@" --game_data_root "$GAME" \
        --gpu_plugin "$GPU_BACKEND" \

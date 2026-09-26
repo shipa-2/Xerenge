@@ -467,6 +467,82 @@ void Server::HandleLobby(Connection& connection, const Message& message) {
     Send(connection, Encode("news", reply));
     return;
   }
+
+  // The login, from what the client code reads back (retail strings near
+  // 0x82052880 and 0x820469A0). Until each reply's exact shape is known from
+  // a run, a reply repeats what was asked - the client finds its own fields
+  // where it expects them - and adds the ones it reads.
+  const Fields asked = ParseFields(message.body);
+  Log("lobby <- " + message.command + " " + Printable(message.body));
+  const auto reply_with = [&](Fields reply) {
+    Log("lobby -> " + message.command + " " + Printable(FormatFields(reply)));
+    Send(connection, Encode(message.command, reply));
+  };
+  const auto field = [&](const char* key, const std::string& fallback) {
+    const auto it = asked.find(key);
+    return it != asked.end() && !it->second.empty() ? it->second : fallback;
+  };
+
+  if (message.command == "sele") {
+    // What the client subscribes to (INGAME, MESGS, USERS, GAMES, ROOMS, ...).
+    // The dispatcher reads MORE, SLOTS and STATS back.
+    Fields reply = asked;
+    reply["MORE"] = "0";
+    reply["SLOTS"] = "4";
+    reply.emplace("STATS", "0");
+    reply_with(reply);
+    return;
+  }
+  if (message.command == "auth" || message.command == "acct") {
+    // Logging in as the Xbox Live gamertag. PERSONAS lists the names the
+    // account plays as; LKEY is the key later requests (and EA's web
+    // services) carry.
+    const std::string name = field("GTAG", field("NAME", field("PERS", "Player")));
+    connection.user = name;
+    Fields reply;
+    for (const auto& [key, value] : asked) {
+      if (key != "PASS") {
+        reply[key] = value;
+      }
+    }
+    reply["NAME"] = name;
+    reply["PERSONAS"] = name;
+    reply["LKEY"] = RandomHex(16);
+    reply["TOS"] = "1";
+    reply["SHARE"] = "1";
+    reply["SPAM"] = "NN";
+    reply["BORN"] = "19800101";
+    reply["GEND"] = "M";
+    reply["MAIL"] = "player@xerenge.local";
+    reply["LAST"] = "2006.2.10-0:00:00";
+    reply["ADDR"] = connection.peer.substr(0, connection.peer.find(':'));
+    reply_with(reply);
+    return;
+  }
+  if (message.command == "pers") {
+    // Choosing the persona to play as.
+    const std::string name = field("PERS", field("NAME", connection.user.empty() ? "Player"
+                                                                                  : connection.user));
+    connection.user = name;
+    Fields reply = asked;
+    reply["PERS"] = name;
+    reply["NAME"] = name;
+    reply["LKEY"] = RandomHex(16);
+    reply["LAST"] = "2006.2.10-0:00:00";
+    reply["PLAST"] = "2006.2.10-0:00:00";
+    reply["ADDR"] = connection.peer.substr(0, connection.peer.find(':'));
+    reply_with(reply);
+    return;
+  }
+  if (message.command == "onln" || message.command == "user") {
+    // Who is online / a user's details: this lobby knows only who is
+    // connected to it.
+    Fields reply = asked;
+    reply["NAME"] = field("PERS", field("NAME", connection.user));
+    reply["ADDR"] = connection.peer.substr(0, connection.peer.find(':'));
+    reply_with(reply);
+    return;
+  }
   // Not handled yet: an empty success, to see what comes next.
   Log("lobby: " + Printable(message.command) + " not handled yet; answered empty");
   Send(connection, Encode(message.command, std::string(1, '\0')));

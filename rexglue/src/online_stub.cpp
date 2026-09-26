@@ -55,6 +55,8 @@ extern "C" void __imp__sub_82589708(PPCContext& __restrict, uint8_t*);
 extern "C" void __imp__sub_8258B610(PPCContext& __restrict, uint8_t*);
 extern "C" void __imp__sub_822037C0(PPCContext& __restrict, uint8_t*);
 extern "C" void __imp__sub_8240A8F0(PPCContext& __restrict, uint8_t*);
+extern "C" void __imp__sub_82408DF8(PPCContext& __restrict, uint8_t*);
+extern "C" void __imp__sub_82370AA0(PPCContext& __restrict, uint8_t*);
 
 namespace {
 
@@ -417,4 +419,47 @@ REX_HOOK_RAW(sub_82589708) {  // VoipControl
     return;
   }
   __imp__sub_82589708(ctx, base);
+}
+
+// LobbyApi's login steps (connect, auth, ...) and the step callback
+// dispatcher that reports them to the game: sub_82409808 queues a step with
+// its callback in the login object (+112 step, +116 callback, +120 context);
+// this runs the callback once the step's status (+92) is 3 (done) or 2
+// (failed, reason in +96), or the object's step table (+88) has moved on.
+// With a real lobby server the last run stopped after 'news' with the connect
+// step never reported: log every change of these and of the connection's own
+// state (the fourcc at LobbyApi+12: skey, idle, ...) to see which is stuck.
+REX_HOOK_RAW(sub_82408DF8) {
+  if (Online() && !Faking()) {
+    const uint32_t login = ctx.r5.u32;
+    if (login) {
+      const uint32_t ref = LoadU32(base, login + 0);
+      const uint32_t index = LoadU32(base, login + 88);
+      const uint32_t expected = index < 64 ? LoadU32(base, login + (index + 6) * 4) : 0;
+      const uint32_t status = LoadU32(base, login + 92);
+      const uint32_t reason = LoadU32(base, login + 96);
+      const uint32_t step = LoadU32(base, login + 112);
+      const uint32_t callback = LoadU32(base, login + 116);
+      const uint32_t connection = ref ? LoadU32(base, ref + 12) : 0;
+      static uint32_t last[7] = {~0u, ~0u, ~0u, ~0u, ~0u, ~0u, ~0u};
+      const uint32_t now[7] = {index, expected, status, reason, step, callback, connection};
+      if (std::memcmp(now, last, sizeof(now)) != 0) {
+        std::memcpy(last, now, sizeof(now));
+        REXLOG_INFO("--online: lobby login step table[{}]={} status {} reason {:08X}, waiting "
+                    "step {} callback {:08X}; connection '{}'",
+                    index, int32_t(expected), int32_t(status), reason, int32_t(step), callback,
+                    FourCC(connection));
+      }
+    }
+  }
+  __imp__sub_82408DF8(ctx, base);
+}
+
+// CGtLobbyDirtySockXenon::ServerConnectCallback(ref, msg, status, self): on
+// status 3 it sends 'sele' and the login goes on; anything else fails it.
+REX_HOOK_RAW(sub_82370AA0) {
+  if (Online()) {
+    REXLOG_INFO("--online: lobby connect callback, status {}", int32_t(ctx.r5.u32));
+  }
+  __imp__sub_82370AA0(ctx, base);
 }

@@ -18,6 +18,7 @@ set(BURNOUT_SOURCES
     src/tint_trace.cpp
     src/render_patches.cpp
     src/online_stub.cpp
+    src/online_lobby.cpp
     src/game_timing.cpp
     src/plume_d3d_hooks.cpp
 )
@@ -185,6 +186,8 @@ if(WIN32)
 endif()
 add_executable(ealobby tools/ealobby/main.cpp)
 target_link_libraries(ealobby PRIVATE ealobby-core)
+# The game hosts a lobby itself when it finds none on the LAN (online_lobby.cpp).
+target_link_libraries(burnout PRIVATE ealobby-core)
 
 # xdis: a development disassembler for the guest image (tools/xdis), built
 # only where capstone is installed. The game does not need it.

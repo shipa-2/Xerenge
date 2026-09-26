@@ -55,6 +55,7 @@ class Server {
     Role role = Role::kLobby;
     std::string peer;
     std::string local_address;  // the address the client reached us at
+    std::string user;           // the persona it logged in as, once it has
     std::vector<uint8_t> in;
     std::vector<uint8_t> out;
   };
