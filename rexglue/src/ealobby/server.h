@@ -23,6 +23,10 @@
 
 namespace ealobby {
 
+// A socket descriptor, wide enough for both a POSIX fd (int) and a Windows
+// SOCKET (an unsigned, pointer-sized handle); -1 means none/closed on both.
+using SocketHandle = std::intptr_t;
+
 struct Options {
   std::string host = "0.0.0.0";
   uint16_t directory_port = 31860;
@@ -47,7 +51,7 @@ class Server {
   enum class Role { kDirectory, kLobby };
 
   struct Connection {
-    int fd = -1;
+    SocketHandle fd = -1;
     Role role = Role::kLobby;
     std::string peer;
     std::string local_address;  // the address the client reached us at
@@ -55,9 +59,9 @@ class Server {
     std::vector<uint8_t> out;
   };
 
-  int Listen(uint16_t port);
+  SocketHandle Listen(uint16_t port);
   void Run();
-  void Accept(int listener, Role role);
+  void Accept(SocketHandle listener, Role role);
   void Receive(Connection& connection);
   void Flush(Connection& connection);
   void Handle(Connection& connection, const Message& message);
@@ -68,10 +72,12 @@ class Server {
 
   Options options_;
   LogFunction log_;
-  int directory_listener_ = -1;
-  int lobby_listener_ = -1;
-  int wake_[2] = {-1, -1};  // a pipe to interrupt poll() when stopping
-  std::map<int, std::unique_ptr<Connection>> connections_;
+  SocketHandle directory_listener_ = -1;
+  SocketHandle lobby_listener_ = -1;
+  // A pipe (POSIX) or a loopback socket pair (Windows) to interrupt poll()/
+  // WSAPoll() when stopping.
+  SocketHandle wake_[2] = {-1, -1};
+  std::map<SocketHandle, std::unique_ptr<Connection>> connections_;
   std::thread thread_;
   std::atomic<bool> running_{false};
   uint32_t next_session_ = 100000;

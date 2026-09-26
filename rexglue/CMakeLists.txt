@@ -180,6 +180,9 @@ target_include_directories(ealobby-core PUBLIC "${CMAKE_CURRENT_SOURCE_DIR}/src"
 target_compile_features(ealobby-core PUBLIC cxx_std_17)
 set_target_properties(ealobby-core PROPERTIES POSITION_INDEPENDENT_CODE ON)
 target_link_libraries(ealobby-core PUBLIC Threads::Threads)
+if(WIN32)
+  target_link_libraries(ealobby-core PUBLIC ws2_32)
+endif()
 add_executable(ealobby tools/ealobby/main.cpp)
 target_link_libraries(ealobby PRIVATE ealobby-core)
 
