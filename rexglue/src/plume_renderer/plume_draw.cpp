@@ -323,7 +323,7 @@ constexpr uint32_t kInputLocationCount = 20;
 constexpr uint32_t kVertexStrideBytes = kInputLocationCount * 16;
 // One slot per encoded draw. Kept in step with the overlay ring that feeds
 // this, so a frame the ring managed to hold is not then truncated here.
-constexpr uint32_t kCbSlots = 2048;
+constexpr uint32_t kCbSlots = 16384;
 constexpr uint32_t kCbAlign = 256;
 constexpr uint32_t kVsSlotBytes = (kVsConstantBytes + kCbAlign - 1) & ~(kCbAlign - 1);
 constexpr uint32_t kPsSlotBytes = (kPsConstantBytes + kCbAlign - 1) & ~(kCbAlign - 1);
@@ -3045,9 +3045,18 @@ void PlumeDrawContext::UnpackVertices(const GuestDrawSnapshot& snap,
       const bool fetch_valid = (fetch.type == FetchConstantType::kVertex ||
                                 fetch.type == FetchConstantType::kInvalidVertex) &&
                                fetch.address != 0 && attr.stride_dwords != 0;
+      // For hand-instanced shaders, a secondary fetch constant (e.g. fc94,
+      // the remapping-index table with stride 1 dword) has a different stride
+      // from the main D3D vertex buffer (stride 7 dwords). Feeding it through
+      // stream0 (stride 7) reads garbage and corrupts the register file that
+      // drives the position fetch. When the attr's stride disagrees with the
+      // D3D stream stride, trust the device's fetch constant instead.
+      const bool index_instanced_secondary =
+          index_instanced && mesh_vertices != 0 && fetch_valid &&
+          int32_t(attr.stride_dwords) != d3d_stride_dwords;
       const bool other_stream =
           from_d3d && fetch_valid &&
-          (snap.d3d_index_buffer != 0 ||
+          (snap.d3d_index_buffer != 0 || index_instanced_secondary ||
            (pos_fetch_const >= 0 && attr.fetch_const != uint32_t(pos_fetch_const)));
       // Best of all, the stream as the title set it: SetStreamSource's buffer,
       // offset and stride, for the stream this fetch constant stands for.
@@ -4289,21 +4298,44 @@ void PlumeDrawContext::PresentResolvedFrame(plume::RenderCommandList* list,
   // shown: the interface blinked out to black.
   // Failing that, the old rule: the front buffer named by the swap, when the
   // frame copied into it.
+  if (front_buffer != 0) {
+    known_front_buffers_.insert(front_buffer);
+  }
   if (frame_output_dest_ == 0 && front_buffer != 0 &&
       frame_resolved_dests_.count(front_buffer) != 0) {
     frame_output_dest_ = front_buffer;
   }
-  // A frame that drew nothing and copied nothing - a clear and a Swap, which a
-  // slow machine hits now and then while the title catches up. A console shows
-  // its front buffer unchanged then; shown from the target it was a black
-  // frame. Show the last picture again.
-  if (frame_output_dest_ == 0 && frame_encoded_draws_ == 0 && last_output_dest_ != 0) {
-    frame_output_dest_ = last_output_dest_;
-    static std::atomic<uint32_t> repeated{0};
-    const uint32_t n = repeated.fetch_add(1, std::memory_order_relaxed);
-    if (n < 8 || (n % 120) == 0) {
-      REXLOG_INFO("plume: frame {} drew nothing; showing the last picture again ({} so far)",
-                  frame_serial_, n + 1);
+  // When front_buffer did not match due to ring packet timing or desync,
+  // fall back to the frame's own front buffer resolve rather than presenting a cleared target.
+  if (frame_output_dest_ == 0 && !frame_resolved_dests_.empty()) {
+    if (last_front_buffer_resolve_ != 0 &&
+        frame_resolved_dests_.count(last_front_buffer_resolve_) != 0) {
+      frame_output_dest_ = last_front_buffer_resolve_;
+    } else if (frame_resolved_dests_.count(0x06C90000) != 0) {
+      frame_output_dest_ = 0x06C90000;
+    } else if (frame_resolved_dests_.count(0x068F8000) != 0) {
+      frame_output_dest_ = 0x068F8000;
+    }
+  }
+  // A frame that drew nothing and copied nothing, or only had tiny/secondary draws following
+  // a whole clear (thin frames, dropped frames, or spark effects on a cleared target without resolve).
+  // A console shows its front buffer unchanged then; shown from the target it was a black frame.
+  // Show the last picture again.
+  const bool empty_or_cleared_secondary =
+      (frame_encoded_draws_ == 0) ||
+      (frame_resolved_dests_.empty() && frame_cleared_whole_);
+  if (frame_output_dest_ == 0 && empty_or_cleared_secondary) {
+    const uint32_t fallback = last_front_buffer_resolve_ != 0
+                                  ? last_front_buffer_resolve_
+                                  : (last_output_dest_ != 0 ? last_output_dest_ : front_buffer);
+    if (fallback != 0 && resolved_targets_.find(fallback) != resolved_targets_.end()) {
+      frame_output_dest_ = fallback;
+      static std::atomic<uint32_t> repeated{0};
+      const uint32_t n = repeated.fetch_add(1, std::memory_order_relaxed);
+      if (n < 8 || (n % 120) == 0) {
+        REXLOG_INFO("plume: frame {} drew {} draws; showing the last picture {:08X} again ({} so far)",
+                    frame_serial_, frame_encoded_draws_, frame_output_dest_, n + 1);
+      }
     }
   }
   if (frame_output_dest_ != 0) {
@@ -4325,6 +4357,11 @@ void PlumeDrawContext::PresentResolvedFrame(plume::RenderCommandList* list,
   }
   const auto it = resolved_targets_.find(frame_output_dest_);
   if (it == resolved_targets_.end() || !it->second.texture) {
+    return;
+  }
+  if (it->second.cube || it->second.width < 1280 || it->second.height < 720) {
+    REXLOG_WARN("plume: refusing to present invalid/incompatible target {:08X} ({}x{}, cube={})",
+                frame_output_dest_, it->second.width, it->second.height, it->second.cube);
     return;
   }
   plume::RenderTexture* frame = it->second.texture.get();
@@ -4873,12 +4910,14 @@ bool PlumeDrawContext::ReadsResolvedCopy(const GuestDrawSnapshot& snap,
   // among them - so scanning them all counted every interface draw as a pass
   // over a copy, and its positions were converted twice and collapsed.
   using rex::graphics::xenos::FetchConstantType;
-  for (uint32_t slot = 0; slot < 1; ++slot) {
+  for (uint32_t slot = 0; slot < 4; ++slot) {
     const auto fetch = TextureFetchAt(snap, slot);
-    if (fetch.type == FetchConstantType::kTexture && fetch.base_address != 0 &&
-        resolved_targets_.count(fetch.base_address << 12) != 0 &&
-        (!this_frame || frame_resolved_dests_.count(fetch.base_address << 12) != 0)) {
-      return true;
+    if (fetch.type == FetchConstantType::kTexture && fetch.base_address != 0) {
+      auto it = resolved_targets_.find(fetch.base_address << 12);
+      if (it != resolved_targets_.end() && !it->second.cube &&
+          (!this_frame || frame_resolved_dests_.count(fetch.base_address << 12) != 0)) {
+        return true;
+      }
     }
   }
   return false;
@@ -5292,6 +5331,12 @@ void PlumeDrawContext::EncodeDraws(plume::RenderCommandList* list,
   StartEncodeWatchdog();
   frame_output_dest_ = 0;
   frame_resolved_dests_.clear();
+  last_resolve_dest_ = 0;
+  last_front_buffer_resolve_ = 0;
+  frame_cleared_after_resolve_ = false;
+  frame_cleared_whole_ = false;
+  frame_draws_after_resolve_ = 0;
+  frame_indices_after_resolve_ = 0;
   // The title reverses depth in its viewport, not its projection: zscale -1
   // and zoffset 1, so the near plane lands at 1 and the far one at 0 - which
   // is why it clears depth to 0 and tests GEQUAL. Drawn with the usual 0..1
@@ -5761,6 +5806,12 @@ void PlumeDrawContext::EncodeDraws(plume::RenderCommandList* list,
     if (snap.is_clear) {
       if ((snap.clear_flags & 0x1u) != 0) {
         video_since_clear = false;
+        if (snap.clear_whole) {
+          frame_cleared_whole_ = true;
+          if (last_resolve_dest_ != 0) {
+            frame_cleared_after_resolve_ = true;
+          }
+        }
       }
       // Where the title cleared depth, clear it here too, to its value. This
       // stays inside the pass: clearing an attachment does not need it closed.
@@ -5828,9 +5879,24 @@ void PlumeDrawContext::EncodeDraws(plume::RenderCommandList* list,
         pass->begin(pass->context);
         bound_pipeline = nullptr;
         bound_vertex_buffer = 0;
-        frame_output_dest_ = snap.resolve_dest;
+        last_resolve_dest_ = snap.resolve_dest;
+        const uint32_t rw = snap.resolve_width ? snap.resolve_width : width;
+        const uint32_t rh = snap.resolve_height ? snap.resolve_height : height;
+        const bool is_front =
+            snap.is_end_tiling || IsKnownFrontBuffer(snap.resolve_dest) ||
+            (!snap.resolve_cube && rw >= 1280 && rh >= 720 &&
+             snap.resolve_dest != 0x0E6CA000 && snap.resolve_dest != 0x0EA63000);
+        if (is_front) {
+          last_front_buffer_resolve_ = snap.resolve_dest;
+          frame_output_dest_ = snap.resolve_dest;
+        } else if (last_front_buffer_resolve_ == 0) {
+          frame_output_dest_ = snap.resolve_dest;
+        }
         frame_resolved_dests_.insert(snap.resolve_dest);
         drawn_since_copy = false;
+        frame_cleared_after_resolve_ = false;
+        frame_draws_after_resolve_ = 0;
+        frame_indices_after_resolve_ = 0;
         // Reopening the pass restores the ordinary viewport and scissor.
         viewport_flipped = false;
         scissor_now[0] = 0;
@@ -5866,11 +5932,33 @@ void PlumeDrawContext::EncodeDraws(plume::RenderCommandList* list,
       // copy, and a black frame flashed up now and then.
       if (snap.d3d_vertex_buffer != 0 && snap.video_rgba.empty()) {
         drawn_since_copy = true;
+        if (last_resolve_dest_ != 0) {
+          ++frame_draws_after_resolve_;
+          frame_indices_after_resolve_ += snap.num_indices;
+        }
       }
       if (!snap.video_rgba.empty()) {
         video_since_clear = true;
       }
     }
+  }
+  if (last_resolve_dest_ != 0 && drawn_since_copy) {
+    // If the frame cleared the target after resolve, draw_target was wiped to black.
+    // Whatever is drawn after that clear (sparks, collision flash, debris) cannot
+    // restore the wiped scene. Presenting draw_target directly would result in a black screen
+    // with floating sparks. We must always present the resolved front buffer.
+    const bool only_secondary =
+        frame_cleared_after_resolve_
+            ? true
+            : (frame_draws_after_resolve_ <= 8 && frame_indices_after_resolve_ <= 128);
+    if (only_secondary) {
+      drawn_since_copy = false;
+      frame_output_dest_ =
+          last_front_buffer_resolve_ != 0 ? last_front_buffer_resolve_ : last_resolve_dest_;
+    }
+  }
+  if (!drawn_since_copy && last_front_buffer_resolve_ != 0) {
+    frame_output_dest_ = last_front_buffer_resolve_;
   }
   if (drawn_since_copy) {
     frame_output_dest_ = 0;

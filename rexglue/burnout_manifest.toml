@@ -3,9 +3,9 @@
 [project]
 name = "burnout"
 sdk_version = "0.10.0"
-game_root = "../../xerenge-release/game"
+game_root = "/home/bikhe/Games/Burnout Revenge/game"
 
 [entrypoint]
-file_path = "../../xerenge-release/game/default.xex"
+file_path = "/home/bikhe/Games/Burnout Revenge/game/default.xex"
 out_directory_path = "generated/default"
 includes = ["functions.toml"]

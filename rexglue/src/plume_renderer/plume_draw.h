@@ -130,6 +130,7 @@ struct GuestDrawSnapshot {
   // be copied out. It has to keep its place among the draws, because the title
   // copies mid-frame and then draws over the top using what it copied.
   bool is_resolve = false;
+  bool is_end_tiling = false;
   // Where the title called Swap (see NoteGuestFrameEnd); never drawn.
   bool is_frame_end = false;
   // Where the video blit happened among the draws, with targets followed:
@@ -147,6 +148,7 @@ struct GuestDrawSnapshot {
   // Which target the copy reads: Direct3D's low three flag bits - 0 and 1 are
   // colour targets 0 and 1, 4 is depth.
   uint32_t resolve_source = 0;
+  uint32_t resolve_flags = 0;
   // Into which face of a cube map, when the destination is one.
   uint32_t resolve_face = 0;
   bool resolve_cube = false;
@@ -536,6 +538,17 @@ class PlumeDrawContext {
   uint32_t frame_encoded_draws_ = 0;
   uint32_t last_output_dest_ = 0;
   std::unordered_set<uint32_t> frame_resolved_dests_;
+  uint32_t last_resolve_dest_ = 0;
+  uint32_t last_front_buffer_resolve_ = 0;
+  bool frame_cleared_after_resolve_ = false;
+  bool frame_cleared_whole_ = false;
+  uint32_t frame_draws_after_resolve_ = 0;
+  uint32_t frame_indices_after_resolve_ = 0;
+  std::unordered_set<uint32_t> known_front_buffers_{0x06C90000, 0x068F8000};
+
+  bool IsKnownFrontBuffer(uint32_t addr) const {
+    return addr == 0x06C90000 || addr == 0x068F8000 || known_front_buffers_.count(addr) != 0;
+  }
   void* vs_constants_mapped_ = nullptr;
   void* ps_constants_mapped_ = nullptr;
   void* shared_constants_mapped_ = nullptr;
