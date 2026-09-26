@@ -7,6 +7,7 @@
 #   ./scripts/build.sh [--game <game directory>]
 set -e
 root=$(cd "$(dirname "$0")/.." && pwd)
+. "$root/scripts/platform.sh"
 project="$root/rexglue"
 sdk="$root/rexglue-sdk"
 game=
@@ -28,7 +29,13 @@ if [ ! -d "$sdk" ]; then
 fi
 
 if [ -n "$game" ]; then
-    game=$(cd "$game" && pwd)
+    # Written into the manifest and read back by native tools, so on Windows
+    # it has to be D:/... rather than the shell's own /d/... spelling.
+    if [ "$XR_OS" = windows ]; then
+        game=$(cd "$game" && pwd -W)
+    else
+        game=$(cd "$game" && pwd)
+    fi
     if [ ! -f "$game/default.xex" ]; then
         echo "$game holds no default.xex" >&2
         exit 1
@@ -42,11 +49,11 @@ fi
 # The code generator turns the executable into C++ (generated/), and writes
 # the CMake glue the project's CMakeLists.txt includes - so it runs first.
 codegen=
-for candidate in "$sdk/out/linux-amd64/Release/rexglue" "$sdk/out/linux-amd64/rexglue"; do
+for candidate in "$sdk/out/$XR_PRESET/Release/rexglue$XR_EXE" "$sdk/out/$XR_PRESET/rexglue$XR_EXE"; do
     [ -x "$candidate" ] && codegen=$candidate && break
 done
 if [ -z "$codegen" ]; then
-    echo "no code generator in $sdk/out/linux-amd64 - run ./scripts/setup-sdk.sh first" >&2
+    echo "no code generator in $sdk/out/$XR_PRESET - run ./scripts/setup-sdk.sh first" >&2
     exit 1
 fi
 echo "== generating the code"
@@ -57,12 +64,12 @@ echo "== generating the code"
 # code, which is why they are made here and not kept in the repository.
 if [ ! -s "$project/generated/shader_cache.cpp" ]; then
     echo "== translating the game's shaders"
-    if [ ! -x "$root/XenosRecomp/build/XenosRecomp/XenosRecomp" ]; then
+    if [ ! -x "$root/XenosRecomp/build/XenosRecomp/XenosRecomp$XR_EXE" ]; then
         echo "no shader translator - run ./scripts/setup-deps.sh first" >&2
         exit 1
     fi
     game_root=$(sed -n 's/^game_root *= *"\(.*\)"/\1/p' "$project/burnout_manifest.toml" | head -1)
-    (cd "$project" && XENOSRECOMP="$root/XenosRecomp/build/XenosRecomp/XenosRecomp" \
+    (cd "$project" && XENOSRECOMP="$root/XenosRecomp/build/XenosRecomp/XenosRecomp$XR_EXE" \
         XENOSRECOMP_HEADER="$root/XenosRecomp/XenosRecomp/shader_common.h" \
         ./tools/rebuild_plume_shaders.sh "$game_root/default.xex")
 fi
@@ -72,7 +79,7 @@ fi
 # every shader from its first frame without being run once to collect them.
 if [ ! -s "$project/generated/shader_cache_runtime.cpp" ]; then
     echo "== translating the shaders the game assembles at runtime"
-    (cd "$project" && XENOSRECOMP="$root/XenosRecomp/build/XenosRecomp/XenosRecomp" \
+    (cd "$project" && XENOSRECOMP="$root/XenosRecomp/build/XenosRecomp/XenosRecomp$XR_EXE" \
         XENOSRECOMP_HEADER="$root/XenosRecomp/XenosRecomp/shader_common.h" \
         ./tools/translate_runtime_shaders.sh --from-disc)
 fi
@@ -89,8 +96,8 @@ cmake -S "$project" -B "$project/build" \
       -DCMAKE_C_FLAGS=-march=x86-64-v2 -DCMAKE_CXX_FLAGS=-march=x86-64-v2
 
 echo "== building"
-cmake --build "$project/build" -j"$(nproc)"
+cmake --build "$project/build" -j"$XR_JOBS"
 
 echo
-echo "done: $project/build/burnout"
+echo "done: $project/build/burnout$XR_EXE"
 echo "to run: $project/run.sh"

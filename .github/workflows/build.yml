@@ -83,12 +83,78 @@ jobs:
           out="$RUNNER_TEMP/package/bin"
           mkdir -p "$out"
           cp rexglue/build/burnout "$out/"
-          find rexglue/build -maxdepth 2 -name '*.so*' -exec cp -a {} "$out/" \;
+          find rexglue/build rexglue-sdk/out/linux-amd64 -maxdepth 2 -name '*.so*' -not -path '*/Debug/*' -exec cp -a {} "$out/" \;
           ls -la "$out"
 
       - uses: actions/upload-artifact@v6
         with:
           name: burnout-revenge-linux-amd64
+          path: ${{ runner.temp }}/package
+          retention-days: 7
+          if-no-files-found: error
+
+  # The same scripts, run by Git for Windows' bash; scripts/platform.sh picks
+  # the win-amd64 preset and the .exe names.
+  win-amd64:
+    runs-on: windows-latest
+    defaults:
+      run:
+        shell: bash
+    env:
+      CC: clang
+      CXX: clang++
+      CMAKE_C_COMPILER_LAUNCHER: sccache
+      CMAKE_CXX_COMPILER_LAUNCHER: sccache
+      # The runner image's own OpenSSL, for tools/cxx.
+      OPENSSL_ROOT_DIR: C:/Program Files/OpenSSL
+    steps:
+      - uses: actions/checkout@v6
+
+      - name: Install LLVM, CMake, Ninja
+        shell: pwsh
+        run: choco install llvm cmake ninja -y
+
+      - name: Set up sccache
+        uses: hendrikmuhs/ccache-action@v1.2.22
+        with:
+          variant: sccache
+          key: win-amd64
+
+      - name: Fetch the build inputs (private)
+        env:
+          ASSETS_TOKEN: ${{ secrets.ASSETS_TOKEN }}
+        run: |
+          if [ -z "$ASSETS_TOKEN" ]; then
+            echo "::error::ASSETS_TOKEN is not set"; exit 1
+          fi
+          git clone --depth 1 "https://x-access-token:${ASSETS_TOKEN}@github.com/shipa-2/xerenge-assets.git" ../xerenge-assets
+          git -C ../xerenge-assets remote set-url origin https://github.com/shipa-2/xerenge-assets.git
+          ls -la ../xerenge-assets/game ../xerenge-assets/game/graphics
+
+      - name: SDK
+        run: ./scripts/setup-sdk.sh
+
+      - name: plume and XenosRecomp
+        run: ./scripts/setup-deps.sh
+
+      - name: Build the game
+        run: ./scripts/build.sh --game ../xerenge-assets/game
+
+      - name: sccache stats
+        if: always()
+        run: sccache --show-stats || true
+
+      - name: Package
+        run: |
+          out="$(cygpath -u "$RUNNER_TEMP")/package/bin"
+          mkdir -p "$out"
+          cp rexglue/build/burnout.exe "$out/"
+          find rexglue/build rexglue-sdk/out/win-amd64 -maxdepth 2 -name '*.dll' -not -path '*/Debug/*' -exec cp {} "$out/" \;
+          ls -la "$out"
+
+      - uses: actions/upload-artifact@v6
+        with:
+          name: burnout-revenge-win-amd64
           path: ${{ runner.temp }}/package
           retention-days: 7
           if-no-files-found: error

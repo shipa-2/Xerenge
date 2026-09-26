@@ -10,6 +10,7 @@
 # Both are separate checkouts beside rexglue/, like the SDK.
 set -e
 root=$(cd "$(dirname "$0")/.." && pwd)
+. "$root/scripts/platform.sh"
 plume="$root/plume"
 xenos="$root/XenosRecomp"
 plume_remote=${XERENGE_PLUME_REMOTE:-https://github.com/shipa-2/plume.git}
@@ -36,7 +37,7 @@ git -C "$xenos" submodule update --init --recursive --depth 1
 echo "== building XenosRecomp"
 cmake -S "$xenos" -B "$xenos/build" -G Ninja -DCMAKE_BUILD_TYPE=Release \
       -DCMAKE_C_COMPILER=clang -DCMAKE_CXX_COMPILER=clang++
-cmake --build "$xenos/build" --target XenosRecomp -j"$(nproc)"
+cmake --build "$xenos/build" --target XenosRecomp -j"$XR_JOBS"
 
 echo
-echo "done. Shader translator: $xenos/build/XenosRecomp/XenosRecomp"
+echo "done. Shader translator: $xenos/build/XenosRecomp/XenosRecomp$XR_EXE"

@@ -7,6 +7,7 @@
 # rebasable onto it.
 set -e
 root=$(cd "$(dirname "$0")/.." && pwd)
+. "$root/scripts/platform.sh"
 sdk="$root/rexglue-sdk"
 # HTTPS, so that no SSH key is needed to fetch it.
 fork=${XERENGE_SDK_REMOTE:-https://github.com/shipa-2/rexglue-xerenge.git}
@@ -23,9 +24,9 @@ echo "== submodules"
 git -C "$sdk" submodule update --init --recursive --depth 1
 
 echo "== building the SDK"
-cmake --preset linux-amd64 -S "$sdk"
-cmake --build "$sdk/out/build/linux-amd64" --config Release --target rexglue -j"$(nproc)"
+cmake --preset $XR_PRESET -S "$sdk"
+cmake --build "$sdk/out/build/$XR_PRESET" --config Release --target rexglue -j"$XR_JOBS"
 
 echo
-echo "done. Code generator: $sdk/out/linux-amd64/rexglue"
-echo "Runtime libraries:  $sdk/out/linux-amd64"
+echo "done. Code generator: $sdk/out/$XR_PRESET/rexglue$XR_EXE"
+echo "Runtime libraries:  $sdk/out/$XR_PRESET"
