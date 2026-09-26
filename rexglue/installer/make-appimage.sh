@@ -29,11 +29,16 @@ mkdir -p "$appdir/usr/share/xerenge"
 cp -a "$payload" "$appdir/usr/share/xerenge/payload"
 # linuxdeploy's own strip is too old for .relr.dyn sections in current libraries.
 export NO_STRIP=1
-# Wayland as well as X11, and offscreen for the unattended mode.
-export EXTRA_PLATFORM_PLUGINS="libqwayland.so;libqoffscreen.so"
 # This pulls in the wayland shell integrations the Wayland platform plugin needs.
 export EXTRA_QT_MODULES="waylandcompositor"
 export QMAKE=${QMAKE:-$(command -v qmake6 || command -v qmake)}
+# Wayland as well as X11, and offscreen for the unattended mode. The Wayland
+# platform plugin is libqwayland.so in current Qt, libqwayland-generic.so in
+# older releases (Ubuntu 24.04's 6.4).
+platforms="$("$QMAKE" -query QT_INSTALL_PLUGINS)/platforms"
+wayland=libqwayland.so
+[ -f "$platforms/$wayland" ] || wayland=libqwayland-generic.so
+export EXTRA_PLATFORM_PLUGINS="$wayland;libqoffscreen.so"
 export OUTPUT="$here/Burnout_Revenge_Installer-x86_64.AppImage"
 cd "$build"
 linuxdeploy --appdir "$appdir" \

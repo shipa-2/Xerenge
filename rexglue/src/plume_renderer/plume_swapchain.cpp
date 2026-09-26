@@ -20,6 +20,17 @@ namespace {
 constexpr uint32_t kBufferCount = 2;
 constexpr plume::RenderFormat kSwapchainFormat = plume::RenderFormat::B8G8R8A8_UNORM;
 
+// The window as plume takes it: SDL's own where plume draws through SDL's Vulkan
+// surface, the Win32 handle on Windows.
+plume::RenderWindow NativeRenderWindow(SDL_Window* window) {
+#ifdef _WIN32
+  return static_cast<HWND>(SDL_GetPointerProperty(SDL_GetWindowProperties(window),
+                                                  SDL_PROP_WINDOW_WIN32_HWND_POINTER, nullptr));
+#else
+  return window;
+#endif
+}
+
 }  // namespace
 
 PlumeSwapchain::~PlumeSwapchain() {
@@ -45,7 +56,7 @@ bool PlumeSwapchain::Initialize(plume::RenderDevice* device, SDL_Window* window)
   }
 
   swap_chain_ = command_queue_->createSwapChain(
-      plume::RenderSwapChainDesc(window_, kSwapchainFormat, kBufferCount));
+      plume::RenderSwapChainDesc(NativeRenderWindow(window_), kSwapchainFormat, kBufferCount));
   if (!swap_chain_) {
     REXLOG_ERROR("plume: failed to create swap chain");
     Shutdown();
