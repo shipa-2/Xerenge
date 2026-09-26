@@ -20,7 +20,9 @@ if [ ! -d "$plume/.git" ]; then
     echo "== fetching plume into $plume"
     git clone --depth 1 "$plume_remote" "$plume"
 else
-    echo "== plume is already there: $plume"
+    echo "== plume is already there: $plume; updating"
+    git -C "$plume" fetch --depth 1 origin
+    git -C "$plume" reset --hard origin/HEAD
 fi
 echo "== plume submodules"
 git -C "$plume" submodule update --init --recursive --depth 1
@@ -29,7 +31,9 @@ if [ ! -d "$xenos/.git" ]; then
     echo "== fetching XenosRecomp into $xenos"
     git clone "$xenos_remote" "$xenos"
 else
-    echo "== XenosRecomp is already there: $xenos"
+    echo "== XenosRecomp is already there: $xenos; updating"
+    git -C "$xenos" fetch origin
+    git -C "$xenos" reset --hard origin/HEAD
 fi
 echo "== XenosRecomp submodules"
 git -C "$xenos" submodule update --init --recursive --depth 1
