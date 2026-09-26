@@ -89,7 +89,12 @@ echo "== configuring"
 # the SSSE3 baseline, because the SDK's memory code uses those intrinsics while
 # a generated project sets no architecture, and clang, which is what this has
 # been built and run with.
-cmake -S "$project" -B "$project/build" \
+# Ninja on Windows, where CMake would otherwise pick Visual Studio and MSVC.
+generator=
+if [ "$XR_OS" = windows ]; then
+    generator="-G Ninja"
+fi
+cmake -S "$project" -B "$project/build" $generator \
       -DREXSDK_DIR="$sdk" \
       -DCMAKE_BUILD_TYPE=Release \
       -DCMAKE_C_COMPILER=clang -DCMAKE_CXX_COMPILER=clang++ \

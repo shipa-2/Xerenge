@@ -7,7 +7,13 @@ set -e
 root=$(cd "$(dirname "$0")/.." && pwd)
 . "$root/scripts/platform.sh"
 build="$root/tools/cxx/build"
-cmake -S "$root/tools/cxx" -B "$build" -DCMAKE_BUILD_TYPE=Release
+# Ninja and clang as everywhere else; left to itself CMake picks Visual
+# Studio and MSVC on Windows. A tree configured with another generator is
+# only build output, so it is started afresh.
+if [ -f "$build/CMakeCache.txt" ] && ! grep -q "^CMAKE_GENERATOR:INTERNAL=Ninja$" "$build/CMakeCache.txt"; then
+    rm -rf "$build"
+fi
+cmake -S "$root/tools/cxx" -B "$build" -G Ninja -DCMAKE_BUILD_TYPE=Release
 cmake --build "$build" -j"$XR_JOBS"
 cmake --install "$build" --prefix "$root/tools"
 

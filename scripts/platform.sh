@@ -18,3 +18,9 @@ case "$(uname -s)" in
         ;;
 esac
 XR_JOBS=$(nproc 2>/dev/null || echo 4)
+
+# Every path the scripts build from $root reaches native programs too (CMake
+# options, the manifest), and those read D:/..., not the shell's /d/...
+if [ "$XR_OS" = windows ] && [ -n "$root" ]; then
+    root=$(cd "$root" && pwd -W)
+fi
