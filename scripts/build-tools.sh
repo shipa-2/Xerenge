@@ -1,12 +1,12 @@
 #!/bin/sh
 # Builds the C++ replacements for the Python setup/shader tools.
+#
+# OpenSSL is found by find_package; tools/cxx/CMakeLists.txt pins the 64-bit
+# copy where Arch's multilib one could be picked up instead.
 set -e
 root=$(cd "$(dirname "$0")/.." && pwd)
 build="$root/tools/cxx/build"
-cmake -S "$root/tools/cxx" -B "$build" -DCMAKE_BUILD_TYPE=Release \
-    -DOPENSSL_ROOT_DIR=/usr \
-    -DOPENSSL_CRYPTO_LIBRARY=/usr/lib/libcrypto.so \
-    -DOPENSSL_SSL_LIBRARY=/usr/lib/libssl.so
+cmake -S "$root/tools/cxx" -B "$build" -DCMAKE_BUILD_TYPE=Release
 cmake --build "$build" -j"$(nproc)"
 cmake --install "$build" --prefix "$root/tools"
 
