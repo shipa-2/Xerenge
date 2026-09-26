@@ -185,10 +185,9 @@ class PlumeGraphicsSystem final : public system::IGraphicsSystem {
   // earliest - which is why rank badges and their labels went missing while
   // the banner, drawn last, survived. Sized with headroom; an overflow now
   // warns rather than quietly costing UI.
-  // Scene frames run several hundred draws past what menus ever did - car
-  // select lost 147 of them here - so this is sized for geometry, not text.
-  static constexpr uint32_t kDrawRingSize = 2048;
-  std::array<GuestDrawSnapshot, kDrawRingSize> draw_ring_{};
+  // Scene frames with crashes/particles can exceed 2500 draws, so size with plenty of headroom.
+  static constexpr uint32_t kDrawRingSize = 16384;
+  std::vector<GuestDrawSnapshot> draw_ring_;
   uint32_t draw_ring_next_ = 0;
   uint32_t draw_ring_count_ = 0;
 
