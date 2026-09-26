@@ -31,6 +31,7 @@
 #include <rex/ui/window.h>
 #include <rex/ui/windowed_app_context.h>
 
+#include "frame_clock_provider.h"
 #include "plume_renderer/plume_draw.h"
 #include "plume_renderer/plume_interp.h"
 #include "plume_renderer/plume_shader_cache.h"
@@ -1267,8 +1268,6 @@ bool PlumeGraphicsSystem::PresentedRecently() const {
   return now - last < 50;
 }
 
-extern "C" void (*rex_frame_clock_provider)(void*, size_t);
-
 namespace {
 // The vsync worker produces the vblanks; a swap it happens to process while
 // pumping the ring must not wait for one.
@@ -1291,14 +1290,14 @@ void PlumeGraphicsSystem::PaceSwapToVblank() {
   // title then steps its logic twice a frame, and swapped at every vblank it
   // ran at double speed. The title's own clock says which (game_timing.cpp).
   uint32_t interval = 1;
-  if (rex_frame_clock_provider) {
+  if (const RexFrameClockProviderFn clock_provider = RexFrameClockProvider()) {
     struct {
       uint64_t frame;
       uint32_t steps_this_frame, epoch;
       double state_steps, real_steps;
       uint32_t valid, vblanks_per_frame;
     } clock{};
-    rex_frame_clock_provider(&clock, sizeof(clock));
+    clock_provider(&clock, sizeof(clock));
     interval = clock.vblanks_per_frame == 2 ? 2u : 1u;
   }
   vblank_cv_.wait_for(lock, std::chrono::milliseconds(100), [this, interval] {
