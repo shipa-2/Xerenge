@@ -39,6 +39,7 @@
 #include <rex/logging.h>
 
 #include "plume_renderer/plume_draw.h"
+#include "plume_renderer/shader_source_info.h"
 
 extern "C" void (*rex_frame_clock_provider)(void*, size_t);
 
@@ -129,63 +130,11 @@ uint64_t BaseKey(const GuestDrawSnapshot& d) {
   return XXH3_64bits(&key, sizeof(key));
 }
 
-// The registers holding a shader's placement matrices, from its generated
-// source: each named constant runs from its start to the next one's.
+// The registers holding a shader's placement matrices (shader_source_info.h).
 const std::vector<uint16_t>& MatrixRegisters(uint64_t vs_hash) {
-  static std::unordered_map<uint64_t, std::vector<uint16_t>> cache;
-  if (auto it = cache.find(vs_hash); it != cache.end()) {
-    return it->second;
-  }
-  std::vector<uint16_t>& out = cache[vs_hash];
-  char name[64];
-  std::snprintf(name, sizeof(name), "generated/xenos-hlsl/%016llx.hlsl",
-                static_cast<unsigned long long>(vs_hash));
-  std::ifstream file(name, std::ios::binary);
-  if (!file) {
-    return out;
-  }
-  const std::string hlsl((std::istreambuf_iterator<char>(file)), std::istreambuf_iterator<char>());
-  static constexpr const char* kMatrices[] = {
-      "gObjToProjMatrix",       "gCurrentWorldViewMatrix", "gPrevWorldViewMatrix",
-      "gObjToWorldMatrix",      "gWorldToProjMatrix",      "gObjToWorldRotationMatrix",
-      "gVertexShader_BlendMatrices", "gTransformArray"};
-  // Every named vertex constant and where it starts.
-  std::vector<std::pair<uint32_t, bool>> starts;  // register, is a matrix
-  static constexpr std::string_view kDefine = "#define g";
-  static constexpr std::string_view kBase = "g_PushConstants.VertexShaderConstants + ";
-  for (size_t at = hlsl.find(kDefine); at != std::string::npos; at = hlsl.find(kDefine, at + 1)) {
-    const size_t eol = hlsl.find('\n', at);
-    const std::string line = hlsl.substr(at, eol == std::string::npos ? std::string::npos : eol - at);
-    const size_t base = line.find(kBase);
-    if (base == std::string::npos) {
-      continue;
-    }
-    // "+ (START + min(INDEX, ...)) * 16" for arrays, "+ OFFSET," for single ones.
-    size_t num = base + kBase.size();
-    uint32_t reg = 0;
-    if (line[num] == '(') {
-      reg = uint32_t(std::strtoul(line.c_str() + num + 1, nullptr, 10));
-    } else {
-      reg = uint32_t(std::strtoul(line.c_str() + num, nullptr, 10)) / 16;
-    }
-    const std::string id = line.substr(8, line.find_first_of("( ", 8) - 8);
-    bool matrix = false;
-    for (const char* m : kMatrices) {
-      matrix |= id == m;
-    }
-    starts.emplace_back(reg, matrix);
-  }
-  std::sort(starts.begin(), starts.end());
-  for (size_t i = 0; i < starts.size(); ++i) {
-    if (!starts[i].second) {
-      continue;
-    }
-    const uint32_t end = i + 1 < starts.size() ? starts[i + 1].first : kRegisters;
-    for (uint32_t r = starts[i].first; r < end && r < kRegisters; ++r) {
-      out.push_back(uint16_t(r));
-    }
-  }
-  return out;
+  static const std::vector<uint16_t> kNone;
+  const ShaderSourceInfo* info = FindShaderSourceInfo(vs_hash);
+  return info ? info->matrix_registers : kNone;
 }
 
 // How far apart two draws' placements are.

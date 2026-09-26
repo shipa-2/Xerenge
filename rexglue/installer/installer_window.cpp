@@ -5,7 +5,6 @@
 #include <QCloseEvent>
 #include <QCoreApplication>
 #include <QDir>
-#include <QDirIterator>
 #include <QFile>
 #include <QFileDialog>
 #include <QFileInfo>
@@ -573,7 +572,7 @@ QString InstallerWindow::CopyRuntime(const std::function<void(double)>& progress
   if (sdk_lib_dir_.isEmpty()) {
     return tr("the SDK's libraries (rexglue-sdk/out/linux-amd64) were not found");
   }
-  if (!install.mkpath("bin") || !install.mkpath("generated/xenos-hlsl")) {
+  if (!install.mkpath("bin")) {
     return tr("cannot create directories in %1").arg(install_dir_);
   }
   struct Item {
@@ -587,11 +586,6 @@ QString InstallerWindow::CopyRuntime(const std::function<void(double)>& progress
   };
   if (QFileInfo::exists(sdk.filePath("libTracyClient.so"))) {
     items.append({sdk.filePath("libTracyClient.so"), install.filePath("bin/libTracyClient.so")});
-  }
-  QDirIterator shaders(project.filePath("generated/xenos-hlsl"), {"*.hlsl"}, QDir::Files);
-  while (shaders.hasNext()) {
-    const QString path = shaders.next();
-    items.append({path, install.filePath("generated/xenos-hlsl/" + QFileInfo(path).fileName())});
   }
   for (int i = 0; i < items.size(); ++i) {
     if (!QFileInfo::exists(items[i].from)) {

@@ -33,6 +33,7 @@
 #include "plume_renderer/plume_shader_cache.h"
 #include "shader_cache.h"
 #include "plume_renderer/plume_swapchain.h"
+#include "plume_renderer/shader_source_info.h"
 
 #include <xxhash.h>
 
@@ -2348,91 +2349,28 @@ void PlumeDrawContext::RegisterVsUcode(uint64_t shader_hash, const uint8_t* byte
   // only have to agree with the passthrough shader. A translated shader
   // declares its own, inherited from the vertex element declarations of the
   // container it came from, and feeding it our numbering leaves it reading
-  // zeros. The generated source ships with the cache entry, so the real
-  // numbering can be recovered from it.
+  // zeros. The real numbering is in the translated source.
   //
   // Declaration order is not the answer: a shader can declare an input it
   // never reads, and the declarations are ordered by the container's element
   // array rather than by the program. What does line up is the order the
   // inputs are *consumed* in the body, because that is the order of the
   // vertex fetch instructions - the same order this microcode parse produces.
-  // The cache entry's `source` is the container's path, not the shader text,
-  // so the generated HLSL is loaded by hash from where the translation step
-  // dumps it.
-  std::string hlsl;
-  {
-    char name[64];
-    std::snprintf(name, sizeof(name), "generated/xenos-hlsl/%016llx.hlsl",
-                  static_cast<unsigned long long>(shader_hash));
-    if (std::ifstream file{name, std::ios::binary}) {
-      hlsl.assign(std::istreambuf_iterator<char>(file), std::istreambuf_iterator<char>());
-    }
-  }
-  if (!hlsl.empty()) {
-    const std::string_view src(hlsl);
+  // The cache entry's `source` is the container's path, not the shader text;
+  // what the text says was read into a table at build time
+  // (shader_source_info.h).
+  if (const ShaderSourceInfo* info = FindShaderSourceInfo(shader_hash)) {
     // Given the guest's index by XenosRecomp: it instances by hand.
-    if (src.find("iGuestIndex") != std::string_view::npos) {
+    if (info->guest_index) {
       index_instanced_shaders_.insert(shader_hash);
     }
-    if (const size_t body = src.find("shaderMain(");
-        body != std::string_view::npos && src.find("output.oPos", body) != std::string_view::npos &&
-        src.find("tfetch2D(", body) != std::string_view::npos) {
+    if (info->vertex_fetch) {
       vertex_fetch_shaders_.insert(shader_hash);
     }
-    for (size_t at = src.find("output.oPos.xy"); at != std::string_view::npos;
-         at = src.find("output.oPos.xy", at + 1)) {
-      const size_t eol = src.find('\n', at);
-      const std::string_view line = src.substr(at, eol == std::string_view::npos ? eol : eol - at);
-      if (line.find("HalfPixel") == std::string_view::npos &&
-          (line.find('*') != std::string_view::npos || line.find(" + ") != std::string_view::npos)) {
-        position_scaling_shaders_.insert(shader_hash);
-        break;
-      }
+    if (info->position_scaling) {
+      position_scaling_shaders_.insert(shader_hash);
     }
-    std::unordered_map<std::string_view, uint32_t> location_of;
-    for (size_t at = src.find("[[vk::location("); at != std::string_view::npos;
-         at = src.find("[[vk::location(", at + 1)) {
-      const size_t open = at + std::string_view("[[vk::location(").size();
-      const size_t close = src.find(')', open);
-      if (close == std::string_view::npos) {
-        break;
-      }
-      uint32_t value = 0;
-      bool digits = close > open;
-      for (size_t i = open; i < close && digits; ++i) {
-        digits = src[i] >= '0' && src[i] <= '9';
-        value = value * 10 + uint32_t(src[i] - '0');
-      }
-      const size_t name_at = src.find(" i", close);
-      const size_t name_end = src.find_first_of(" :;[", name_at + 1);
-      if (!digits || name_at == std::string_view::npos ||
-          name_end == std::string_view::npos) {
-        continue;
-      }
-      location_of.emplace(src.substr(name_at + 1, name_end - name_at - 1), value);
-    }
-
-    std::vector<uint32_t> consumed;
-    for (size_t at = src.find("input.i"); at != std::string_view::npos;
-         at = src.find("input.i", at + 1)) {
-      const size_t name_at = at + std::string_view("input.").size();
-      const size_t name_end = src.find_first_of(")., ;[", name_at);
-      if (name_end == std::string_view::npos) {
-        break;
-      }
-      const std::string_view input_name = src.substr(name_at, name_end - name_at);
-      // The guest index XenosRecomp hands instancing shaders is not a vertex
-      // fetch; counted as one it shifted every real input a place along.
-      if (input_name == "iGuestIndex") {
-        continue;
-      }
-      const auto it = location_of.find(input_name);
-      if (it != location_of.end() &&
-          std::find(consumed.begin(), consumed.end(), it->second) == consumed.end()) {
-        consumed.push_back(it->second);
-      }
-    }
-
+    const std::vector<uint32_t>& consumed = info->consumed_locations;
     if (!consumed.empty()) {
       std::string listed;
       for (size_t i = 0; i < consumed.size(); ++i) {
@@ -2444,7 +2382,7 @@ void PlumeDrawContext::RegisterVsUcode(uint64_t shader_hash, const uint8_t* byte
       // Kept apart from attrs, which stay on this renderer's convention for
       // the passthrough path; FillVertices applies these only when a draw is
       // going to the title's own shaders.
-      real_locations_by_shader_[shader_hash] = std::move(consumed);
+      real_locations_by_shader_[shader_hash] = consumed;
     }
   }
   REXLOG_INFO("plume: VS {:016X} parsed {} vfetch attr(s)", shader_hash, attrs.size());
@@ -4137,14 +4075,8 @@ bool PlumeDrawContext::PixelShaderWritesOc1(uint64_t ps_hash) {
   if (auto it = ps_writes_oc1_.find(ps_hash); it != ps_writes_oc1_.end()) {
     return it->second;
   }
-  bool writes = false;
-  char name[64];
-  std::snprintf(name, sizeof(name), "generated/xenos-hlsl/%016llx.hlsl",
-                static_cast<unsigned long long>(ps_hash));
-  if (std::ifstream file{name, std::ios::binary}) {
-    const std::string hlsl((std::istreambuf_iterator<char>(file)), std::istreambuf_iterator<char>());
-    writes = hlsl.find("output.oC1") != std::string::npos;
-  }
+  const ShaderSourceInfo* info = FindShaderSourceInfo(ps_hash);
+  const bool writes = info && info->writes_oc1;
   ps_writes_oc1_[ps_hash] = writes;
   return writes;
 }
@@ -4153,22 +4085,9 @@ uint32_t PlumeDrawContext::ShaderSamplerSlots(uint64_t hash) const {
   if (auto it = sampler_slots_by_shader_.find(hash); it != sampler_slots_by_shader_.end()) {
     return it->second;
   }
-  uint32_t mask = ~0u;
-  char name[64];
-  std::snprintf(name, sizeof(name), "generated/xenos-hlsl/%016llx.hlsl",
-                static_cast<unsigned long long>(hash));
-  if (std::ifstream file{name, std::ios::binary}) {
-    mask = 0;
-    const std::string hlsl((std::istreambuf_iterator<char>(file)), std::istreambuf_iterator<char>());
-    static constexpr std::string_view kKey =
-        "_Texture2DDescriptorIndex vk::RawBufferLoad<uint>(g_PushConstants.SharedConstants + ";
-    for (size_t at = hlsl.find(kKey); at != std::string::npos; at = hlsl.find(kKey, at + 1)) {
-      const uint32_t offset = uint32_t(std::strtoul(hlsl.c_str() + at + kKey.size(), nullptr, 10));
-      if (offset < 64) {
-        mask |= 1u << (offset / 4);
-      }
-    }
-  }
+  // Every slot, for a shader whose source was never seen.
+  const ShaderSourceInfo* info = FindShaderSourceInfo(hash);
+  const uint32_t mask = info ? info->sampler_slots : ~0u;
   sampler_slots_by_shader_[hash] = mask;
   return mask;
 }

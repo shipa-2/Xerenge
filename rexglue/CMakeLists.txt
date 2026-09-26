@@ -90,8 +90,28 @@ set(REXGPU_PLUME_SOURCES
     src/plume_renderer/plume_draw.cpp
     src/plume_renderer/plume_interp.cpp
     src/plume_renderer/plugin_main.cpp
+    src/plume_renderer/shader_source_info.cpp
     "${XENON_RECOMP_ROOT}/thirdparty/smol-v/source/smolv.cpp"
 )
+
+# What the renderer needs from each translated shader's HLSL, read at build
+# time into a table (shader_source_info.h), so the sources are not shipped.
+add_executable(shader_source_info_gen
+    tools/shader_source_info_gen.cpp
+    src/plume_renderer/shader_source_info.cpp
+)
+target_include_directories(shader_source_info_gen PRIVATE "${CMAKE_CURRENT_SOURCE_DIR}/src")
+file(GLOB XERENGE_TRANSLATED_HLSL CONFIGURE_DEPENDS
+    "${CMAKE_CURRENT_SOURCE_DIR}/generated/xenos-hlsl/*.hlsl")
+set(XERENGE_SHADER_SOURCE_INFO_CPP "${CMAKE_CURRENT_BINARY_DIR}/shader_source_info_table.cpp")
+add_custom_command(
+    OUTPUT "${XERENGE_SHADER_SOURCE_INFO_CPP}"
+    COMMAND shader_source_info_gen "${CMAKE_CURRENT_SOURCE_DIR}/generated/xenos-hlsl"
+            "${XERENGE_SHADER_SOURCE_INFO_CPP}"
+    DEPENDS shader_source_info_gen ${XERENGE_TRANSLATED_HLSL}
+    COMMENT "Reading the translated shaders into shader_source_info_table.cpp"
+    VERBATIM)
+list(APPEND REXGPU_PLUME_SOURCES "${XERENGE_SHADER_SOURCE_INFO_CPP}")
 if(XERENGE_SHADER_CACHE_CPP)
     if(NOT EXISTS "${XERENGE_SHADER_CACHE_CPP}")
         message(FATAL_ERROR "XERENGE_SHADER_CACHE_CPP does not exist: ${XERENGE_SHADER_CACHE_CPP}")
