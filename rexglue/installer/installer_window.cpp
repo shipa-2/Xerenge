@@ -378,7 +378,7 @@ void InstallerWindow::StartInstall() {
                        return;
                      }
                      RunProcess(extract_tool,
-                                {image_path_, game_dir, "--sha256", kRetailSha256},
+                                {"--sha256", kRetailSha256, image_path_, game_dir},
                                 [this, checking, written](const QString& line) {
                                   if (auto m = checking.match(line); m.hasMatch()) {
                                     SetStepProgress(0.5 * m.captured(1).toInt() / 100.0);
