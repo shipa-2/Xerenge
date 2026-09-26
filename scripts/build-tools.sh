@@ -1,8 +1,5 @@
 #!/bin/sh
 # Builds the C++ replacements for the Python setup/shader tools.
-#
-# OpenSSL is found by find_package; tools/cxx/CMakeLists.txt pins the 64-bit
-# copy where Arch's multilib one could be picked up instead.
 set -e
 root=$(cd "$(dirname "$0")/.." && pwd)
 . "$root/scripts/platform.sh"

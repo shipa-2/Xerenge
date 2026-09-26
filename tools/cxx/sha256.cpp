@@ -3,24 +3,28 @@
 #include <cstdio>
 #include <fstream>
 
-#include <openssl/evp.h>
+#include "crypto.hpp"
 
-std::string Sha256Hex(std::string_view data) {
-    unsigned char digest[EVP_MAX_MD_SIZE];
-    unsigned int len = 0;
-    EVP_MD_CTX* ctx = EVP_MD_CTX_new();
-    EVP_DigestInit_ex(ctx, EVP_sha256(), nullptr);
-    EVP_DigestUpdate(ctx, data.data(), data.size());
-    EVP_DigestFinal_ex(ctx, digest, &len);
-    EVP_MD_CTX_free(ctx);
+namespace {
 
+std::string ToHex(const uint8_t digest[32]) {
     static const char hex[] = "0123456789abcdef";
-    std::string out(len * 2, '\0');
-    for (unsigned i = 0; i < len; ++i) {
+    std::string out(64, '\0');
+    for (unsigned i = 0; i < 32; ++i) {
         out[i * 2] = hex[digest[i] >> 4];
         out[i * 2 + 1] = hex[digest[i] & 0xF];
     }
     return out;
+}
+
+}  // namespace
+
+std::string Sha256Hex(std::string_view data) {
+    Sha256 hash;
+    hash.Update(data.data(), data.size());
+    uint8_t digest[32];
+    hash.Final(digest);
+    return ToHex(digest);
 }
 
 bool Sha256FileHex(const std::string& path, std::string* out_hex, int* progress_percent) {
@@ -32,9 +36,7 @@ bool Sha256FileHex(const std::string& path, std::string* out_hex, int* progress_
     const std::streamoff size = in.tellg();
     in.seekg(0, std::ios::beg);
 
-    EVP_MD_CTX* ctx = EVP_MD_CTX_new();
-    EVP_DigestInit_ex(ctx, EVP_sha256(), nullptr);
-
+    Sha256 hash;
     std::vector<char> chunk(1 << 22);
     std::streamoff done = 0;
     while (in) {
@@ -43,7 +45,7 @@ bool Sha256FileHex(const std::string& path, std::string* out_hex, int* progress_
         if (got <= 0) {
             break;
         }
-        EVP_DigestUpdate(ctx, chunk.data(), static_cast<size_t>(got));
+        hash.Update(chunk.data(), static_cast<size_t>(got));
         done += got;
         if (size > 0) {
             const int percent = static_cast<int>(100 * done / size);
@@ -57,16 +59,8 @@ bool Sha256FileHex(const std::string& path, std::string* out_hex, int* progress_
         std::fprintf(stderr, "\r\033[K");
     }
 
-    unsigned char digest[EVP_MAX_MD_SIZE];
-    unsigned int len = 0;
-    EVP_DigestFinal_ex(ctx, digest, &len);
-    EVP_MD_CTX_free(ctx);
-
-    static const char hex[] = "0123456789abcdef";
-    out_hex->resize(len * 2);
-    for (unsigned i = 0; i < len; ++i) {
-        (*out_hex)[i * 2] = hex[digest[i] >> 4];
-        (*out_hex)[i * 2 + 1] = hex[digest[i] & 0xF];
-    }
+    uint8_t digest[32];
+    hash.Final(digest);
+    *out_hex = ToHex(digest);
     return true;
 }

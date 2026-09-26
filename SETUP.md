@@ -31,7 +31,7 @@ Setup and shader utilities are C++ binaries built once with `./scripts/build-too
 On Arch that is:
 
 ```
-sudo pacman -S --needed git cmake ninja clang openssl pkgconf vulkan-icd-loader vulkan-headers libx11 libxcb wayland renderdoc
+sudo pacman -S --needed git cmake ninja clang pkgconf vulkan-icd-loader vulkan-headers libx11 libxcb wayland renderdoc
 ```
 
 The installer builds from source too, so it needs the same packages; it runs the

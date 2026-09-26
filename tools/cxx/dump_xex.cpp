@@ -6,7 +6,7 @@
 #include <stdexcept>
 #include <vector>
 
-#include <openssl/aes.h>
+#include "crypto.hpp"
 
 namespace {
 
@@ -19,13 +19,7 @@ uint32_t BeU32(const std::vector<uint8_t>& data, size_t offset) {
 void Aes128CbcDecrypt(const uint8_t key[16], const uint8_t iv[16], const uint8_t* in, size_t in_len,
                       std::vector<uint8_t>* out) {
     out->resize(in_len);
-    AES_KEY aes{};
-    if (AES_set_decrypt_key(key, 128, &aes) != 0) {
-        throw std::runtime_error("AES_set_decrypt_key failed");
-    }
-    uint8_t iv_copy[16];
-    std::memcpy(iv_copy, iv, 16);
-    AES_cbc_encrypt(in, out->data(), in_len, &aes, iv_copy, AES_DECRYPT);
+    ::Aes128CbcDecrypt(key, iv, in, out->data(), in_len);
 }
 
 void DecompressBasic(const std::vector<uint8_t>& xex, uint32_t header_size, uint32_t fmt_off,

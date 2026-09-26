@@ -4,21 +4,8 @@ project(xerenge-tools LANGUAGES CXX)
 set(CMAKE_CXX_STANDARD 20)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
 
-# pkg-config / stale cache can pick multilib (/usr/lib32) on Arch; tools are 64-bit only.
-if(CMAKE_SIZEOF_VOID_P EQUAL 8)
-  set(_xerenge_openssl_libdir "/usr/lib")
-  if(EXISTS "${_xerenge_openssl_libdir}/libcrypto.so")
-    set(OPENSSL_ROOT_DIR "/usr" CACHE PATH "OpenSSL root" FORCE)
-    set(OPENSSL_INCLUDE_DIR "/usr/include" CACHE PATH "" FORCE)
-    set(OPENSSL_CRYPTO_LIBRARY "${_xerenge_openssl_libdir}/libcrypto.so" CACHE FILEPATH "" FORCE)
-    set(OPENSSL_SSL_LIBRARY "${_xerenge_openssl_libdir}/libssl.so" CACHE FILEPATH "" FORCE)
-  endif()
-  unset(_xerenge_openssl_libdir)
-endif()
-
-find_package(OpenSSL REQUIRED)
-
 add_library(xerenge_tools_lib STATIC
+    crypto.cpp
     file_util.cpp
     sha256.cpp
     xdvdfs.cpp
@@ -29,7 +16,6 @@ add_library(xerenge_tools_lib STATIC
     wrap_runtime_vertex_shader.cpp
 )
 target_include_directories(xerenge_tools_lib PUBLIC ${CMAKE_CURRENT_SOURCE_DIR})
-target_link_libraries(xerenge_tools_lib PUBLIC OpenSSL::Crypto)
 
 function(xerenge_tool output_name target_name main_src)
     add_executable(${target_name} ${main_src})

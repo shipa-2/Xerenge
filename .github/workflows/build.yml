@@ -47,7 +47,7 @@ jobs:
           sudo wget -qO /etc/apt/sources.list.d/lunarg-vulkan-noble.list https://packages.lunarg.com/vulkan/lunarg-vulkan-noble.list
           sudo apt-get update
           sudo apt-get install -y cmake ninja-build pkg-config git curl unzip zip autoconf \
-            libssl-dev vulkan-sdk \
+            vulkan-sdk \
             libgtk-3-dev libx11-dev libx11-xcb-dev libxcb1-dev libxss-dev \
             libwayland-dev libwayland-bin wayland-protocols libxkbcommon-dev libdecor-0-dev \
             libasound2-dev libpulse-dev libpipewire-0.3-dev \
@@ -125,8 +125,6 @@ jobs:
       CXX: clang++
       CMAKE_C_COMPILER_LAUNCHER: sccache
       CMAKE_CXX_COMPILER_LAUNCHER: sccache
-      # The runner image's own OpenSSL, for tools/cxx.
-      OPENSSL_ROOT_DIR: C:/Program Files/OpenSSL
     steps:
       - uses: actions/checkout@v6
 
@@ -184,8 +182,6 @@ jobs:
           cp rexglue/build/burnout.exe "$payload/bin/"
           find rexglue/build rexglue-sdk/out/win-amd64 -maxdepth 2 -name '*.dll' -not -path '*/Debug/*' -exec cp {} "$payload/bin/" \;
           cp tools/bin/extract-image.exe "$payload/tools/"
-          # extract-image links OpenSSL's libcrypto dynamically.
-          cp "/c/Program Files/OpenSSL/bin/"libcrypto-*.dll "$payload/tools/"
           cp rexglue/installer/build/xerenge-installer.exe "$package/"
           windeployqt --release --no-translations "$package/xerenge-installer.exe"
           ls -laR "$package"
