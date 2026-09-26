@@ -71,11 +71,15 @@ if(NOT XERENGE_SHADER_CACHE_EXTRA_CPP)
     endif()
 endif()
 if(NOT XERENGE_SHADER_CACHE_BOOTSTRAP_CPP)
-    set(_generated_shader_cache_bootstrap
-        "${CMAKE_CURRENT_SOURCE_DIR}/generated/shader_cache_bootstrap.cpp")
-    if(EXISTS "${_generated_shader_cache_bootstrap}")
-        set(XERENGE_SHADER_CACHE_BOOTSTRAP_CPP "${_generated_shader_cache_bootstrap}")
-    endif()
+    # The runtime-assembled shaders: translate_runtime_shaders.sh's output,
+    # which supersedes the older hand-wrapped bootstrap cache.
+    foreach(_candidate shader_cache_runtime.cpp shader_cache_bootstrap.cpp)
+        if(NOT XERENGE_SHADER_CACHE_BOOTSTRAP_CPP AND
+           EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/generated/${_candidate}")
+            set(XERENGE_SHADER_CACHE_BOOTSTRAP_CPP
+                "${CMAKE_CURRENT_SOURCE_DIR}/generated/${_candidate}")
+        endif()
+    endforeach()
 endif()
 
 set(REXGPU_PLUME_SOURCES

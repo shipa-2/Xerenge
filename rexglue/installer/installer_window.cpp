@@ -35,6 +35,26 @@ constexpr int kImageFiles = 832;
 
 constexpr const char* kDesktopId = "xerenge-burnout-revenge.desktop";
 
+// Where the AppImage fetches the project from. Everything else (the SDK,
+// plume, the shader translator) is fetched by the project's own scripts.
+constexpr const char* kRepository = "https://github.com/shipa-2/Xerenge.git";
+
+// The environment for the tools the installer runs (git, cmake, clang, the
+// scripts): the system's, without what an AppImage sets up for itself - its
+// libraries and Qt plugins are not meant for them.
+QProcessEnvironment ToolEnvironment() {
+  QProcessEnvironment env = QProcessEnvironment::systemEnvironment();
+  for (const char* name : {"LD_LIBRARY_PATH", "LD_PRELOAD", "QT_PLUGIN_PATH", "QML2_IMPORT_PATH",
+                           "QT_QPA_PLATFORM_PLUGIN_PATH", "PYTHONHOME", "PYTHONPATH"}) {
+    env.remove(name);
+  }
+  // Restore what the AppImage runtime saved, if it did.
+  if (env.contains("APPIMAGE_ORIGINAL_LD_LIBRARY_PATH")) {
+    env.insert("LD_LIBRARY_PATH", env.value("APPIMAGE_ORIGINAL_LD_LIBRARY_PATH"));
+  }
+  return env;
+}
+
 // Started from the shortcut. Reads the settings the installer wrote - so they
 // can be changed later by editing xerenge.conf - and starts the game the way
 // run.sh does.
@@ -250,11 +270,19 @@ bool InstallerWindow::LocateProject(QString* error) {
       }
     }
   }
-  if (project_dir_.isEmpty()) {
-    *error = tr("Could not find the project (a directory with run.sh and burnout_manifest.toml) "
-                "above %1. Set XERENGE_PROJECT to it.")
-                 .arg(QCoreApplication::applicationDirPath());
-    return false;
+  download_ = project_dir_.isEmpty();
+  if (download_) {
+    // Nothing beside the installer: fetch and build under the install
+    // directory. The paths are filled in before the sources exist.
+    const QDir source(QDir(install_dir_).filePath("source"));
+    project_dir_ = source.filePath("rexglue");
+    scripts_dir_ = source.filePath("scripts");
+    sdk_lib_dir_ = source.filePath("rexglue-sdk/out/linux-amd64");
+    if (QStandardPaths::findExecutable("git").isEmpty()) {
+      *error = tr("git is needed to fetch the game's source code. Install it and try again.");
+      return false;
+    }
+    return true;
   }
   const QDir project(project_dir_);
   scripts_dir_ = FirstExisting({project.filePath("../scripts"),
@@ -295,14 +323,36 @@ void InstallerWindow::StartInstall() {
     Refuse(tr("Cannot create %1.").arg(install_dir_));
     return;
   }
-  const bool built = QFileInfo::exists(QDir(project_dir_).filePath("build/burnout"));
-  if ((!extracted || !built) && scripts_dir_.isEmpty()) {
+  log_path_ = QDir(install_dir_).filePath("install.log");
+  QFile::remove(log_path_);
+  // Fetched sources are always built: an update pulled in has to be.
+  const bool built = !download_ && QFileInfo::exists(QDir(project_dir_).filePath("build/burnout"));
+  if (!download_ && (!extracted || !built) && scripts_dir_.isEmpty()) {
     Refuse(tr("The setup scripts (extract-image.py, build.sh) were not found next to %1.")
                .arg(project_dir_));
     return;
   }
 
   steps_.clear();
+  if (download_) {
+    const QString source = QDir(install_dir_).filePath("source");
+    steps_.append({tr("Downloading the source code"), 3, [this, source] {
+                     const QRegularExpression receiving("Receiving objects:\\s*(\\d+)%");
+                     const auto on_line = [this, receiving](const QString& line) {
+                       if (auto m = receiving.match(line); m.hasMatch()) {
+                         SetStepProgress(m.captured(1).toInt() / 100.0);
+                       }
+                     };
+                     if (QFileInfo::exists(QDir(source).filePath(".git"))) {
+                       RunProcess("git", {"-C", source, "pull", "--ff-only", "--progress"},
+                                  on_line);
+                     } else {
+                       RunProcess("git", {"clone", "--depth", "1", "--progress", kRepository,
+                                          source},
+                                  on_line);
+                     }
+                   }});
+  }
   // The disc image, checked against the retail hash, into <install>/game.
   if (!extracted) {
     steps_.append({tr("Extracting the disc image"), 30, [this, game_dir] {
@@ -345,13 +395,16 @@ void InstallerWindow::StartInstall() {
     steps_.append({tr("Building the SDK"), 15, [this, build_output] {
                      RunProcess(QDir(scripts_dir_).filePath("setup-sdk.sh"), {}, build_output);
                    }});
+    steps_.append({tr("Building the shader translator"), 5, [this, build_output] {
+                     RunProcess(QDir(scripts_dir_).filePath("setup-deps.sh"), {}, build_output);
+                   }});
     steps_.append({tr("Building the game (this takes a while)"), 45, [this, game_dir,
                                                                         build_output] {
                      RunProcess(QDir(scripts_dir_).filePath("build.sh"), {"--game", game_dir},
                                 build_output);
                    }});
     // build.sh builds the repository's own project.
-    steps_.append({tr("Locating the build"), 1, [this] {
+    if (!download_) steps_.append({tr("Locating the build"), 1, [this] {
                      project_dir_ = QDir(QDir(scripts_dir_).filePath("../rexglue")).absolutePath();
                      sdk_lib_dir_ = FirstExisting(
                          {QDir(scripts_dir_).filePath("../rexglue-sdk/out/linux-amd64")});
@@ -397,7 +450,8 @@ void InstallerWindow::RunNextStep() {
 
 void InstallerWindow::StepFinished(const QString& error) {
   if (!error.isEmpty()) {
-    SetStatus(tr("%1 failed: %2").arg(steps_[step_index_].name, error));
+    SetStatus(tr("%1 failed: %2").arg(steps_[step_index_].name, error) +
+              (log_path_.isEmpty() ? QString() : tr("\nFull output: %1").arg(log_path_)));
     SetBusy(false);
     if (unattended_) {
       QCoreApplication::exit(1);
@@ -425,13 +479,27 @@ void InstallerWindow::RunProcess(const QString& program, const QStringList& argu
                                  const QString& working_directory) {
   process_ = new QProcess(this);
   process_->setProcessChannelMode(QProcess::MergedChannels);
+  process_->setProcessEnvironment(ToolEnvironment());
+  if (!log_path_.isEmpty()) {
+    QFile log(log_path_);
+    if (log.open(QIODevice::Append | QIODevice::Text)) {
+      log.write(QString("\n$ %1 %2\n").arg(program, arguments.join(' ')).toUtf8());
+    }
+  }
   if (!working_directory.isEmpty()) {
     process_->setWorkingDirectory(working_directory);
   }
   auto pending = std::make_shared<QString>();
   auto last_line = std::make_shared<QString>();
   connect(process_, &QProcess::readyRead, this, [this, pending, last_line, on_line] {
-    *pending += QString::fromUtf8(process_->readAll());
+    const QByteArray chunk = process_->readAll();
+    if (!log_path_.isEmpty()) {
+      QFile log(log_path_);
+      if (log.open(QIODevice::Append)) {
+        log.write(chunk);
+      }
+    }
+    *pending += QString::fromUtf8(chunk);
     // The scripts report progress on one line rewritten with \r.
     static const QRegularExpression breaks("[\r\n]");
     QStringList lines = pending->split(breaks);

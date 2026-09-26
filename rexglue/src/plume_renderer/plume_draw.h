@@ -169,6 +169,15 @@ struct GuestDrawSnapshot {
 bool CaptureGuestVideoFrame(GuestDrawSnapshot* snap, memory::Memory* memory);
 bool IsGuestVideoBlit(const GuestDrawSnapshot& snap, uint64_t* key_out = nullptr);
 
+// One mip level below a texture's base, decoded to the host format like the
+// base level.
+struct HostMipLevel {
+  std::vector<uint8_t> pixels;
+  uint32_t width = 0;
+  uint32_t height = 0;
+  uint32_t row_texels = 0;
+};
+
 class PlumeDrawContext {
  public:
   PlumeDrawContext() = default;
@@ -246,7 +255,8 @@ class PlumeDrawContext {
   void UploadNullTexture(plume::RenderCommandList* list);
   bool UploadHostTexture(plume::RenderCommandList* list, uint64_t key, uint32_t width,
                          uint32_t height, plume::RenderFormat host_format,
-                         const std::vector<uint8_t>& pixels, uint32_t row_texels);
+                         const std::vector<uint8_t>& pixels, uint32_t row_texels,
+                         const std::vector<HostMipLevel>* mips = nullptr);
   void BindGuestTextures(plume::RenderCommandList* list, const std::vector<GuestDrawSnapshot>& draws,
                          memory::Memory* memory);
   uint32_t BindlessForTexture(const GuestDrawSnapshot& snap) const;
@@ -272,6 +282,8 @@ class PlumeDrawContext {
     uint32_t width = 0;
     uint32_t height = 0;
     plume::RenderFormat format = plume::RenderFormat::R8G8B8A8_UNORM;
+    // Mip levels, the base included.
+    uint32_t levels = 1;
     std::unique_ptr<plume::RenderTexture> texture;
     std::unique_ptr<plume::RenderTextureView> view;
     std::unique_ptr<plume::RenderBuffer> staging;

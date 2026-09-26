@@ -85,5 +85,9 @@ class InstallerWindow : public QWidget {
   bool blur_ = false;
   bool xenia_ = false;
   bool shortcuts_ = true;
+  // No project beside the installer (the AppImage): the sources are fetched
+  // from GitHub into <install>/source and built there.
+  bool download_ = false;
+  QString log_path_;
   bool unattended_ = false;
 };

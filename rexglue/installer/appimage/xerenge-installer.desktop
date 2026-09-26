@@ -1,0 +1,8 @@
+[Desktop Entry]
+Type=Application
+Name=Burnout Revenge Installer
+Comment=Installs Burnout Revenge (Xerenge) from your disc image
+Exec=xerenge-installer
+Icon=xerenge-installer
+Terminal=false
+Categories=Game;

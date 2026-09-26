@@ -13,6 +13,11 @@
 # emits a cache the build can link alongside the scanned one. Run the game
 # first, reaching the screens whose geometry is missing, so the dumps exist.
 #
+# With --from-disc it needs no dumps: the containers are rebuilt from the disc
+# by tools/runtime_shaders.recipe (see build_runtime_shaders.py), which is what
+# a fresh installation does. make_runtime_shader_recipe.py refreshes the recipe
+# from a set of dumps.
+#
 # Every shader the game loads is dumped and described, not only the ones that
 # missed, so the result supersedes generated/shader_cache_bootstrap.cpp rather
 # than having to be linked beside it. That older cache was itself built from
@@ -43,23 +48,37 @@ CONTAINERS=generated/runtime-containers
 RAW=generated/shader_cache_runtime_raw.cpp
 OUT=generated/shader_cache_runtime.cpp
 
+FROM_DISC=0
+[ "$1" = "--from-disc" ] && FROM_DISC=1
+
 for tool in "$RECOMP" ; do
     [ -x "$tool" ] || { echo "XenosRecomp not found at $tool" >&2; exit 1; }
 done
 [ -f "$VS_WRAP" ] || { echo "vertex wrapper not found at $VS_WRAP" >&2; exit 1; }
 
-args=$(ls "$DUMP"/*.wrapargs 2>/dev/null || true)
-if [ -z "$args" ]; then
+rm -rf "$CONTAINERS"
+mkdir -p "$CONTAINERS"
+
+if [ "$FROM_DISC" = 1 ]; then
+    GAME_ROOT=$(sed -n 's/^game_root *= *"\(.*\)"/\1/p' burnout_manifest.toml | head -1)
+    python3 tools/build_runtime_shaders.py tools/runtime_shaders.recipe "$IMAGE" \
+        "${XERENGE_GAME_ROOT:-$GAME_ROOT}" "$CONTAINERS"
+    wrapped=$(ls "$CONTAINERS" | wc -l)
+    rehosted=$wrapped
+    args=
+else
+    args=$(ls "$DUMP"/*.wrapargs 2>/dev/null || true)
+fi
+if [ "$FROM_DISC" = 0 ] && [ -z "$args" ]; then
     echo "no .wrapargs in $DUMP - run the game and reach the screens that are" >&2
     echo "missing geometry, so the untranslated shaders get dumped" >&2
     exit 1
 fi
 
-rm -rf "$CONTAINERS"
-mkdir -p "$CONTAINERS"
-
+if [ "$FROM_DISC" = 0 ]; then
 wrapped=0
 rehosted=0
+fi
 for argfile in $args; do
     base=$(basename "$argfile" .wrapargs)
     micro="$DUMP/$base.bin"

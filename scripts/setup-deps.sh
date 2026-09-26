@@ -21,6 +21,8 @@ if [ ! -d "$plume/.git" ]; then
 else
     echo "== plume is already there: $plume"
 fi
+echo "== plume submodules"
+git -C "$plume" submodule update --init --recursive --depth 1
 
 if [ ! -d "$xenos/.git" ]; then
     echo "== fetching XenosRecomp into $xenos"

@@ -1296,8 +1296,12 @@ rex::graphics::xenos::xe_gpu_texture_fetch_t TextureFetchAt(const GuestDrawSnaps
 }
 
 uint64_t TextureKey(const rex::graphics::xenos::xe_gpu_texture_fetch_t& fetch) {
+  // The mips (their address, whether they are packed, how many) are part of
+  // it too: they decide how many levels the host texture gets.
+  const uint64_t mips = (uint64_t(fetch.dword_5) >> 11) ^ (uint64_t(fetch.mip_max_level) << 21) ^
+                        (uint64_t(fetch.mip_filter) << 25);
   return (uint64_t(fetch.base_address) << 32) ^ (uint64_t(fetch.format) << 16) ^
-         uint64_t(fetch.dword_2);
+         uint64_t(fetch.dword_2) ^ (mips << 36);
 }
 
 bool MapHostFormat(rex::graphics::xenos::TextureFormat format, plume::RenderFormat* host,
@@ -1450,10 +1454,10 @@ void SwizzleBgraToRgba(std::vector<uint8_t>* pixels, uint32_t height, uint32_t r
   }
 }
 
-void ForceOpaqueIfXrgb(std::vector<uint8_t>* pixels, uint32_t width, uint32_t height,
+bool ForceOpaqueIfXrgb(std::vector<uint8_t>* pixels, uint32_t width, uint32_t height,
                        uint32_t row_bytes) {
   if (!pixels || width == 0 || height == 0 || row_bytes < 4) {
-    return;
+    return false;
   }
   bool any_alpha = false;
   bool any_color = false;
@@ -1471,13 +1475,160 @@ void ForceOpaqueIfXrgb(std::vector<uint8_t>* pixels, uint32_t width, uint32_t he
     }
   }
   if (any_alpha || !any_color) {
-    return;
+    return false;
   }
   for (uint32_t y = 0; y < height; ++y) {
     uint8_t* row = pixels->data() + size_t(y) * row_bytes;
     for (uint32_t x = 0; x < width; ++x) {
       row[x * 4 + 3] = 255;
     }
+  }
+  return true;
+}
+
+// Where a 2D texture's mip levels are in guest memory. The layout is the
+// guest's own (texture_util, as Xenia's texture cache loads it): level L sits
+// at the mips' address plus mip_offsets_bytes[L] with that level's row pitch,
+// except that from packed_level on the small levels share one tile, each at
+// its own block offset within it.
+struct GuestMipSource {
+  uint32_t address = 0;
+  uint32_t size = 0;
+  uint32_t width = 0;
+  uint32_t height = 0;
+  uint32_t levels = 0;  // below the base
+  rex::graphics::texture_util::TextureGuestLayout layout;
+};
+
+bool LocateGuestMips(const rex::graphics::xenos::xe_gpu_texture_fetch_t& fetch,
+                     GuestMipSource* out) {
+  using rex::graphics::xenos::DataDimension;
+  using rex::graphics::xenos::TextureFilter;
+  if (fetch.dimension != DataDimension::k2DOrStacked || fetch.mip_filter == TextureFilter::kBaseMap) {
+    return false;
+  }
+  uint32_t width_minus_1 = 0, height_minus_1 = 0, depth_minus_1 = 0;
+  uint32_t base_page = 0, mip_page = 0, mip_min = 0, mip_max = 0;
+  rex::graphics::texture_util::GetSubresourcesFromFetchConstant(
+      fetch, &width_minus_1, &height_minus_1, &depth_minus_1, &base_page, &mip_page, &mip_min,
+      &mip_max);
+  if (depth_minus_1 != 0 || base_page == 0 || mip_page == 0 || mip_min != 0 || mip_max == 0) {
+    return false;
+  }
+  const rex::graphics::FormatInfo* fi =
+      rex::graphics::FormatInfo::Get(uint32_t(rex::graphics::GetBaseFormat(fetch.format)));
+  if (!fi || fi->bytes_per_block() == 0) {
+    return false;
+  }
+  out->width = width_minus_1 + 1;
+  out->height = height_minus_1 + 1;
+  out->layout = rex::graphics::texture_util::GetGuestTextureLayout(
+      fetch.dimension, fetch.pitch, out->width, out->height, 1, fetch.tiled != 0,
+      rex::graphics::GetBaseFormat(fetch.format), fetch.packed_mips != 0, true, mip_max);
+  out->levels = out->layout.max_level;
+  out->address = mip_page << 12;
+  out->size = out->layout.mips_total_extent_bytes;
+  return out->levels != 0 && out->size != 0;
+}
+
+// What a texture was built from: its base and, when it has them, its mips.
+uint64_t TextureContentHash(const uint8_t* src, size_t size, const uint8_t* mip_src,
+                            size_t mip_size) {
+  uint64_t hash = XXH3_64bits(src, size);
+  if (mip_src && mip_size) {
+    hash ^= XXH3_64bits(mip_src, mip_size) * 0x9E3779B97F4A7C15ull;
+  }
+  return hash;
+}
+
+// Decodes the mips LocateGuestMips found, into the same host format the base
+// was decoded to: expanded from 8 bits, swapped from BGRA, made opaque - each
+// only when the base was. Stops at the first level it cannot read.
+void DecodeGuestMips(const rex::graphics::xenos::xe_gpu_texture_fetch_t& fetch,
+                     const GuestMipSource& source, const uint8_t* src,
+                     rex::graphics::xenos::Endian endian, bool expand_r8, bool alpha_mask,
+                     bool swizzle_bgra, bool force_opaque, std::vector<HostMipLevel>* out) {
+  const auto format = rex::graphics::GetBaseFormat(fetch.format);
+  const rex::graphics::FormatInfo* fi = rex::graphics::FormatInfo::Get(uint32_t(format));
+  const uint32_t bpb = fi->bytes_per_block();
+  const uint32_t bpb_log2 = rex::log2_floor(bpb);
+  const auto& layout = source.layout;
+  for (uint32_t level = 1; level <= source.levels; ++level) {
+    const uint32_t stored = std::min(level, layout.packed_level);
+    if (stored >= rex::graphics::xenos::kTextureMaxMips) {
+      break;
+    }
+    const auto& level_layout = layout.mips[stored];
+    const uint32_t level_offset = layout.mip_offsets_bytes[stored];
+    uint32_t pack_x = 0, pack_y = 0, pack_z = 0;
+    if (level >= layout.packed_level) {
+      rex::graphics::texture_util::GetPackedMipOffset(source.width, source.height, 1, format,
+                                                      level, pack_x, pack_y, pack_z);
+    }
+    const uint32_t width = std::max(source.width >> level, 1u);
+    const uint32_t height = std::max(source.height >> level, 1u);
+    const uint32_t block_w = (width + fi->block_width - 1) / fi->block_width;
+    const uint32_t block_h = (height + fi->block_height - 1) / fi->block_height;
+    const uint32_t row_bytes = rex::align(block_w * bpb, 256u);
+    std::vector<uint8_t> blocks(size_t(row_bytes) * block_h, 0);
+    bool inside = level_layout.row_pitch_bytes != 0;
+    for (uint32_t by = 0; by < block_h && inside; ++by) {
+      for (uint32_t bx = 0; bx < block_w; ++bx) {
+        int64_t offset;
+        if (fetch.tiled) {
+          offset = rex::graphics::texture_util::GetTiledOffset2D(
+              int32_t(pack_x + bx), int32_t(pack_y + by), level_layout.row_pitch_bytes >> bpb_log2,
+              bpb_log2);
+        } else {
+          offset = int64_t(pack_y + by) * level_layout.row_pitch_bytes + int64_t(pack_x + bx) * bpb;
+        }
+        offset += level_offset;
+        if (offset < 0 || uint64_t(offset) + bpb > source.size) {
+          inside = false;
+          break;
+        }
+        rex::graphics::texture_conversion::CopySwapBlock(
+            endian, blocks.data() + size_t(by) * row_bytes + size_t(bx) * bpb, src + offset, bpb);
+      }
+    }
+    if (!inside) {
+      break;
+    }
+    HostMipLevel mip;
+    mip.width = width;
+    mip.height = height;
+    if (expand_r8) {
+      const uint32_t dst_row = rex::align(width * 4u, 256u);
+      mip.pixels.assign(size_t(dst_row) * height, 0);
+      for (uint32_t y = 0; y < height; ++y) {
+        for (uint32_t x = 0; x < width; ++x) {
+          const uint8_t r = blocks[size_t(y) * row_bytes + x];
+          uint8_t* p = mip.pixels.data() + size_t(y) * dst_row + size_t(x) * 4;
+          if (alpha_mask) {
+            p[0] = p[1] = p[2] = 255;
+            p[3] = r;
+          } else {
+            p[0] = p[1] = p[2] = p[3] = r;
+          }
+        }
+      }
+      mip.row_texels = dst_row / 4;
+    } else {
+      if (swizzle_bgra) {
+        SwizzleBgraToRgba(&blocks, block_h, row_bytes);
+      }
+      if (force_opaque) {
+        for (uint32_t y = 0; y < height; ++y) {
+          uint8_t* row = blocks.data() + size_t(y) * row_bytes;
+          for (uint32_t x = 0; x < width; ++x) {
+            row[x * 4 + 3] = 255;
+          }
+        }
+      }
+      mip.pixels = std::move(blocks);
+      mip.row_texels = (row_bytes / bpb) * fi->block_width;
+    }
+    out->push_back(std::move(mip));
   }
 }
 
@@ -3854,7 +4005,8 @@ uint32_t PlumeDrawContext::SamplerKey(const GuestDrawSnapshot& snap, uint32_t sl
   const auto fetch = TextureFetchAt(snap, slot);
   return uint32_t(fetch.clamp_x) | (uint32_t(fetch.clamp_y) << 3) |
          (uint32_t(fetch.clamp_z) << 6) | (uint32_t(fetch.mag_filter) << 9) |
-         (uint32_t(fetch.min_filter) << 11);
+         (uint32_t(fetch.min_filter) << 11) | (uint32_t(fetch.mip_filter) << 13) |
+         (uint32_t(fetch.aniso_filter) << 15) | ((uint32_t(fetch.lod_bias) & 0x3FFu) << 18);
 }
 
 void PlumeDrawContext::EnsureSampler(const GuestDrawSnapshot& snap, uint32_t slot) {
@@ -3893,7 +4045,21 @@ void PlumeDrawContext::EnsureSampler(const GuestDrawSnapshot& snap, uint32_t slo
   desc.addressW = address((key >> 6) & 7u);
   desc.magFilter = filter((key >> 9) & 3u);
   desc.minFilter = filter((key >> 11) & 3u);
-  desc.mipmapMode = plume::RenderMipmapMode::NEAREST;
+  // Between mips as the fetch says: point, linear, or the base alone.
+  using rex::graphics::xenos::TextureFilter;
+  const auto mip_filter = TextureFilter((key >> 13) & 3u);
+  desc.mipmapMode = mip_filter == TextureFilter::kPoint ? plume::RenderMipmapMode::NEAREST
+                                                        : plume::RenderMipmapMode::LINEAR;
+  desc.maxLOD = mip_filter == TextureFilter::kBaseMap ? 0.0f : 16.0f;
+  // Anisotropy as the fetch asks for it (kMax_1_1 .. kMax_16_1); the road
+  // seen along its length needs it to stay sharp once it has mips.
+  const uint32_t aniso = (key >> 15) & 7u;
+  if (aniso >= 2 && aniso <= 5) {
+    desc.anisotropyEnabled = true;
+    desc.maxAnisotropy = 1u << (aniso - 1);
+  }
+  // 5 fractional bits, signed.
+  desc.mipLODBias = float(int32_t((key >> 18) & 0x3FFu) << 22 >> 22) / 32.0f;
   desc.borderColor = plume::RenderBorderColor::TRANSPARENT_BLACK;
   auto sampler = device_->createSampler(desc);
   if (!sampler) {
@@ -4060,16 +4226,27 @@ void PlumeDrawContext::UploadNullTexture(plume::RenderCommandList* list) {
 bool PlumeDrawContext::UploadHostTexture(plume::RenderCommandList* list, uint64_t key,
                                          uint32_t width, uint32_t height,
                                          plume::RenderFormat host_format,
-                                         const std::vector<uint8_t>& pixels, uint32_t row_texels) {
+                                         const std::vector<uint8_t>& pixels, uint32_t row_texels,
+                                         const std::vector<HostMipLevel>* mips) {
   if (!list || !device_ || !texture_set_ || pixels.empty() || width == 0 || height == 0 ||
       row_texels == 0) {
     return false;
+  }
+  const uint32_t levels = 1 + (mips ? uint32_t(mips->size()) : 0u);
+  // Every level goes through one staging buffer, each at an offset any copy
+  // accepts (a multiple of the block size and of 512 for D3D12).
+  std::vector<uint64_t> level_offsets(levels, 0);
+  uint64_t staging_needed = pixels.size();
+  for (uint32_t level = 1; level < levels; ++level) {
+    level_offsets[level] = rex::align<uint64_t>(staging_needed, 512);
+    staging_needed = level_offsets[level] + (*mips)[level - 1].pixels.size();
   }
   GuestHostTexture* host = nullptr;
   std::unique_ptr<GuestHostTexture> created;
   if (auto it = guest_textures_.find(key); it != guest_textures_.end() && it->second) {
     host = it->second.get();
-    if (host->width != width || host->height != height || host->format != host_format) {
+    if (host->width != width || host->height != height || host->format != host_format ||
+        host->levels != levels) {
       return false;
     }
   } else {
@@ -4084,8 +4261,9 @@ bool PlumeDrawContext::UploadHostTexture(plume::RenderCommandList* list, uint64_
     created->width = width;
     created->height = height;
     created->format = host_format;
+    created->levels = levels;
     plume::RenderTextureDesc tex_desc =
-        plume::RenderTextureDesc::Texture2D(width, height, 1, host_format);
+        plume::RenderTextureDesc::Texture2D(width, height, levels, host_format);
     tex_desc.committed = true;
     created->texture = device_->createTexture(tex_desc);
     if (!created->texture) {
@@ -4102,27 +4280,37 @@ bool PlumeDrawContext::UploadHostTexture(plume::RenderCommandList* list, uint64_
   // Reuse the staging buffer when one of sufficient size is already here. A
   // texture that is genuinely re-uploaded every frame - a video plane - would
   // otherwise allocate a fresh upload buffer every frame.
-  if (!host->staging || host->staging_size < pixels.size()) {
-    host->staging = device_->createBuffer(plume::RenderBufferDesc::UploadBuffer(pixels.size()));
+  if (!host->staging || host->staging_size < staging_needed) {
+    host->staging = device_->createBuffer(plume::RenderBufferDesc::UploadBuffer(staging_needed));
     if (!host->staging) {
       host->staging_size = 0;
       return false;
     }
-    host->staging_size = pixels.size();
+    host->staging_size = staging_needed;
   }
-  if (void* mapped = host->staging->map()) {
+  if (auto* mapped = static_cast<uint8_t*>(host->staging->map())) {
     std::memcpy(mapped, pixels.data(), pixels.size());
+    for (uint32_t level = 1; level < levels; ++level) {
+      const auto& mip = (*mips)[level - 1];
+      std::memcpy(mapped + level_offsets[level], mip.pixels.data(), mip.pixels.size());
+    }
     host->staging->unmap();
   }
 
   list->barriers(plume::RenderBarrierStage::COPY,
                  plume::RenderTextureBarrier(host->texture.get(),
                                              plume::RenderTextureLayout::COPY_DEST));
-  const plume::RenderTextureCopyLocation copy_src = plume::RenderTextureCopyLocation::PlacedFootprint(
-      host->staging.get(), host_format, width, height, 1, row_texels, 0);
-  const plume::RenderTextureCopyLocation copy_dst =
-      plume::RenderTextureCopyLocation::Subresource(host->texture.get(), 0, 0);
-  list->copyTextureRegion(copy_dst, copy_src, 0, 0, 0, nullptr);
+  for (uint32_t level = 0; level < levels; ++level) {
+    const uint32_t level_width = level ? (*mips)[level - 1].width : width;
+    const uint32_t level_height = level ? (*mips)[level - 1].height : height;
+    const uint32_t level_row = level ? (*mips)[level - 1].row_texels : row_texels;
+    list->copyTextureRegion(
+        plume::RenderTextureCopyLocation::Subresource(host->texture.get(), level, 0),
+        plume::RenderTextureCopyLocation::PlacedFootprint(host->staging.get(), host_format,
+                                                          level_width, level_height, 1, level_row,
+                                                          level_offsets[level]),
+        0, 0, 0, nullptr);
+  }
   list->barriers(plume::RenderBarrierStage::GRAPHICS,
                  plume::RenderTextureBarrier(host->texture.get(),
                                              plume::RenderTextureLayout::SHADER_READ));
@@ -4374,6 +4562,8 @@ void PlumeDrawContext::BindGuestTextures(plume::RenderCommandList* list,
       size_t size;
       uint64_t hash = 0;
       uint64_t writes = 0;
+      const uint8_t* mip_src = nullptr;
+      size_t mip_size = 0;
     };
     std::vector<HashJob> jobs;
     std::unordered_set<uint64_t> queued;
@@ -4416,27 +4606,41 @@ void PlumeDrawContext::BindGuestTextures(plume::RenderCommandList* list,
         if (!src || !size) {
           continue;
         }
+        // The mips are part of the texture: a change to them alone must
+        // re-upload it just the same.
+        GuestMipSource mips;
+        const uint8_t* mip_src = nullptr;
+        if (LocateGuestMips(fetch, &mips)) {
+          mip_src = memory->TranslatePhysical<const uint8_t*>(mips.address);
+        }
+        const size_t mip_size = mip_src ? mips.size : 0;
         if (page_writes_) {
           // Watched first, then the writes counted, then (if they changed)
           // hashed: a write at any point after the watch is set shows in the
           // count by the next frame at the latest.
           memory->EnablePhysicalMemoryAccessCallbacks(info.memory.base_address, uint32_t(size),
                                                       true, false);
-          const uint64_t writes = PageWrites(info.memory.base_address, size);
+          uint64_t writes = PageWrites(info.memory.base_address, size);
+          if (mip_size) {
+            memory->EnablePhysicalMemoryAccessCallbacks(mips.address, uint32_t(mip_size), true,
+                                                        false);
+            writes += PageWrites(mips.address, mip_size);
+          }
           if (auto known = texture_watch_.find(key);
               known != texture_watch_.end() && known->second.writes == writes) {
             frame_hashes.emplace(key, known->second.hash);
             continue;
           }
-          jobs.push_back({key, src, size, 0, writes});
+          jobs.push_back({key, src, size, 0, writes, mip_src, mip_size});
         } else {
-          jobs.push_back({key, src, size});
+          jobs.push_back({key, src, size, 0, 0, mip_src, mip_size});
         }
       }
     }
     EncodeStage("textures: hashing");
     WorkerPool::Get().ParallelFor(jobs.size(), [&](size_t i) {
-      jobs[i].hash = XXH3_64bits(jobs[i].src, jobs[i].size);
+      jobs[i].hash = TextureContentHash(jobs[i].src, jobs[i].size, jobs[i].mip_src,
+                                        jobs[i].mip_size);
     });
     EncodeStage("textures: binding");
     frame_hashes.reserve(frame_hashes.size() + jobs.size());
@@ -4539,11 +4743,20 @@ void PlumeDrawContext::BindGuestTextures(plume::RenderCommandList* list,
       // textures do not change at all - repeating it for identical bytes is
       // what made the interface crawl.
       const size_t source_size = GuestTextureSourceSize(info);
+      // Only plain 2D textures get their mips; volumes and the video's
+      // formats keep the base alone.
+      const TextureFormat mip_fmt = rex::graphics::GetBaseFormat(fetch.format);
+      GuestMipSource mips;
+      const uint8_t* mip_src = nullptr;
+      if (info.depth == 0 && mip_fmt != TextureFormat::k_Cr_Y1_Cb_Y0_REP &&
+          mip_fmt != TextureFormat::k_Y1_Cr_Y0_Cb_REP && LocateGuestMips(fetch, &mips)) {
+        mip_src = memory->TranslatePhysical<const uint8_t*>(mips.address);
+      }
       uint64_t content = 0;
       if (auto hashed = frame_hashes.find(key); hashed != frame_hashes.end()) {
         content = hashed->second;
       } else if (source_size) {
-        content = XXH3_64bits(src, source_size);
+        content = TextureContentHash(src, source_size, mip_src, mip_src ? mips.size : 0);
       }
       if (content != 0) {
         auto it = guest_textures_.find(key);
@@ -4562,9 +4775,12 @@ void PlumeDrawContext::BindGuestTextures(plume::RenderCommandList* list,
           pixels.empty() || row_bytes == 0) {
         continue;
       }
-      if (base_fmt == TextureFormat::k_8_8_8_8 || base_fmt == TextureFormat::k_8_8_8_8_A) {
+      const bool swizzle_bgra =
+          base_fmt == TextureFormat::k_8_8_8_8 || base_fmt == TextureFormat::k_8_8_8_8_A;
+      bool forced_opaque = false;
+      if (swizzle_bgra) {
         SwizzleBgraToRgba(&pixels, height, row_bytes);
-        ForceOpaqueIfXrgb(&pixels, width, height, row_bytes);
+        forced_opaque = ForceOpaqueIfXrgb(&pixels, width, height, row_bytes);
       } else if (base_fmt == TextureFormat::k_Cr_Y1_Cb_Y0_REP ||
                  base_fmt == TextureFormat::k_Y1_Cr_Y0_Cb_REP) {
         if (!Convert422ToRgba(base_fmt, width, height, &pixels, &row_bytes, &row_texels)) {
@@ -4591,7 +4807,15 @@ void PlumeDrawContext::BindGuestTextures(plume::RenderCommandList* list,
         }
         ++dump_count;
       }
-      if (!UploadHostTexture(list, key, width, height, host_format, pixels, row_texels)) {
+      // Without its mips a texture seen from afar is sampled at full size, and
+      // the road and the buildings in the distance glitter and crawl.
+      std::vector<HostMipLevel> mip_levels;
+      if (mip_src) {
+        DecodeGuestMips(fetch, mips, mip_src, info.endianness, expand_r8, alpha_mask,
+                        swizzle_bgra, forced_opaque, &mip_levels);
+      }
+      if (!UploadHostTexture(list, key, width, height, host_format, pixels, row_texels,
+                             &mip_levels)) {
         continue;
       }
       // Remember what was uploaded so the next frame can tell this texture is

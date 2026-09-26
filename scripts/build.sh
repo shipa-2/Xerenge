@@ -42,6 +42,19 @@ PY
     echo "== the manifest now points at $game"
 fi
 
+# The code generator turns the executable into C++ (generated/), and writes
+# the CMake glue the project's CMakeLists.txt includes - so it runs first.
+codegen=
+for candidate in "$sdk/out/linux-amd64/Release/rexglue" "$sdk/out/linux-amd64/rexglue"; do
+    [ -x "$candidate" ] && codegen=$candidate && break
+done
+if [ -z "$codegen" ]; then
+    echo "no code generator in $sdk/out/linux-amd64 - run ./scripts/setup-sdk.sh first" >&2
+    exit 1
+fi
+echo "== generating the code"
+(cd "$project" && "$codegen" codegen burnout_manifest.toml)
+
 # The title's shaders, translated from this copy of the game: the renderer
 # links them in, so this comes before configuring. They are the game's own
 # code, which is why they are made here and not kept in the repository.
@@ -55,6 +68,16 @@ if [ ! -s "$project/generated/shader_cache.cpp" ]; then
     (cd "$project" && XENOSRECOMP="$root/XenosRecomp/build/XenosRecomp/XenosRecomp" \
         XENOSRECOMP_HEADER="$root/XenosRecomp/XenosRecomp/shader_common.h" \
         ./tools/rebuild_plume_shaders.sh "$game_root/default.xex")
+fi
+
+# The shaders the title assembles while it runs are not in that scan. Each is
+# rebuilt from its source on the disc by the recipe in tools/, so the game has
+# every shader from its first frame without being run once to collect them.
+if [ ! -s "$project/generated/shader_cache_runtime.cpp" ]; then
+    echo "== translating the shaders the game assembles at runtime"
+    (cd "$project" && XENOSRECOMP="$root/XenosRecomp/build/XenosRecomp/XenosRecomp" \
+        XENOSRECOMP_HEADER="$root/XenosRecomp/XenosRecomp/shader_common.h" \
+        ./tools/translate_runtime_shaders.sh --from-disc)
 fi
 
 echo "== configuring"

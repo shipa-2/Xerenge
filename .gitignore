@@ -34,3 +34,5 @@ rexglue/build/
 # Run logs and captures of the ReXGlue project
 rexglue/logs/
 rexglue/installer/build/
+rexglue/installer/*.AppImage
+__pycache__/
