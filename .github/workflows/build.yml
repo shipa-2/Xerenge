@@ -3,8 +3,12 @@ name: Build
 # Builds the whole game, the way re:Blue's CI does: the three files the build
 # needs from the disc (default.xex and the two shader templates) come from the
 # private shipa-2/xerenge-assets repository, read with the ASSETS_TOKEN secret.
-# What is kept is the compiled game only - never the disc files, generated/
-# or the translated shader sources.
+# What is kept is the compiled game and the installer that installs it - never
+# the disc files, generated/ or the translated shader sources.
+#
+# The payload the installer carries:
+#   bin/     the game and the libraries beside it
+#   tools/   extract-image, which checks and unpacks the player's disc image
 on:
   push:
     branches: [main]
@@ -46,7 +50,8 @@ jobs:
             libssl-dev vulkan-sdk \
             libgtk-3-dev libx11-dev libx11-xcb-dev libxcb1-dev libxss-dev \
             libwayland-dev libwayland-bin wayland-protocols libxkbcommon-dev libdecor-0-dev \
-            libasound2-dev libpulse-dev libpipewire-0.3-dev
+            libasound2-dev libpulse-dev libpipewire-0.3-dev \
+            qt6-base-dev qt6-base-dev-tools qt6-wayland qt6-wayland-dev libfuse2t64
 
       - name: Set up sccache
         uses: hendrikmuhs/ccache-action@v1.2.22
@@ -78,18 +83,33 @@ jobs:
         if: always()
         run: sccache --show-stats || true
 
-      - name: Package
+      - name: Payload
         run: |
-          out="$RUNNER_TEMP/package/bin"
-          mkdir -p "$out"
-          cp rexglue/build/burnout "$out/"
-          find rexglue/build rexglue-sdk/out/linux-amd64 -maxdepth 2 -name '*.so*' -not -path '*/Debug/*' -exec cp -a {} "$out/" \;
-          ls -la "$out"
+          payload="$RUNNER_TEMP/payload"
+          mkdir -p "$payload/bin" "$payload/tools"
+          cp rexglue/build/burnout "$payload/bin/"
+          find rexglue/build rexglue-sdk/out/linux-amd64 -maxdepth 2 -name '*.so*' -not -path '*/Debug/*' -exec cp -a {} "$payload/bin/" \;
+          cp tools/bin/extract-image "$payload/tools/"
+          ls -laR "$payload"
+
+      - name: Installer AppImage
+        env:
+          APPIMAGE_EXTRACT_AND_RUN: "1"
+        run: |
+          mkdir -p "$RUNNER_TEMP/linuxdeploy"
+          cd "$RUNNER_TEMP/linuxdeploy"
+          wget -q https://github.com/linuxdeploy/linuxdeploy/releases/download/continuous/linuxdeploy-x86_64.AppImage -O linuxdeploy
+          wget -q https://github.com/linuxdeploy/linuxdeploy-plugin-qt/releases/download/continuous/linuxdeploy-plugin-qt-x86_64.AppImage -O linuxdeploy-plugin-qt
+          chmod +x linuxdeploy linuxdeploy-plugin-qt
+          export PATH="$PWD:$PATH"
+          cd "$GITHUB_WORKSPACE"
+          XERENGE_PAYLOAD="$RUNNER_TEMP/payload" QMAKE=$(command -v qmake6) ./rexglue/installer/make-appimage.sh
+          ls -la rexglue/installer/*.AppImage
 
       - uses: actions/upload-artifact@v6
         with:
-          name: burnout-revenge-linux-amd64
-          path: ${{ runner.temp }}/package
+          name: burnout-revenge-installer-linux-amd64
+          path: rexglue/installer/Burnout_Revenge_Installer-x86_64.AppImage
           retention-days: 7
           if-no-files-found: error
 
@@ -113,6 +133,13 @@ jobs:
       - name: Install LLVM, CMake, Ninja
         shell: pwsh
         run: choco install llvm cmake ninja -y
+
+      - name: Install Qt
+        uses: jurplel/install-qt-action@v4
+        with:
+          version: "6.8.*"
+          arch: win64_msvc2022_64
+          cache: true
 
       - name: Set up sccache
         uses: hendrikmuhs/ccache-action@v1.2.22
@@ -144,17 +171,28 @@ jobs:
         if: always()
         run: sccache --show-stats || true
 
+      - name: Installer
+        run: |
+          cmake -S rexglue/installer -B rexglue/installer/build -G Ninja -DCMAKE_BUILD_TYPE=Release
+          cmake --build rexglue/installer/build
+
       - name: Package
         run: |
-          out="$(cygpath -u "$RUNNER_TEMP")/package/bin"
-          mkdir -p "$out"
-          cp rexglue/build/burnout.exe "$out/"
-          find rexglue/build rexglue-sdk/out/win-amd64 -maxdepth 2 -name '*.dll' -not -path '*/Debug/*' -exec cp {} "$out/" \;
-          ls -la "$out"
+          package="$(cygpath -u "$RUNNER_TEMP")/package"
+          payload="$package/payload"
+          mkdir -p "$payload/bin" "$payload/tools"
+          cp rexglue/build/burnout.exe "$payload/bin/"
+          find rexglue/build rexglue-sdk/out/win-amd64 -maxdepth 2 -name '*.dll' -not -path '*/Debug/*' -exec cp {} "$payload/bin/" \;
+          cp tools/bin/extract-image.exe "$payload/tools/"
+          # extract-image links OpenSSL's libcrypto dynamically.
+          cp "/c/Program Files/OpenSSL/bin/"libcrypto-*.dll "$payload/tools/"
+          cp rexglue/installer/build/xerenge-installer.exe "$package/"
+          windeployqt --release --no-translations "$package/xerenge-installer.exe"
+          ls -laR "$package"
 
       - uses: actions/upload-artifact@v6
         with:
-          name: burnout-revenge-win-amd64
+          name: burnout-revenge-installer-win-amd64
           path: ${{ runner.temp }}/package
           retention-days: 7
           if-no-files-found: error
