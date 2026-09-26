@@ -17,7 +17,9 @@ if [ ! -d "$sdk/.git" ]; then
     git clone "$fork" "$sdk"
     git -C "$sdk" remote add upstream https://github.com/rexglue/rexglue-sdk 2>/dev/null || true
 else
-    echo "== the SDK is already there: $sdk"
+    echo "== the SDK is already there: $sdk; updating"
+    git -C "$sdk" fetch origin
+    git -C "$sdk" reset --hard origin/HEAD
 fi
 
 echo "== submodules"
