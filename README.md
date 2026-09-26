@@ -96,8 +96,10 @@ has.
 ## Where it stands
 
 The title is fully playable: it boots, reaches the title screen, loads a save,
-runs through car select, and races render at 60 fps. Engine sounds, crashes and
-UI audio work. The frontend, the videos and the 3D world are colour-correct.
+runs through car select, and races render at 60 fps. The audio is complete -
+engine sounds, crashes, the interface and the licensed soundtrack - and the
+intro videos play. The frontend, the videos and the 3D world are
+colour-correct.
 
 The game runs at its own pace, not the renderer's. Its logic steps on a fixed
 timer, and each frame is held to the console's 60 Hz vblank - 30 fps in Crash
@@ -113,9 +115,6 @@ sampled with the filtering and anisotropy the title asks for.
 
 Open:
 
-* The licensed soundtrack does not play yet - everything else in the mix is there.
-* The intro logo videos sometimes fail to start; quit and run again. `./run.sh
-  --movie` reports which step is not reached when debugging.
 * The Wayland surface extension is offered by the loader but never enabled, so
   runs go through X11.
 * plume: a black frame still flashes very occasionally, and a texture
