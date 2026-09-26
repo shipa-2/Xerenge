@@ -1,20 +1,32 @@
 #!/bin/sh
-# Builds the installer and packs it into an AppImage with its Qt libraries.
+# Builds the installer and packs it into an AppImage with its Qt libraries and
+# the built game it installs (the payload).
 #
-#   ./installer/make-appimage.sh   ->   installer/Burnout_Revenge_Installer-x86_64.AppImage
+#   XERENGE_PAYLOAD=<dir> ./installer/make-appimage.sh
+#       ->   installer/Burnout_Revenge_Installer-x86_64.AppImage
 #
-# Needs linuxdeploy and linuxdeploy-plugin-qt (AUR: linuxdeploy,
-# linuxdeploy-plugin-qt) and Qt 6 development files. The AppImage carries the
-# installer only: it fetches the project from GitHub when it runs.
+# The payload directory holds bin/ (burnout and the libraries beside it) and
+# tools/extract-image; CI assembles it after building the game. Needs
+# linuxdeploy and linuxdeploy-plugin-qt (AUR: linuxdeploy,
+# linuxdeploy-plugin-qt) and Qt 6 development files.
 set -e
 here=$(cd "$(dirname "$0")" && pwd)
 build="$here/build"
 appdir="$build/AppDir"
+payload=${XERENGE_PAYLOAD:?name the built game with XERENGE_PAYLOAD=<dir>}
+if [ ! -x "$payload/bin/burnout" ] || [ ! -x "$payload/tools/extract-image" ]; then
+    echo "$payload needs bin/burnout and tools/extract-image" >&2
+    exit 1
+fi
 
 cmake -S "$here" -B "$build" -DCMAKE_BUILD_TYPE=Release -DCMAKE_INSTALL_PREFIX=/usr
 cmake --build "$build" -j"$(nproc)"
 
 rm -rf "$appdir"
+# Where the installer looks for it (LocatePayload): ../share/xerenge/payload
+# from usr/bin. linuxdeploy leaves usr/share alone.
+mkdir -p "$appdir/usr/share/xerenge"
+cp -a "$payload" "$appdir/usr/share/xerenge/payload"
 # linuxdeploy's own strip is too old for .relr.dyn sections in current libraries.
 export NO_STRIP=1
 # Wayland as well as X11, and offscreen for the unattended mode.

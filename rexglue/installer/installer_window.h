@@ -14,10 +14,11 @@ class QProcess;
 class QProgressBar;
 class QPushButton;
 
-// Installs Burnout Revenge from a disc image: extracts it, builds the game if
-// there is no build yet, copies the runtime into the chosen directory, writes
-// the settings the launcher reads at every start, and creates a desktop
-// shortcut and an applications menu entry.
+// Installs Burnout Revenge from a disc image: checks the image against the
+// retail release and extracts it, copies the game that came built with the
+// installer (its payload) into the chosen directory, writes the settings the
+// launcher reads at every start, and creates a desktop shortcut and a menu
+// entry. Nothing is compiled on this machine.
 class InstallerWindow : public QWidget {
   Q_OBJECT
 
@@ -55,7 +56,7 @@ class InstallerWindow : public QWidget {
   // A step that is work on another thread; it returns an error or nothing.
   void RunInBackground(std::function<QString(std::function<void(double)>)> work);
 
-  bool LocateProject(QString* error);
+  bool LocatePayload(QString* error);
   QString CopyRuntime(const std::function<void(double)>& progress) const;
   QString WriteSettings() const;
   QString CreateShortcuts() const;
@@ -78,16 +79,13 @@ class InstallerWindow : public QWidget {
   // Resolved when an installation starts.
   QString image_path_;
   QString install_dir_;
-  QString project_dir_;  // holds build/burnout, run.sh, generated/xenos-hlsl
-  QString sdk_lib_dir_;  // librexruntime.so and the Xenos plugin
-  QString scripts_dir_;  // extract-image, setup-sdk.sh, build.sh
+  // What ships with the installer: bin/ (the game and its libraries) and
+  // tools/extract-image.
+  QString payload_dir_;
   bool bloom_ = false;
   bool blur_ = false;
   bool xenia_ = false;
   bool shortcuts_ = true;
-  // No project beside the installer (the AppImage): the sources are fetched
-  // from GitHub into <install>/source and built there.
-  bool download_ = false;
   QString log_path_;
   bool unattended_ = false;
 };

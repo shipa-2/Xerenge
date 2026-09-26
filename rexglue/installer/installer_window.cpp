@@ -5,6 +5,7 @@
 #include <QCloseEvent>
 #include <QCoreApplication>
 #include <QDir>
+#include <QDirIterator>
 #include <QFile>
 #include <QFileDialog>
 #include <QFileInfo>
@@ -34,13 +35,17 @@ constexpr int kImageFiles = 832;
 
 constexpr const char* kDesktopId = "xerenge-burnout-revenge.desktop";
 
-// Where the AppImage fetches the project from. Everything else (the SDK,
-// plume, the shader translator) is fetched by the project's own scripts.
-constexpr const char* kRepository = "https://github.com/shipa-2/Xerenge.git";
+#ifdef Q_OS_WIN
+constexpr const char* kExe = ".exe";
+constexpr const char* kLauncherName = "Burnout Revenge.cmd";
+#else
+constexpr const char* kExe = "";
+constexpr const char* kLauncherName = "burnout-revenge";
+#endif
 
-// The environment for the tools the installer runs (git, cmake, clang, the
-// scripts): the system's, without what an AppImage sets up for itself - its
-// libraries and Qt plugins are not meant for them.
+// The environment for the programs the installer runs (extract-image): the
+// system's, without what an AppImage sets up for itself - its libraries and
+// Qt plugins are not meant for them.
 QProcessEnvironment ToolEnvironment() {
   QProcessEnvironment env = QProcessEnvironment::systemEnvironment();
   for (const char* name : {"LD_LIBRARY_PATH", "LD_PRELOAD", "QT_PLUGIN_PATH", "QML2_IMPORT_PATH",
@@ -81,7 +86,6 @@ export LD_LIBRARY_PATH="$dir/bin${LD_LIBRARY_PATH:+:$LD_LIBRARY_PATH}"
 logs="${XDG_STATE_HOME:-$HOME/.local/state}/xerenge-burnout"
 mkdir -p "$logs"
 
-# The renderer reads shader sources relative to the working directory.
 cd "$dir"
 exec "$dir/bin/burnout" \
     --game_data_root "$dir/game" \
@@ -95,18 +99,50 @@ exec "$dir/bin/burnout" \
     "$@"
 )SH";
 
+// The same for Windows, as a batch file the shortcuts point at.
+constexpr const char* kWindowsLauncher = R"CMD(@echo off
+rem Burnout Revenge (Xerenge). Written by the installer; the settings are in
+rem xerenge.conf beside this file and are read at every start.
+setlocal
+set "dir=%~dp0"
+set "bloom=false"
+set "motion_blur=false"
+set "renderer=plume"
+if exist "%dir%xerenge.conf" (
+    for /f "usebackq eol=# tokens=1,2 delims== " %%a in ("%dir%xerenge.conf") do set "%%a=%%b"
+)
+
+if /i not "%bloom%"=="true" set "XERENGE_NO_BLOOM=1"
+if /i not "%motion_blur%"=="true" set "XERENGE_NO_MOTION_BLUR=1"
+
+if /i not "%renderer%"=="xenos" set "renderer=plume"
+if "%renderer%"=="plume" (
+    set "XERENGE_D3D_TARGETS=1"
+    set "XERENGE_D3D_UI=1"
+    set "XERENGE_SKIP_LOGOS=1"
+    set "XERENGE_REAL_SHADERS=1"
+    set "XERENGE_D3D_DRAWS=1"
+    set "XERENGE_SECONDARY_TICKS=1"
+)
+
+set "logs=%LOCALAPPDATA%\xerenge-burnout"
+if not exist "%logs%" mkdir "%logs%"
+
+cd /d "%dir%"
+start "" "%dir%bin\burnout.exe" ^
+    --game_data_root "%dir%game" ^
+    --gpu_plugin %renderer% ^
+    --gpu_backend %renderer% ^
+    --no-vulkan_async_skip_incomplete_frames ^
+    --log_level info ^
+    --log_file "%logs%\burnout.log" ^
+    --log_max_file_size_mb 32 ^
+    --log_max_files 3 ^
+    %*
+)CMD";
+
 QString DefaultInstallDir() {
   return QDir::home().filePath("Games/Burnout Revenge");
-}
-
-// The first of `candidates` that exists, or an empty string.
-QString FirstExisting(const QStringList& candidates) {
-  for (const QString& path : candidates) {
-    if (QFileInfo::exists(path)) {
-      return QDir(path).absolutePath();
-    }
-  }
-  return {};
 }
 
 QString CopyFile(const QString& from, const QString& to) {
@@ -117,6 +153,16 @@ QString CopyFile(const QString& from, const QString& to) {
   // Keep the permissions: the game and its libraries must stay executable.
   QFile::setPermissions(to, QFile::permissions(from));
   return {};
+}
+
+// Every file under `from`, as paths relative to it.
+QStringList FilesUnder(const QString& from) {
+  QStringList files;
+  QDirIterator it(from, QDir::Files | QDir::NoDotAndDotDot, QDirIterator::Subdirectories);
+  while (it.hasNext()) {
+    files.append(QDir(from).relativeFilePath(it.next()));
+  }
+  return files;
 }
 
 bool WriteText(const QString& path, const QString& text, bool executable) {
@@ -248,47 +294,27 @@ void InstallerWindow::SetBusy(bool busy) {
   }
 }
 
-// Where the built game, the SDK's libraries and the setup scripts are, found
-// by walking up from the installer: it lives in the project's installer/
-// directory.
-bool InstallerWindow::LocateProject(QString* error) {
-  const QString env_project = qEnvironmentVariable("XERENGE_PROJECT");
-  QDir dir(QCoreApplication::applicationDirPath());
-  project_dir_.clear();
-  if (!env_project.isEmpty()) {
-    project_dir_ = QDir(env_project).absolutePath();
-  } else {
-    for (int up = 0; up < 5; ++up) {
-      if (QFileInfo::exists(dir.filePath("run.sh")) &&
-          QFileInfo::exists(dir.filePath("burnout_manifest.toml"))) {
-        project_dir_ = dir.absolutePath();
-        break;
-      }
-      if (!dir.cdUp()) {
-        break;
-      }
+// Where the built game that ships with the installer is: payload/ beside it,
+// or inside the AppImage under usr/share/xerenge/payload. XERENGE_PAYLOAD
+// names another one (a CI package unpacked by hand, say).
+bool InstallerWindow::LocatePayload(QString* error) {
+  const QDir here(QCoreApplication::applicationDirPath());
+  QStringList candidates;
+  if (const QString env = qEnvironmentVariable("XERENGE_PAYLOAD"); !env.isEmpty()) {
+    candidates.append(env);
+  }
+  candidates.append(here.filePath("payload"));
+  candidates.append(here.filePath("../share/xerenge/payload"));
+  payload_dir_.clear();
+  for (const QString& candidate : candidates) {
+    if (QFileInfo::exists(QDir(candidate).filePath(QString("bin/burnout") + kExe))) {
+      payload_dir_ = QDir(candidate).absolutePath();
+      return true;
     }
   }
-  download_ = project_dir_.isEmpty();
-  if (download_) {
-    // Nothing beside the installer: fetch and build under the install
-    // directory. The paths are filled in before the sources exist.
-    const QDir source(QDir(install_dir_).filePath("source"));
-    project_dir_ = source.filePath("rexglue");
-    scripts_dir_ = source.filePath("scripts");
-    sdk_lib_dir_ = source.filePath("rexglue-sdk/out/linux-amd64");
-    if (QStandardPaths::findExecutable("git").isEmpty()) {
-      *error = tr("git is needed to fetch the game's source code. Install it and try again.");
-      return false;
-    }
-    return true;
-  }
-  const QDir project(project_dir_);
-  scripts_dir_ = FirstExisting({project.filePath("../scripts"),
-                                project.filePath("../Xerenge/scripts")});
-  sdk_lib_dir_ = FirstExisting({project.filePath("../rexglue-sdk/out/linux-amd64"),
-                                project.filePath("../Xerenge/rexglue-sdk/out/linux-amd64")});
-  return true;
+  *error = tr("The game files that come with the installer were not found (looked in %1).")
+               .arg(candidates.join(", "));
+  return false;
 }
 
 void InstallerWindow::Refuse(const QString& message) {
@@ -308,7 +334,7 @@ void InstallerWindow::StartInstall() {
   xenia_ = xenia_box_->isChecked();
 
   QString error;
-  if (!LocateProject(&error)) {
+  if (!LocatePayload(&error)) {
     Refuse(error);
     return;
   }
@@ -324,56 +350,17 @@ void InstallerWindow::StartInstall() {
   }
   log_path_ = QDir(install_dir_).filePath("install.log");
   QFile::remove(log_path_);
-  // Fetched sources are always built: an update pulled in has to be.
-  const bool built = !download_ && QFileInfo::exists(QDir(project_dir_).filePath("build/burnout"));
-  if (!download_ && (!extracted || !built) && scripts_dir_.isEmpty()) {
-    Refuse(tr("The setup scripts (extract-image, build.sh) were not found next to %1.")
-               .arg(project_dir_));
-    return;
-  }
 
   steps_.clear();
-  if (download_) {
-    const QString source = QDir(install_dir_).filePath("source");
-    steps_.append({tr("Downloading the source code"), 3, [this, source] {
-                     const QRegularExpression receiving("Receiving objects:\\s*(\\d+)%");
-                     const auto on_line = [this, receiving](const QString& line) {
-                       if (auto m = receiving.match(line); m.hasMatch()) {
-                         SetStepProgress(m.captured(1).toInt() / 100.0);
-                       }
-                     };
-                     if (QFileInfo::exists(QDir(source).filePath(".git"))) {
-                       RunProcess("git", {"-C", source, "pull", "--ff-only", "--progress"},
-                                  on_line);
-                     } else {
-                       RunProcess("git", {"clone", "--depth", "1", "--progress", kRepository,
-                                          source},
-                                  on_line);
-                     }
-                   }});
-  }
   // The disc image, checked against the retail hash, into <install>/game.
   if (!extracted) {
-    const QRegularExpression percent("\\[\\s*(\\d+)%\\]");
-    const auto build_output = [this, percent](const QString& line) {
-      if (auto m = percent.match(line); m.hasMatch()) {
-        SetStepProgress(m.captured(1).toInt() / 100.0);
-      }
-      if (!line.trimmed().isEmpty()) {
-        SetStatus(line.trimmed().left(120));
-      }
-    };
-    steps_.append({tr("Building setup tools"), 1, [this, build_output] {
-                     RunProcess(QDir(scripts_dir_).filePath("build-tools.sh"), {}, build_output);
-                   }});
     steps_.append({tr("Extracting the disc image"), 30, [this, game_dir] {
                      const QRegularExpression checking("checking the image:\\s*(\\d+)%");
                      const QRegularExpression written("files written:\\s*(\\d+)");
-                     const QString extract_tool = FirstExisting(
-                         {QDir(scripts_dir_).filePath("extract-image"),
-                          QDir(scripts_dir_).filePath("../tools/bin/extract-image")});
-                     if (extract_tool.isEmpty()) {
-                       StepFinished(tr("extract-image was not built"));
+                     const QString extract_tool =
+                         QDir(payload_dir_).filePath(QString("tools/extract-image") + kExe);
+                     if (!QFileInfo::exists(extract_tool)) {
+                       StepFinished(tr("%1 is missing").arg(extract_tool));
                        return;
                      }
                      RunProcess(extract_tool,
@@ -394,41 +381,7 @@ void InstallerWindow::StartInstall() {
                                 });
                    }});
   }
-  // No build yet: the SDK and the game, with the repository's own scripts.
-  if (!built) {
-    const QRegularExpression percent("\\[\\s*(\\d+)%\\]");
-    const auto build_output = [this, percent](const QString& line) {
-      if (auto m = percent.match(line); m.hasMatch()) {
-        SetStepProgress(m.captured(1).toInt() / 100.0);
-      }
-      if (!line.trimmed().isEmpty()) {
-        SetStatus(line.trimmed().left(120));
-      }
-    };
-    steps_.append({tr("Checking the build tools"), 1, [this, build_output] {
-                     RunProcess(QDir(scripts_dir_).filePath("check-prerequisites.sh"), {},
-                                build_output);
-                   }});
-    steps_.append({tr("Building the SDK"), 15, [this, build_output] {
-                     RunProcess(QDir(scripts_dir_).filePath("setup-sdk.sh"), {}, build_output);
-                   }});
-    steps_.append({tr("Building the shader translator"), 5, [this, build_output] {
-                     RunProcess(QDir(scripts_dir_).filePath("setup-deps.sh"), {}, build_output);
-                   }});
-    steps_.append({tr("Building the game (this takes a while)"), 45, [this, game_dir,
-                                                                        build_output] {
-                     RunProcess(QDir(scripts_dir_).filePath("build.sh"), {"--game", game_dir},
-                                build_output);
-                   }});
-    // build.sh builds the repository's own project.
-    if (!download_) steps_.append({tr("Locating the build"), 1, [this] {
-                     project_dir_ = QDir(QDir(scripts_dir_).filePath("../rexglue")).absolutePath();
-                     sdk_lib_dir_ = FirstExisting(
-                         {QDir(scripts_dir_).filePath("../rexglue-sdk/out/linux-amd64")});
-                     StepFinished({});
-                   }});
-  }
-  steps_.append({tr("Copying the game"), 8, [this] {
+  steps_.append({tr("Copying the game"), 3, [this] {
                    RunInBackground([this](std::function<void(double)> progress) {
                      return CopyRuntime(progress);
                    });
@@ -562,39 +515,25 @@ void InstallerWindow::RunInBackground(std::function<QString(std::function<void(d
   watcher->setFuture(QtConcurrent::run([work, report] { return work(report); }));
 }
 
-// The game and what it loads: the executable, the GPU plugins beside it (the
-// SDK looks for them there), the SDK's runtime library, and the shader sources
-// the plume renderer reads while it runs.
+// The game and what it loads - the executable, the SDK's runtime library and
+// the GPU plugins beside it (the SDK looks for them there) - as the payload's
+// bin/ has them.
 QString InstallerWindow::CopyRuntime(const std::function<void(double)>& progress) const {
-  const QDir project(project_dir_);
-  const QDir sdk(sdk_lib_dir_);
-  const QDir install(install_dir_);
-  if (sdk_lib_dir_.isEmpty()) {
-    return tr("the SDK's libraries (rexglue-sdk/out/linux-amd64) were not found");
+  const QDir from(QDir(payload_dir_).filePath("bin"));
+  const QDir to(QDir(install_dir_).filePath("bin"));
+  const QStringList files = FilesUnder(from.absolutePath());
+  if (files.isEmpty()) {
+    return tr("%1 is empty").arg(from.absolutePath());
   }
-  if (!install.mkpath("bin")) {
-    return tr("cannot create directories in %1").arg(install_dir_);
-  }
-  struct Item {
-    QString from, to;
-  };
-  QList<Item> items = {
-      {project.filePath("build/burnout"), install.filePath("bin/burnout")},
-      {project.filePath("build/librexgpu-plume.so"), install.filePath("bin/librexgpu-plume.so")},
-      {sdk.filePath("librexgpu-xenos.so"), install.filePath("bin/librexgpu-xenos.so")},
-      {sdk.filePath("librexruntime.so"), install.filePath("bin/librexruntime.so")},
-  };
-  if (QFileInfo::exists(sdk.filePath("libTracyClient.so"))) {
-    items.append({sdk.filePath("libTracyClient.so"), install.filePath("bin/libTracyClient.so")});
-  }
-  for (int i = 0; i < items.size(); ++i) {
-    if (!QFileInfo::exists(items[i].from)) {
-      return tr("%1 is missing - is the game built?").arg(items[i].from);
+  for (int i = 0; i < files.size(); ++i) {
+    const QString target = to.filePath(files[i]);
+    if (!QDir().mkpath(QFileInfo(target).absolutePath())) {
+      return tr("cannot create directories in %1").arg(install_dir_);
     }
-    if (const QString error = CopyFile(items[i].from, items[i].to); !error.isEmpty()) {
+    if (const QString error = CopyFile(from.filePath(files[i]), target); !error.isEmpty()) {
       return error;
     }
-    progress(double(i + 1) / items.size());
+    progress(double(i + 1) / files.size());
   }
   return {};
 }
@@ -602,7 +541,7 @@ QString InstallerWindow::CopyRuntime(const std::function<void(double)>& progress
 QString InstallerWindow::WriteSettings() const {
   const QDir install(install_dir_);
   const QString settings =
-      QString("# Burnout Revenge (Xerenge) settings, read by burnout-revenge at every start.\n"
+      QString("# Burnout Revenge (Xerenge) settings, read by the launcher at every start.\n"
               "# true or false\n"
               "bloom = %1\n"
               "motion_blur = %2\n"
@@ -612,15 +551,37 @@ QString InstallerWindow::WriteSettings() const {
   if (!WriteText(install.filePath("xerenge.conf"), settings, false)) {
     return tr("cannot write %1").arg(install.filePath("xerenge.conf"));
   }
-  if (!WriteText(install.filePath("burnout-revenge"), QString::fromUtf8(kLauncher), true)) {
-    return tr("cannot write %1").arg(install.filePath("burnout-revenge"));
+#ifdef Q_OS_WIN
+  const char* launcher = kWindowsLauncher;
+#else
+  const char* launcher = kLauncher;
+#endif
+  if (!WriteText(install.filePath(kLauncherName), QString::fromUtf8(launcher), true)) {
+    return tr("cannot write %1").arg(install.filePath(kLauncherName));
   }
   return {};
 }
 
 QString InstallerWindow::CreateShortcuts() const {
   const QDir install(install_dir_);
-  const QString launcher = install.filePath("burnout-revenge");
+  const QString launcher = install.filePath(kLauncherName);
+#ifdef Q_OS_WIN
+  // On Windows QFile::link makes a .lnk shortcut: one in the Start menu's
+  // programs and one on the desktop.
+  for (const auto location :
+       {QStandardPaths::ApplicationsLocation, QStandardPaths::DesktopLocation}) {
+    const QString dir = QStandardPaths::writableLocation(location);
+    if (dir.isEmpty() || !QDir().mkpath(dir)) {
+      continue;
+    }
+    const QString shortcut = QDir(dir).filePath("Burnout Revenge.lnk");
+    QFile::remove(shortcut);
+    if (!QFile::link(launcher, shortcut)) {
+      return tr("cannot create %1").arg(shortcut);
+    }
+  }
+  return {};
+#else
   const QString entry = QString(
                             "[Desktop Entry]\n"
                             "Type=Application\n"
@@ -656,4 +617,5 @@ QString InstallerWindow::CreateShortcuts() const {
     QProcess::execute("gio", {"set", shortcut, "metadata::trusted", "true"});
   }
   return {};
+#endif
 }
