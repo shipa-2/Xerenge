@@ -15,9 +15,11 @@
 #include <unistd.h>
 #endif
 
+#include <algorithm>
 #include <cerrno>
 #include <cstdio>
 #include <cstring>
+#include <ctime>
 #include <random>
 
 namespace ealobby {
@@ -189,6 +191,13 @@ std::string RandomHex(size_t bytes) {
   return out;
 }
 
+std::string CurrentTimeString() {
+  char stamp[32];
+  const std::time_t now = std::time(nullptr);
+  std::strftime(stamp, sizeof(stamp), "%Y.%m.%d %H:%M:%S", std::localtime(&now));
+  return stamp;
+}
+
 }  // namespace
 
 Server::Server(Options options, LogFunction log) : options_(std::move(options)), log_(std::move(log)) {}
@@ -323,6 +332,7 @@ void Server::Run() {
       }
     }
     for (SocketHandle fd : closed) {
+      OnDisconnect(fd);
       connections_.erase(fd);
     }
   }
@@ -345,6 +355,7 @@ void Server::Accept(SocketHandle listener, Role role) {
     connection->fd = fd;
     connection->role = role;
     connection->peer = AddressString(peer) + ":" + std::to_string(ntohs(peer.sin_port));
+    connection->peer_ip = AddressString(peer);
     sockaddr_in local = {};
     SockLen local_length = sizeof(local);
     getsockname(native, reinterpret_cast<sockaddr*>(&local), &local_length);
@@ -440,7 +451,14 @@ void Server::HandleDirectory(Connection& connection, const Message& message) {
 void Server::HandleLobby(Connection& connection, const Message& message) {
   if (message.command == "addr") {
     // The client's own address and port, as it sees them.
-    Send(connection, Encode("addr", std::string(1, '\0')));
+    Fields fields = ParseFields(message.body);
+    Fields reply;
+    reply["ADDR"] = options_.advertise.empty()
+                        ? (connection.peer_ip.empty() ? "127.0.0.1" : connection.peer_ip)
+                        : options_.advertise;
+    reply["PORT"] = fields.count("PORT") ? fields["PORT"] : "3074";
+    Log("lobby -> addr " + Printable(FormatFields(reply)));
+    Send(connection, Encode("addr", reply));
     return;
   }
   if (message.command == "skey") {
@@ -467,9 +485,598 @@ void Server::HandleLobby(Connection& connection, const Message& message) {
     Send(connection, Encode("news", reply));
     return;
   }
+  if (message.command == "auth") {
+    HandleAuth(connection, message);
+    return;
+  }
+  if (message.command == "user") {
+    HandleUser(connection, message);
+    return;
+  }
+  if (message.command == "cper") {
+    HandleCper(connection, message);
+    return;
+  }
+  if (message.command == "pers") {
+    HandlePers(connection, message);
+    return;
+  }
+  if (message.command == "sele") {
+    HandleSele(connection, message);
+    return;
+  }
+  if (message.command == "qdef") {
+    HandleQdef(connection, message);
+    return;
+  }
+  if (message.command == "slst") {
+    HandleSlst(connection, message);
+    return;
+  }
+  if (message.command == "priv") {
+    HandlePriv(connection, message);
+    return;
+  }
+  if (message.command == "llvl") {
+    HandleLlvl(connection, message);
+    return;
+  }
+  if (message.command == "uatr") {
+    HandleUatr(connection, message);
+    return;
+  }
+  if (message.command == "rcat") {
+    HandleRcat(connection, message);
+    return;
+  }
+  if (message.command == "room") {
+    HandleRoom(connection, message);
+    return;
+  }
+  if (message.command == "move") {
+    HandleMove(connection, message);
+    return;
+  }
+  if (message.command == "gsea") {
+    HandleGsea(connection, message);
+    return;
+  }
+  if (message.command == "gcre") {
+    HandleGcre(connection, message);
+    return;
+  }
+  if (message.command == "gjoi") {
+    HandleGjoi(connection, message);
+    return;
+  }
+  if (message.command == "gget") {
+    HandleGget(connection, message);
+    return;
+  }
+  if (message.command == "gset") {
+    HandleGset(connection, message);
+    return;
+  }
+  if (message.command == "gsta") {
+    HandleGsta(connection, message);
+    return;
+  }
+  if (message.command == "glea") {
+    HandleGlea(connection, message);
+    return;
+  }
+  if (message.command == "mesg") {
+    HandleMesg(connection, message);
+    return;
+  }
+  if (message.command == "conn" || message.command == "ping" || message.command == "~png") {
+    Send(connection, Encode(message.command, std::string(1, '\0')));
+    return;
+  }
+
   // Not handled yet: an empty success, to see what comes next.
   Log("lobby: " + Printable(message.command) + " not handled yet; answered empty");
   Send(connection, Encode(message.command, std::string(1, '\0')));
+}
+
+void Server::HandleAuth(Connection& connection, const Message& message) {
+  Fields fields = ParseFields(message.body);
+  std::string name = fields["NAME"];
+  if (name.empty()) {
+    name = "BurnoutPlayer";
+  }
+  connection.player.account_name = name;
+  connection.player.persona = name;
+  connection.player.ip = connection.peer_ip.empty() ? "127.0.0.1" : connection.peer_ip;
+  if (connection.player.id == 0) {
+    connection.player.id = next_player_id_++;
+  }
+
+  Fields reply;
+  reply["NAME"] = name;
+  reply["ADDR"] = connection.player.ip;
+  reply["PERSONAS"] = name;
+  reply["LOC"] = "enUS";
+  reply["MAIL"] = name + "@revenge.local";
+  reply["SPAM"] = "NN";
+  reply["TOS"] = "1";
+  Log("lobby -> auth " + Printable(FormatFields(reply)));
+  Send(connection, Encode("auth", reply));
+}
+
+void Server::HandleUser(Connection& connection, const Message& /*message*/) {
+  Fields reply;
+  reply["NAME"] = connection.player.account_name;
+  reply["SPAM"] = "NN";
+  reply["MAIL"] = connection.player.account_name + "@revenge.local";
+  Log("lobby -> user " + Printable(FormatFields(reply)));
+  Send(connection, Encode("user", reply));
+}
+
+void Server::HandleCper(Connection& connection, const Message& message) {
+  Fields fields = ParseFields(message.body);
+  std::string pers = fields["PERS"];
+  if (!pers.empty()) {
+    connection.player.persona = pers;
+  }
+  Fields reply;
+  reply["PERS"] = connection.player.persona;
+  Log("lobby -> cper " + Printable(FormatFields(reply)));
+  Send(connection, Encode("cper", reply));
+}
+
+void Server::HandlePers(Connection& connection, const Message& message) {
+  Fields fields = ParseFields(message.body);
+  std::string pers = fields["PERS"];
+  if (!pers.empty()) {
+    connection.player.persona = pers;
+  }
+  if (connection.player.lkey.empty()) {
+    connection.player.lkey = RandomHex(16);
+  }
+  std::string ip = connection.player.ip.empty() ? "127.0.0.1" : connection.player.ip;
+
+  Fields reply;
+  reply["PERS"] = connection.player.persona;
+  reply["LKEY"] = connection.player.lkey;
+  reply["EX-ticker"] = "";
+  reply["LOC"] = "enUS";
+  reply["A"] = ip;
+  reply["LA"] = ip;
+  reply["IDLE"] = "100000";
+  Log("lobby -> pers " + Printable(FormatFields(reply)));
+  Send(connection, Encode("pers", reply));
+
+  SendWho(connection);
+}
+
+void Server::HandleSele(Connection& connection, const Message& message) {
+  Fields fields = ParseFields(message.body);
+  Fields reply;
+  reply["INGAME"] = fields.count("INGAME") ? fields["INGAME"] : "0";
+  reply["GAMES"] = fields.count("GAMES") ? fields["GAMES"] : "0";
+  reply["MYGAME"] = fields.count("MYGAME") ? fields["MYGAME"] : "0";
+  reply["ROOMS"] = fields.count("ROOMS") ? fields["ROOMS"] : "0";
+  reply["USERS"] = fields.count("USERS") ? fields["USERS"] : "0";
+  reply["USERSETS"] = fields.count("USERSETS") ? fields["USERSETS"] : "0";
+  reply["MESGS"] = fields.count("MESGS") ? fields["MESGS"] : "1";
+  reply["MESGTYPES"] = fields.count("MESGTYPES") ? fields["MESGTYPES"] : "GPY";
+  reply["ASYNC"] = fields.count("ASYNC") ? fields["ASYNC"] : "0";
+  reply["STATS"] = fields.count("STATS") ? fields["STATS"] : "0";
+  reply["SLOTS"] = "3";
+  Log("lobby -> sele " + Printable(FormatFields(reply)));
+  Send(connection, Encode("sele", reply));
+
+  if (fields.count("STATS") || fields.count("INGAME") || fields.count("ROOMS")) {
+    SendWho(connection);
+  }
+}
+
+void Server::HandleQdef(Connection& connection, const Message& /*message*/) {
+  Fields reply;
+  reply["IMGATE"] = "0";
+  reply["QMSG0"] = "\"Do you want to play a game?\"";
+  reply["QMSG1"] = "Yes";
+  reply["QMSG2"] = "No";
+  reply["QMSG3"] = "\"OK, let's start\"";
+  reply["QMSG4"] = "\"Have fun!\"";
+  reply["QMSG5"] = "\"Good game!\"";
+  reply["QMSG6"] = "Thanks!";
+  reply["QMSG7"] = "\"Catch you later\"";
+  reply["QMSG8"] = "\"See Ya!\"";
+  reply["SPM_EA"] = "0";
+  reply["SPM_PART"] = "0";
+  Log("lobby -> qdef " + Printable(FormatFields(reply)));
+  Send(connection, Encode("qdef", reply));
+}
+
+void Server::HandleSlst(Connection& connection, const Message& /*message*/) {
+  Fields reply;
+  reply["COUNT"] = "1";
+  reply["VIEW0"] = "Career,\"My Career\"";
+  Log("lobby -> slst " + Printable(FormatFields(reply)));
+  Send(connection, Encode("slst", reply));
+}
+
+void Server::HandlePriv(Connection& connection, const Message& message) {
+  Fields fields = ParseFields(message.body);
+  std::string mode = fields["MODE"];
+  Fields reply;
+  reply["PRIV"] = (mode == "off") ? "0" : "1";
+  Log("lobby -> priv " + Printable(FormatFields(reply)));
+  Send(connection, Encode("priv", reply));
+}
+
+void Server::HandleLlvl(Connection& connection, const Message& /*message*/) {
+  Fields reply;
+  reply["SKILL_PTS"] = "0";
+  reply["SKILL_LVL"] = "0";
+  reply["SKILL"] = "";
+  Log("lobby -> llvl " + Printable(FormatFields(reply)));
+  Send(connection, Encode("llvl", reply));
+}
+
+void Server::HandleUatr(Connection& connection, const Message& /*message*/) {
+  Log("lobby -> uatr success");
+  Send(connection, Encode("uatr", std::string(1, '\0')));
+  SendWho(connection);
+}
+
+void Server::HandleRcat(Connection& connection, const Message& /*message*/) {
+  Fields reply;
+  reply["COUNT"] = "1";
+  reply["CAT0"] = "1,\"Main Categories\",0,50";
+  Log("lobby -> rcat " + Printable(FormatFields(reply)));
+  Send(connection, Encode("rcat", reply));
+
+  SendRoomUpdate(connection);
+}
+
+void Server::HandleRoom(Connection& connection, const Message& /*message*/) {
+  Fields reply;
+  reply["COUNT"] = "1";
+  reply["ROOM0"] = "1,LVL.1,\"Revenge Lobby\",,A,1,50";
+  Log("lobby -> room " + Printable(FormatFields(reply)));
+  Send(connection, Encode("room", reply));
+
+  SendRoomUpdate(connection);
+}
+
+void Server::HandleMove(Connection& connection, const Message& message) {
+  Fields fields = ParseFields(message.body);
+  std::string ident = fields["IDENT"];
+  if (ident.empty() || ident == "0") {
+    ident = "1";
+  }
+  connection.player.room_id = std::stoul(ident);
+
+  Fields reply;
+  reply["IDENT"] = ident;
+  reply["NAME"] = "LVL.1";
+  reply["COUNT"] = std::to_string(GetRoomPlayerCount(connection.player.room_id));
+  reply["FLAGS"] = "A";
+  reply["LIMIT"] = "50";
+  reply["DESC"] = "Burnout Revenge Lobby";
+  Log("lobby -> move " + Printable(FormatFields(reply)));
+  Send(connection, Encode("move", reply));
+
+  for (const auto& [gid, session] : games_) {
+    if (!session.started && session.room_id == connection.player.room_id) {
+      Send(connection, Encode("+gam", FormatGameInfo(session)));
+    }
+  }
+
+  SendWho(connection);
+}
+
+void Server::HandleGsea(Connection& connection, const Message& /*message*/) {
+  std::vector<GameSession> available;
+  for (const auto& [gid, session] : games_) {
+    if (!session.started && session.players.size() < session.maxsize) {
+      available.push_back(session);
+    }
+  }
+
+  Fields reply;
+  reply["COUNT"] = std::to_string(available.size());
+  Log("lobby -> gsea " + Printable(FormatFields(reply)));
+  Send(connection, Encode("gsea", reply));
+
+  for (const auto& session : available) {
+    Fields gam_info;
+    gam_info["IDENT"] = std::to_string(session.id);
+    gam_info["NAME"] = session.name;
+    gam_info["PARAMS"] = session.params;
+    gam_info["SYSFLAGS"] = session.sysflags;
+    gam_info["COUNT"] = std::to_string(session.players.size());
+    gam_info["MAXSIZE"] = std::to_string(session.maxsize);
+    Log("lobby -> +gam " + Printable(FormatFields(gam_info)));
+    Send(connection, Encode("+gam", gam_info));
+  }
+}
+
+void Server::HandleGcre(Connection& connection, const Message& message) {
+  Fields fields = ParseFields(message.body);
+  GameSession session;
+  session.id = next_game_id_++;
+  session.name = fields["NAME"].empty() ? connection.player.persona + "'s Game" : fields["NAME"];
+  session.host_persona = connection.player.persona;
+  session.params = fields["PARAMS"];
+  session.sysflags = fields["SYSFLAGS"].empty() ? "0" : fields["SYSFLAGS"];
+  session.maxsize = 6;
+  session.minsize = 2;
+  session.room_id = connection.player.room_id;
+  session.start_time = CurrentTimeString();
+  session.started = false;
+
+  connection.player.game_id = session.id;
+  connection.player.is_host = true;
+  connection.player.userflags = "1";
+  if (!fields["USERPARAMS"].empty()) {
+    connection.player.userparams = fields["USERPARAMS"];
+  }
+
+  session.players.push_back(connection.fd);
+  games_[session.id] = session;
+
+  Fields reply = FormatGameInfo(session);
+  Log("lobby -> gcre " + Printable(FormatFields(reply)));
+  Send(connection, Encode("gcre", reply));
+
+  BroadcastToRoom(session.room_id, Encode("+gam", reply), connection.fd);
+}
+
+void Server::HandleGjoi(Connection& connection, const Message& message) {
+  Fields fields = ParseFields(message.body);
+  std::string ident = fields["IDENT"];
+  uint32_t gid = ident.empty() ? 0 : std::stoul(ident);
+  auto it = games_.find(gid);
+  if (it == games_.end() || it->second.started || it->second.players.size() >= it->second.maxsize) {
+    Log("lobby -> gjoiugam (unknown or full game)");
+    Send(connection, Encode("gjoiugam", std::string(1, '\0')));
+    return;
+  }
+
+  GameSession& session = it->second;
+  connection.player.game_id = session.id;
+  connection.player.is_host = false;
+  connection.player.userflags = "0";
+  if (!fields["USERPARAMS"].empty()) {
+    connection.player.userparams = fields["USERPARAMS"];
+  }
+
+  session.players.push_back(connection.fd);
+
+  Fields reply = FormatGameInfo(session);
+  Log("lobby -> gjoi " + Printable(FormatFields(reply)));
+  Send(connection, Encode("gjoi", reply));
+
+  BroadcastToGame(session.id, Encode("+gam", reply), connection.fd);
+}
+
+void Server::HandleGget(Connection& connection, const Message& message) {
+  Fields fields = ParseFields(message.body);
+  std::string ident = fields["IDENT"];
+  uint32_t gid = ident.empty() ? 0 : std::stoul(ident);
+  auto it = games_.find(gid);
+  if (it != games_.end()) {
+    Fields reply = FormatGameInfo(it->second);
+    Log("lobby -> gget " + Printable(FormatFields(reply)));
+    Send(connection, Encode("gget", reply));
+  } else {
+    Send(connection, Encode("gget", std::string(1, '\0')));
+  }
+}
+
+void Server::HandleGset(Connection& connection, const Message& message) {
+  Fields fields = ParseFields(message.body);
+  if (fields.count("USERFLAGS")) {
+    connection.player.userflags = fields["USERFLAGS"];
+  }
+  if (fields.count("USERPARAMS")) {
+    connection.player.userparams = fields["USERPARAMS"];
+  }
+
+  uint32_t gid = connection.player.game_id;
+  auto it = games_.find(gid);
+  if (it != games_.end()) {
+    GameSession& session = it->second;
+    if (fields.count("PARAMS")) {
+      session.params = fields["PARAMS"];
+    }
+    if (fields.count("SYSFLAGS")) {
+      session.sysflags = fields["SYSFLAGS"];
+    }
+    Fields info = FormatGameInfo(session);
+    Log("lobby -> gset " + Printable(FormatFields(info)));
+    Send(connection, Encode("gset", info));
+
+    BroadcastToGame(session.id, Encode("+gam", info), connection.fd);
+    return;
+  }
+
+  Send(connection, Encode("gset", std::string(1, '\0')));
+}
+
+void Server::HandleGsta(Connection& connection, const Message& /*message*/) {
+  uint32_t gid = connection.player.game_id;
+  auto it = games_.find(gid);
+  if (it == games_.end()) {
+    Send(connection, Encode("gsta", std::string(1, '\0')));
+    return;
+  }
+
+  GameSession& session = it->second;
+  session.started = true;
+
+  Log("lobby -> gsta (game started)");
+  Send(connection, Encode("gsta", std::string(1, '\0')));
+
+  Fields info = FormatGameInfo(session);
+  Log("lobby -> +ses broadcast to all players");
+  BroadcastToGame(session.id, Encode("+ses", info), -1);
+}
+
+void Server::HandleGlea(Connection& connection, const Message& /*message*/) {
+  uint32_t gid = connection.player.game_id;
+  auto it = games_.find(gid);
+  if (it != games_.end()) {
+    GameSession& session = it->second;
+    session.players.erase(
+        std::remove(session.players.begin(), session.players.end(), connection.fd),
+        session.players.end());
+    if (session.players.empty() || connection.player.is_host) {
+      games_.erase(it);
+    } else {
+      Fields info = FormatGameInfo(session);
+      BroadcastToGame(session.id, Encode("+gam", info), -1);
+    }
+  }
+
+  connection.player.game_id = 0;
+  connection.player.is_host = false;
+  connection.player.userflags = "0";
+
+  Log("lobby -> glea");
+  Send(connection, Encode("glea", std::string(1, '\0')));
+}
+
+void Server::HandleMesg(Connection& connection, const Message& message) {
+  Fields fields = ParseFields(message.body);
+  Fields msg;
+  msg["FROM"] = connection.player.persona;
+  msg["TEXT"] = fields["TEXT"];
+  msg["TYPE"] = fields["TYPE"].empty() ? "0" : fields["TYPE"];
+  BroadcastToRoom(connection.player.room_id, Encode("+msg", msg), connection.fd);
+  Send(connection, Encode("mesg", std::string(1, '\0')));
+}
+
+Fields Server::FormatGameInfo(const GameSession& session) {
+  Fields info;
+  info["IDENT"] = std::to_string(session.id);
+  info["NAME"] = session.name;
+  info["HOST"] = session.host_persona;
+  info["PARAMS"] = session.params;
+  info["PLATPARAMS"] = "0";
+  info["ROOM"] = std::to_string(session.room_id);
+  info["CUSTFLAGS"] = "413082880";
+  info["SYSFLAGS"] = session.sysflags;
+  info["COUNT"] = std::to_string(session.players.size());
+  info["PRIV"] = "0";
+  info["MINSIZE"] = std::to_string(session.minsize);
+  info["MAXSIZE"] = std::to_string(session.maxsize);
+  info["NUMPART"] = "1";
+  info["SEED"] = "3";
+  info["WHEN"] = session.start_time.empty() ? "2006.02.10 00:00:00" : session.start_time;
+  info["AUTH"] = "";
+  info["SESS"] = "0";
+  info["EVID"] = "0";
+  info["EVGID"] = "0";
+
+  for (size_t i = 0; i < session.players.size(); ++i) {
+    SocketHandle pfd = session.players[i];
+    auto it = connections_.find(pfd);
+    if (it == connections_.end()) continue;
+    const Player& p = it->second->player;
+    std::string prefix = std::to_string(i);
+    info["OPID" + prefix] = std::to_string(p.id);
+    info["OPPO" + prefix] = p.persona;
+    std::string ip = p.ip.empty() ? "127.0.0.1" : p.ip;
+    info["ADDR" + prefix] = ip;
+    info["LADDR" + prefix] = ip;
+    info["MADDR" + prefix] = "";
+    info["OPPART" + prefix] = "0";
+    info["OPPARAM" + prefix] = p.userparams;
+    info["OPFLAG" + prefix] = p.userflags;
+    info["PRES" + prefix] = "0";
+    info["PARTSIZE" + prefix] = std::to_string(session.maxsize);
+  }
+  return info;
+}
+
+void Server::SendWho(Connection& connection) {
+  Fields who;
+  who["I"] = std::to_string(connection.player.id);
+  who["M"] = connection.player.account_name;
+  who["N"] = connection.player.persona;
+  who["F"] = "U";
+  who["P"] = "80";
+  who["S"] = ",,,,,,,,,";
+  who["X"] = "";
+  who["G"] = std::to_string(connection.player.game_id);
+  who["AT"] = "";
+  who["CL"] = "511";
+  who["LV"] = "1049601";
+  who["MD"] = "0";
+  who["R"] = "1";
+  who["US"] = "";
+  Log("lobby -> +who " + Printable(FormatFields(who)));
+  Send(connection, Encode("+who", who));
+}
+
+void Server::SendRoomUpdate(Connection& connection) {
+  Fields rom;
+  rom["I"] = "1";
+  rom["N"] = "LVL.1";
+  rom["DN"] = "Revenge Lobby";
+  rom["D"] = "Burnout Revenge Lobby";
+  rom["F"] = "A";
+  rom["T"] = std::to_string(GetRoomPlayerCount(1));
+  rom["L"] = "50";
+  Log("lobby -> +rom " + Printable(FormatFields(rom)));
+  Send(connection, Encode("+rom", rom));
+}
+
+void Server::BroadcastToRoom(uint32_t room_id, const std::vector<uint8_t>& bytes, SocketHandle except_fd) {
+  for (auto& [fd, conn] : connections_) {
+    if (fd != except_fd && conn->role == Role::kLobby && conn->player.room_id == room_id) {
+      Send(*conn, bytes);
+    }
+  }
+}
+
+void Server::BroadcastToGame(uint32_t game_id, const std::vector<uint8_t>& bytes, SocketHandle except_fd) {
+  auto it = games_.find(game_id);
+  if (it == games_.end()) return;
+  for (SocketHandle pfd : it->second.players) {
+    if (pfd != except_fd) {
+      auto cit = connections_.find(pfd);
+      if (cit != connections_.end()) {
+        Send(*cit->second, bytes);
+      }
+    }
+  }
+}
+
+uint32_t Server::GetRoomPlayerCount(uint32_t room_id) const {
+  uint32_t count = 0;
+  for (const auto& [fd, conn] : connections_) {
+    if (conn->role == Role::kLobby && conn->player.room_id == room_id) {
+      count++;
+    }
+  }
+  return count > 0 ? count : 1;
+}
+
+void Server::OnDisconnect(SocketHandle fd) {
+  auto it = connections_.find(fd);
+  if (it == connections_.end()) return;
+  Connection& conn = *it->second;
+  if (conn.player.game_id != 0) {
+    auto git = games_.find(conn.player.game_id);
+    if (git != games_.end()) {
+      GameSession& session = git->second;
+      session.players.erase(
+          std::remove(session.players.begin(), session.players.end(), fd),
+          session.players.end());
+      if (session.players.empty() || conn.player.is_host) {
+        games_.erase(git);
+      } else {
+        Fields info = FormatGameInfo(session);
+        BroadcastToGame(session.id, Encode("+gam", info), -1);
+      }
+    }
+  }
 }
 
 }  // namespace ealobby

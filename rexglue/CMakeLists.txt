@@ -190,6 +190,7 @@ if(WIN32)
 endif()
 add_executable(ealobby tools/ealobby/main.cpp)
 target_link_libraries(ealobby PRIVATE ealobby-core)
+target_link_libraries(burnout PRIVATE ealobby-core)
 
 # xdis: a development disassembler for the guest image (tools/xdis), built
 # only where capstone is installed. The game does not need it.
