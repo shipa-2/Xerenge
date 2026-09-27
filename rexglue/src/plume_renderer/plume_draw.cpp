@@ -1947,6 +1947,8 @@ void PlumeDrawContext::Shutdown() {
   {
     std::lock_guard lock(vfetch_mutex_);
     vfetch_by_shader_.clear();
+    real_locations_by_shader_.clear();
+    resolved_vfetch_by_shader_.clear();
   }
   if (vs_constants_ && vs_constants_mapped_) {
     vs_constants_->unmap();
@@ -2359,16 +2361,33 @@ void PlumeDrawContext::RegisterVsUcode(uint64_t shader_hash, const uint8_t* byte
   // The cache entry's `source` is the container's path, not the shader text;
   // what the text says was read into a table at build time
   // (shader_source_info.h).
+  auto resolved = std::make_unique<ResolvedShaderVfetch>();
+  resolved->passthrough_attrs = attrs;
+  int pos_index = -1;
+  for (size_t i = 0; i < attrs.size(); ++i) {
+    if (attrs[i].location == 0) {
+      pos_index = int(i);
+      break;
+    }
+  }
+  if (pos_index >= 0) {
+    resolved->passthrough_pos_fetch_const = int32_t(attrs[size_t(pos_index)].fetch_const);
+    resolved->passthrough_pos_float = attrs[size_t(pos_index)].location * 4;
+  }
+
+  resolved->real_attrs = attrs;
   if (const ShaderSourceInfo* info = FindShaderSourceInfo(shader_hash)) {
-    // Given the guest's index by XenosRecomp: it instances by hand.
     if (info->guest_index) {
       index_instanced_shaders_.insert(shader_hash);
+      resolved->is_index_instanced = true;
     }
     if (info->vertex_fetch) {
       vertex_fetch_shaders_.insert(shader_hash);
+      resolved->is_vertex_fetch = true;
     }
     if (info->position_scaling) {
       position_scaling_shaders_.insert(shader_hash);
+      resolved->is_position_scaling = true;
     }
     const std::vector<uint32_t>& consumed = info->consumed_locations;
     if (!consumed.empty()) {
@@ -2379,11 +2398,19 @@ void PlumeDrawContext::RegisterVsUcode(uint64_t shader_hash, const uint8_t* byte
       }
       REXLOG_INFO("plume: VS {:016X} consumes input location(s) {} in fetch order", shader_hash,
                   listed);
-      // Kept apart from attrs, which stay on this renderer's convention for
-      // the passthrough path; FillVertices applies these only when a draw is
-      // going to the title's own shaders.
       real_locations_by_shader_[shader_hash] = consumed;
+
+      for (size_t a = 0; a < resolved->real_attrs.size() && a < consumed.size(); ++a) {
+        resolved->real_attrs[a].location = consumed[a];
+      }
     }
+  }
+  if (pos_index >= 0) {
+    resolved->real_pos_fetch_const = int32_t(resolved->real_attrs[size_t(pos_index)].fetch_const);
+    resolved->real_pos_float = resolved->real_attrs[size_t(pos_index)].location * 4;
+  } else {
+    resolved->real_pos_fetch_const = resolved->passthrough_pos_fetch_const;
+    resolved->real_pos_float = resolved->passthrough_pos_float;
   }
   REXLOG_INFO("plume: VS {:016X} parsed {} vfetch attr(s)", shader_hash, attrs.size());
   for (size_t i = 0; i < attrs.size() && i < 4; ++i) {
@@ -2392,6 +2419,7 @@ void PlumeDrawContext::RegisterVsUcode(uint64_t shader_hash, const uint8_t* byte
                 a.stride_dwords, a.offset_dwords, a.format);
   }
   vfetch_by_shader_.emplace(shader_hash, std::move(attrs));
+  resolved_vfetch_by_shader_.emplace(shader_hash, std::move(resolved));
 }
 
 plume::RenderPrimitiveTopology PlumeDrawContext::MapTopology(uint32_t prim_type) const {
@@ -2945,11 +2973,8 @@ void PlumeDrawContext::UnpackVertices(const GuestDrawSnapshot& snap,
     }
   }
   // Hand-instanced shaders: see IsIndexInstancedShader.
-  bool index_instanced = false;
-  {
-    std::lock_guard lock(const_cast<std::mutex&>(vfetch_mutex_));
-    index_instanced = index_instanced_shaders_.count(snap.vs_hash) != 0;
-  }
+  const auto* vs_info = FindResolvedVfetch(snap.vs_hash);
+  const bool index_instanced = vs_info ? vs_info->is_index_instanced : false;
   uint32_t mesh_vertices = 0;
   if (index_instanced) {
     const float n = reinterpret_cast<const float*>(snap.vs_constants.data())[kNumVerticesRegister * 4];
@@ -2962,6 +2987,83 @@ void PlumeDrawContext::UnpackVertices(const GuestDrawSnapshot& snap,
                   snap.vs_hash, mesh_vertices, snap.num_indices);
     }
   }
+
+  // Pre-prepare invariant attribute parameters once for the entire draw:
+  struct PreparedAttr {
+    int32_t base_dwords = 0;
+    int32_t stride_dwords = 0;
+    uint32_t max_dwords = 0;
+    uint32_t fetch_address = 0;
+    rex::graphics::xenos::Endian endian = rex::graphics::xenos::Endian::kNone;
+    float exp_scale = 1.0f;
+    bool skip = false;
+    bool has_exp_adjust = false;
+    bool stream0 = false;
+  };
+
+  std::vector<PreparedAttr> prep_attrs(attrs.size());
+  for (size_t ai = 0; ai < attrs.size(); ++ai) {
+    const VfetchAttr& attr = attrs[ai];
+    auto& prep = prep_attrs[ai];
+    const auto fetch = FetchAt(snap, attr.fetch_const);
+    prep.fetch_address = fetch.address;
+    if (!from_d3d && fetch.type != FetchConstantType::kVertex &&
+        fetch.type != FetchConstantType::kInvalidVertex) {
+      prep.skip = true;
+      continue;
+    }
+    if (attr.location == 0) {
+      fetch_addr = from_d3d ? d3d_base_dwords : fetch.address;
+      fetch_type = uint32_t(fetch.type);
+    }
+    const bool fetch_valid = (fetch.type == FetchConstantType::kVertex ||
+                              fetch.type == FetchConstantType::kInvalidVertex) &&
+                             fetch.address != 0 && attr.stride_dwords != 0;
+    const bool index_instanced_secondary =
+        index_instanced && mesh_vertices != 0 && fetch_valid &&
+        int32_t(attr.stride_dwords) != d3d_stride_dwords;
+    const bool other_stream =
+        from_d3d && fetch_valid &&
+        (snap.d3d_index_buffer != 0 || index_instanced_secondary ||
+         (pos_fetch_const >= 0 && attr.fetch_const != uint32_t(pos_fetch_const)));
+    const uint32_t stream_index = 95u - attr.fetch_const;
+    const bool title_stream = from_d3d && stream_index < 4 &&
+                              snap.d3d_stream_address[stream_index] != 0 &&
+                              snap.d3d_stream_stride[stream_index] != 0;
+    const bool stream0 = from_d3d && !other_stream && !title_stream;
+    prep.stream0 = stream0;
+    prep.base_dwords = stream0 ? int32_t(d3d_base_dwords) : int32_t(fetch.address);
+    prep.stride_dwords = stream0 ? d3d_stride_dwords : int32_t(attr.stride_dwords);
+    if (title_stream) {
+      prep.base_dwords = int32_t(physical_of(snap.d3d_stream_address[stream_index]) >> 2);
+      prep.stride_dwords = int32_t(snap.d3d_stream_stride[stream_index] / 4);
+      if (fetch_valid && uint32_t(prep.base_dwords) != fetch.address) {
+        static std::mutex mm_mutex;
+        static std::set<uint64_t> mm_seen;
+        bool fresh = false;
+        {
+          std::lock_guard lock(mm_mutex);
+          fresh = mm_seen.size() < 24 &&
+                  mm_seen.insert(snap.vs_hash ^ (uint64_t(attr.fetch_const) << 56)).second;
+        }
+        if (fresh) {
+          REXLOG_WARN("plume: stream {} of vs={:016X}: title {:08X} (stride {}) vs fetch "
+                      "constant {:08X} (stride {} dwords)",
+                      stream_index, snap.vs_hash, uint32_t(prep.base_dwords) << 2,
+                      snap.d3d_stream_stride[stream_index], fetch.address << 2,
+                      attr.stride_dwords);
+        }
+      }
+    }
+    prep.max_dwords = std::min(4u, attr.stride_dwords);
+    prep.endian = stream0 || title_stream ||
+                          (other_stream && fetch.endian == rex::graphics::xenos::Endian::kNone)
+                      ? rex::graphics::xenos::Endian::k8in32
+                      : fetch.endian;
+    prep.has_exp_adjust = (attr.exp_adjust != 0);
+    prep.exp_scale = prep.has_exp_adjust ? std::ldexp(1.0f, attr.exp_adjust) : 1.0f;
+  }
+
   std::array<float, 64 * 4> regs;
   for (uint32_t vi = 0; vi < vertex_count; ++vi) {
     float* dst = vert(vi);
@@ -2999,119 +3101,35 @@ void PlumeDrawContext::UnpackVertices(const GuestDrawSnapshot& snap,
     dst[kGuestIndexLocation * 4] = float(source_vertex);
     uint32_t fetch_vertex =
         (index_instanced && mesh_vertices != 0) ? source_vertex % mesh_vertices : source_vertex;
-    // A small register file for the hand-instanced shaders. By their first
-    // fetch they have split the index: r0.x the mesh vertex, r0.y the
-    // instance. A fetch can take its index from a register an earlier fetch
-    // filled - the props read a remapping table out of one stream (into r0.z)
-    // and fetch their positions and coordinates by it.
-    // Cleared only for those shaders: zeroing a kilobyte for every vertex of
-    // every draw was most of what unpacking the garage cost.
     if (index_instanced && mesh_vertices != 0) {
       regs.fill(0.0f);
       regs[0] = float(fetch_vertex);
       regs[1] = float(source_vertex / mesh_vertices);
     }
-    for (const VfetchAttr& attr : attrs) {
-      const auto fetch = FetchAt(snap, attr.fetch_const);
+    for (size_t ai = 0; ai < attrs.size(); ++ai) {
+      const auto& prep = prep_attrs[ai];
+      if (prep.skip) {
+        continue;
+      }
+      const VfetchAttr& attr = attrs[ai];
       if (index_instanced && mesh_vertices != 0 && attr.src_reg < 64) {
         const float index = regs[attr.src_reg * 4 + attr.src_comp];
         fetch_vertex = index > 0.0f ? uint32_t(attr.index_rounded ? index + 0.5f : index) : 0u;
       }
-      if (!from_d3d && fetch.type != FetchConstantType::kVertex &&
-          fetch.type != FetchConstantType::kInvalidVertex) {
-        continue;
-      }
-      if (vi == 0 && attr.location == 0) {
-        fetch_addr = from_d3d ? d3d_base_dwords : fetch.address;
-        fetch_type = uint32_t(fetch.type);
-      }
-      // A second vertex stream. The car's meshes keep their positions in one
-      // buffer and normals and texture coordinates in another; reading every
-      // attribute out of stream 0 at its offset gave those garbage - the
-      // livery sampled at (0.35, 6e-32) and the body came out black. The
-      // device's own fetch constant for the attribute says where its stream
-      // is, as it does for the GPU.
-      // Told apart by the fetch constant the instruction names, not by its
-      // address: stream 0 is whichever the position is read through, and the
-      // buffer the call named is that one. (Comparing addresses sent the
-      // interface's inline BeginVertices data, whose device fetch constant is
-      // never updated, to a stale buffer.)
-      //
-      // An indexed draw goes further: every attribute through its own fetch
-      // constant, as the GPU reads them. Those are the device's, physical and
-      // with the stream's offset already in them - the buffer pointer the call
-      // named has neither, and is not even stream 0 for every shader (one of
-      // the race's reads its position through a separate stream).
-      const bool fetch_valid = (fetch.type == FetchConstantType::kVertex ||
-                                fetch.type == FetchConstantType::kInvalidVertex) &&
-                               fetch.address != 0 && attr.stride_dwords != 0;
-      // For hand-instanced shaders, a secondary fetch constant (e.g. fc94,
-      // the remapping-index table with stride 1 dword) has a different stride
-      // from the main D3D vertex buffer (stride 7 dwords). Feeding it through
-      // stream0 (stride 7) reads garbage and corrupts the register file that
-      // drives the position fetch. When the attr's stride disagrees with the
-      // D3D stream stride, trust the device's fetch constant instead.
-      const bool index_instanced_secondary =
-          index_instanced && mesh_vertices != 0 && fetch_valid &&
-          int32_t(attr.stride_dwords) != d3d_stride_dwords;
-      const bool other_stream =
-          from_d3d && fetch_valid &&
-          (snap.d3d_index_buffer != 0 || index_instanced_secondary ||
-           (pos_fetch_const >= 0 && attr.fetch_const != uint32_t(pos_fetch_const)));
-      // Best of all, the stream as the title set it: SetStreamSource's buffer,
-      // offset and stride, for the stream this fetch constant stands for.
-      const uint32_t stream_index = 95u - attr.fetch_const;
-      const bool title_stream = from_d3d && stream_index < 4 &&
-                                snap.d3d_stream_address[stream_index] != 0 &&
-                                snap.d3d_stream_stride[stream_index] != 0;
-      const bool stream0 = from_d3d && !other_stream && !title_stream;
-      int32_t base_dwords = stream0 ? int32_t(d3d_base_dwords) : int32_t(fetch.address);
-      int32_t stride_dwords = stream0 ? d3d_stride_dwords : int32_t(attr.stride_dwords);
-      if (title_stream) {
-        base_dwords = int32_t(physical_of(snap.d3d_stream_address[stream_index]) >> 2);
-        stride_dwords = int32_t(snap.d3d_stream_stride[stream_index] / 4);
-        // Where the title's stream and the device's fetch constant disagree.
-        if (vi == 0 && fetch_valid && uint32_t(base_dwords) != fetch.address) {
-          static std::mutex mm_mutex;
-          static std::set<uint64_t> mm_seen;
-          bool fresh = false;
-          {
-            std::lock_guard lock(mm_mutex);
-            fresh = mm_seen.size() < 24 &&
-                    mm_seen.insert(snap.vs_hash ^ (uint64_t(attr.fetch_const) << 56)).second;
-          }
-          if (fresh) {
-            REXLOG_WARN("plume: stream {} of vs={:016X}: title {:08X} (stride {}) vs fetch "
-                        "constant {:08X} (stride {} dwords)",
-                        stream_index, snap.vs_hash, uint32_t(base_dwords) << 2,
-                        snap.d3d_stream_stride[stream_index], fetch.address << 2,
-                        attr.stride_dwords);
-          }
-        }
-      }
       const int32_t dword_addr =
-          base_dwords + stride_dwords * int32_t(fetch_vertex) + attr.offset_dwords;
-      if (dword_addr < base_dwords) {
+          prep.base_dwords + prep.stride_dwords * int32_t(fetch_vertex) + attr.offset_dwords;
+      if (dword_addr < prep.base_dwords) {
         continue;
       }
       if (cache_eligible) {
-        const size_t ai = size_t(&attr - attrs.data());
         read_lo[ai] = std::min(read_lo[ai], uint32_t(dword_addr));
         read_hi[ai] = std::max(read_hi[ai], uint32_t(dword_addr));
       }
       uint32_t data[4] = {};
-      for (uint32_t w = 0; w < 4; ++w) {
+      for (uint32_t w = 0; w < prep.max_dwords; ++w) {
         const uint32_t phys = uint32_t(dword_addr + int32_t(w)) << 2;
         if (auto* host = memory->TranslatePhysical<uint32_t*>(phys)) {
-          // A Direct3D vertex buffer is always read 8-in-32 on this console.
-          // Its fetch constant is not in the snapshot - the texture slots are
-          // rebuilt from the bound textures and the rest cleared - so taking
-          // the byte order from there read every vertex back to front, and
-          // positions came out as denormals near zero.
-          data[w] = rex::graphics::xenos::GpuSwap(
-              *host, stream0 || title_stream || (other_stream && fetch.endian == rex::graphics::xenos::Endian::kNone)
-                         ? rex::graphics::xenos::Endian::k8in32
-                         : fetch.endian);
+          data[w] = rex::graphics::xenos::GpuSwap(*host, prep.endian);
         }
       }
       // What actually came out of the buffer for the first vertex of a scene
@@ -3128,7 +3146,7 @@ void PlumeDrawContext::UnpackVertices(const GuestDrawSnapshot& snap,
               "plume: scene vertex vs={:016X} raw={:08X} {:08X} {:08X} {:08X} -> "
               "({:.3f},{:.3f},{:.3f},{:.3f}) fmt={} endian={} at {:08X}+{}",
               snap.vs_hash, data[0], data[1], data[2], data[3], unpacked[0], unpacked[1],
-              unpacked[2], unpacked[3], uint32_t(attr.format), uint32_t(fetch.endian),
+              unpacked[2], unpacked[3], uint32_t(attr.format), uint32_t(prep.endian),
               snap.d3d_vertex_buffer, snap.d3d_vertex_stride);
         }
       }
@@ -3179,17 +3197,16 @@ void PlumeDrawContext::UnpackVertices(const GuestDrawSnapshot& snap,
                       "({:g},{:g},{:g}) stream0={} d3d={} vb={:08X}+{} fetch addr={:08X} "
                       "endian={} | layout:{}",
                       snap.vs_hash, attr.location, data[0], data[1], data[2], unpacked[0],
-                      unpacked[1], unpacked[2], stream0 ? 1 : 0, from_d3d ? 1 : 0,
-                      snap.d3d_vertex_buffer, snap.d3d_vertex_stride, fetch.address << 2,
-                      uint32_t(fetch.endian), all);
+                      unpacked[1], unpacked[2], prep.stream0 ? 1 : 0, from_d3d ? 1 : 0,
+                      snap.d3d_vertex_buffer, snap.d3d_vertex_stride, prep.fetch_address << 2,
+                      uint32_t(prep.endian), all);
         }
       }
-      if (attr.exp_adjust != 0) {
-        const float scale = std::ldexp(1.0f, attr.exp_adjust);
-        unpacked[0] *= scale;
-        unpacked[1] *= scale;
-        unpacked[2] *= scale;
-        unpacked[3] *= scale;
+      if (prep.has_exp_adjust) {
+        unpacked[0] *= prep.exp_scale;
+        unpacked[1] *= prep.exp_scale;
+        unpacked[2] *= prep.exp_scale;
+        unpacked[3] *= prep.exp_scale;
       }
       // Into the register file, through the destination swizzle: 0-3 pick a
       // fetched component, 4 and 5 write 0 and 1, anything else leaves it.
@@ -3260,40 +3277,15 @@ uint32_t PlumeDrawContext::FillVertices(const GuestDrawSnapshot& snap, memory::M
   }
   const uint32_t vertex_count = std::min(snap.num_indices, kDummyVertexCount - base_vertex);
 
-  std::vector<VfetchAttr> attrs;
-  // Where the position lands in each staged vertex, in floats. ParseVfetches
-  // puts POSITION at location 0; the title's own shaders may want it
-  // elsewhere, and the rectangle expansion has to measure the real corners.
-  uint32_t pos_float = 0;
-  int32_t pos_fetch_const = -1;
-  {
-    std::lock_guard lock(vfetch_mutex_);
-    if (auto it = vfetch_by_shader_.find(snap.vs_hash); it != vfetch_by_shader_.end()) {
-      attrs = it->second;
-    }
-    int pos_index = -1;
-    for (size_t i = 0; i < attrs.size(); ++i) {
-      if (attrs[i].location == 0) {
-        pos_index = int(i);
-        break;
-      }
-    }
-    // A draw going to the title's own shaders has to put its vertex data where
-    // those shaders declare their inputs. The passthrough path keeps this
-    // renderer's own numbering, which is what its shader was written against.
-    if (!passthrough) {
-      if (auto it = real_locations_by_shader_.find(snap.vs_hash);
-          it != real_locations_by_shader_.end()) {
-        for (size_t i = 0; i < attrs.size() && i < it->second.size(); ++i) {
-          attrs[i].location = it->second[i];
-        }
-      }
-    }
-    if (pos_index >= 0) {
-      pos_float = attrs[size_t(pos_index)].location * 4;
-      pos_fetch_const = int32_t(attrs[size_t(pos_index)].fetch_const);
-    }
-  }
+  static const std::vector<VfetchAttr> kEmptyAttrs;
+  const auto* vs_info = FindResolvedVfetch(snap.vs_hash);
+  const std::vector<VfetchAttr>& attrs =
+      vs_info ? (passthrough ? vs_info->passthrough_attrs : vs_info->real_attrs) : kEmptyAttrs;
+  const uint32_t pos_float =
+      vs_info ? (passthrough ? vs_info->passthrough_pos_float : vs_info->real_pos_float) : 0;
+  const int32_t pos_fetch_const =
+      vs_info ? (passthrough ? vs_info->passthrough_pos_fetch_const : vs_info->real_pos_fetch_const)
+              : -1;
 
   // The vertex cache: see cache_vb_ and CheckMeshCache.
   last_fill_cache_offset_ = ~0u;
@@ -3587,11 +3579,7 @@ uint32_t PlumeDrawContext::FillVertices(const GuestDrawSnapshot& snap, memory::M
                   vc[3], vc[4], vc[5], vc[6], vc[7], vc[8], vc[9], vc[10], vc[11]);
     }
   }
-  bool scales_itself = false;
-  {
-    std::lock_guard lock(vfetch_mutex_);
-    scales_itself = position_scaling_shaders_.count(snap.vs_hash) != 0;
-  }
+  const bool scales_itself = vs_info ? vs_info->is_position_scaling : false;
   if (!passthrough && !scales_itself && ReadsResolvedCopy(snap, true) &&
       snap.d3d_target_width != 0 && snap.d3d_target_height != 0 &&
       pos_float + 4 <= kFloatsPerVert) {
@@ -4112,11 +4100,8 @@ uint32_t PlumeDrawContext::UsedTextureSlots(const GuestDrawSnapshot& snap) const
     return ~0u;
   }
   uint32_t used = ps_slots & 0xFFFFu;
-  bool vertex_fetch = false;
-  {
-    std::lock_guard lock(const_cast<std::mutex&>(vfetch_mutex_));
-    vertex_fetch = vertex_fetch_shaders_.count(snap.vs_hash) != 0;
-  }
+  const auto* vs_info = FindResolvedVfetch(snap.vs_hash);
+  const bool vertex_fetch = vs_info ? vs_info->is_vertex_fetch : false;
   if (vertex_fetch) {
     const uint32_t vs_slots = ShaderSamplerSlots(snap.vs_hash);
     if (vs_slots == ~0u) {
@@ -4305,29 +4290,14 @@ void PlumeDrawContext::PresentResolvedFrame(plume::RenderCommandList* list,
       frame_resolved_dests_.count(front_buffer) != 0) {
     frame_output_dest_ = front_buffer;
   }
-  // When front_buffer did not match due to ring packet timing or desync,
-  // fall back to the frame's own front buffer resolve rather than presenting a cleared target.
-  if (frame_output_dest_ == 0 && !frame_resolved_dests_.empty()) {
-    if (last_front_buffer_resolve_ != 0 &&
-        frame_resolved_dests_.count(last_front_buffer_resolve_) != 0) {
-      frame_output_dest_ = last_front_buffer_resolve_;
-    } else if (frame_resolved_dests_.count(0x06C90000) != 0) {
-      frame_output_dest_ = 0x06C90000;
-    } else if (frame_resolved_dests_.count(0x068F8000) != 0) {
-      frame_output_dest_ = 0x068F8000;
-    }
-  }
-  // A frame that drew nothing and copied nothing, or only had tiny/secondary draws following
-  // a whole clear (thin frames, dropped frames, or spark effects on a cleared target without resolve).
-  // A console shows its front buffer unchanged then; shown from the target it was a black frame.
-  // Show the last picture again.
+  // A frame that drew nothing and copied nothing - a clear and a Swap, or tiny spark effects
+  // after a whole clear without resolve. A console shows its front buffer unchanged then;
+  // shown from the target it was a black frame. Show the last picture again.
   const bool empty_or_cleared_secondary =
       (frame_encoded_draws_ == 0) ||
-      (frame_resolved_dests_.empty() && frame_cleared_whole_);
+      (frame_resolved_dests_.empty() && frame_cleared_whole_ && frame_encoded_draws_ <= 8);
   if (frame_output_dest_ == 0 && empty_or_cleared_secondary) {
-    const uint32_t fallback = last_front_buffer_resolve_ != 0
-                                  ? last_front_buffer_resolve_
-                                  : (last_output_dest_ != 0 ? last_output_dest_ : front_buffer);
+    const uint32_t fallback = last_output_dest_ != 0 ? last_output_dest_ : front_buffer;
     if (fallback != 0 && resolved_targets_.find(fallback) != resolved_targets_.end()) {
       frame_output_dest_ = fallback;
       static std::atomic<uint32_t> repeated{0};
@@ -4999,11 +4969,8 @@ void PlumeDrawContext::FillSharedConstants(uint8_t* dst, const GuestDrawSnapshot
   // constants from 16 on. The sky's colour comes from a gradient sampled that
   // way; read through fetch constant 0 it took a sparkle texture instead, and
   // the sky went pink, white or blue with the view.
-  bool vertex_fetch = false;
-  {
-    std::lock_guard lock(const_cast<std::mutex&>(vfetch_mutex_));
-    vertex_fetch = vertex_fetch_shaders_.count(snap.vs_hash) != 0;
-  }
+  const auto* vs_info = FindResolvedVfetch(snap.vs_hash);
+  const bool vertex_fetch = vs_info ? vs_info->is_vertex_fetch : false;
   if (vertex_fetch) {
     const uint32_t vs_known = ShaderSamplerSlots(snap.vs_hash);
     const uint32_t vs_slots = vs_known == ~0u ? 0u : vs_known;
@@ -5153,20 +5120,12 @@ void PlumeDrawContext::EncodeDraws(plume::RenderCommandList* list,
     std::vector<MeshCheck> results(candidates.size());
     WorkerPool::Get().ParallelFor(candidates.size(), [&](size_t i) {
       const GuestDrawSnapshot& snap = *candidates[i];
-      std::vector<VfetchAttr> attrs;
-      {
-        std::lock_guard lock(vfetch_mutex_);
-        if (auto it = vfetch_by_shader_.find(snap.vs_hash); it != vfetch_by_shader_.end()) {
-          attrs = it->second;
-        }
-        if (auto it = real_locations_by_shader_.find(snap.vs_hash);
-            it != real_locations_by_shader_.end()) {
-          for (size_t a = 0; a < attrs.size() && a < it->second.size(); ++a) {
-            attrs[a].location = it->second[a];
-          }
-        }
+      const auto* vs_info = FindResolvedVfetch(snap.vs_hash);
+      if (vs_info && !vs_info->real_attrs.empty()) {
+        results[i] = CheckMeshCache(snap, vs_info->real_attrs, snap.num_indices, memory);
+      } else {
+        results[i] = MeshCheck{};
       }
-      results[i] = CheckMeshCache(snap, attrs, snap.num_indices, memory);
     });
     mesh_checks_.reserve(candidates.size());
     for (size_t i = 0; i < candidates.size(); ++i) {
@@ -5189,12 +5148,13 @@ void PlumeDrawContext::EncodeDraws(plume::RenderCommandList* list,
   static const bool unpack_ahead = std::getenv("XERENGE_NO_PARALLEL_UNPACK") == nullptr;
   if (unpack_ahead && memory) {
     struct Job {
-      const GuestDrawSnapshot* snap;
-      std::vector<VfetchAttr> attrs;
+      const GuestDrawSnapshot* snap = nullptr;
+      const std::vector<VfetchAttr>* attrs = nullptr;
       int32_t pos_fetch_const = -1;
       PreUnpacked result;
     };
     std::vector<Job> jobs;
+    jobs.reserve(draws.size());
     size_t total = 0;
     for (const GuestDrawSnapshot& snap : draws) {
       if (!snap.valid || snap.is_clear || snap.is_resolve || snap.d3d_vertex_buffer == 0 ||
@@ -5205,29 +5165,14 @@ void PlumeDrawContext::EncodeDraws(plume::RenderCommandList* list,
       if (auto check = mesh_checks_.find(&snap); check != mesh_checks_.end() && check->second.hit) {
         continue;
       }
-      Job job;
-      job.snap = &snap;
-      {
-        std::lock_guard lock(vfetch_mutex_);
-        if (auto it = vfetch_by_shader_.find(snap.vs_hash); it != vfetch_by_shader_.end()) {
-          job.attrs = it->second;
-        }
-        for (size_t a = 0; a < job.attrs.size(); ++a) {
-          if (job.attrs[a].location == 0) {
-            job.pos_fetch_const = int32_t(job.attrs[a].fetch_const);
-            break;
-          }
-        }
-        if (auto it = real_locations_by_shader_.find(snap.vs_hash);
-            it != real_locations_by_shader_.end()) {
-          for (size_t a = 0; a < job.attrs.size() && a < it->second.size(); ++a) {
-            job.attrs[a].location = it->second[a];
-          }
-        }
-      }
-      if (job.attrs.empty()) {
+      const auto* vs_info = FindResolvedVfetch(snap.vs_hash);
+      if (!vs_info || vs_info->real_attrs.empty()) {
         continue;
       }
+      Job job;
+      job.snap = &snap;
+      job.attrs = &vs_info->real_attrs;
+      job.pos_fetch_const = vs_info->real_pos_fetch_const;
       job.result.offset = total;
       job.result.count = snap.num_indices;
       total += size_t(snap.num_indices) * kFloatsPerVert;
@@ -5242,9 +5187,9 @@ void PlumeDrawContext::EncodeDraws(plume::RenderCommandList* list,
         Job& job = jobs[i];
         float* out = pre_arena_.data() + job.result.offset;
         std::memset(out, 0, size_t(job.result.count) * kVertexStrideBytes);
-        job.result.read_lo.assign(job.attrs.size(), ~0u);
-        job.result.read_hi.assign(job.attrs.size(), 0u);
-        UnpackVertices(*job.snap, job.attrs, job.pos_fetch_const, job.result.count, memory, out,
+        job.result.read_lo.assign(job.attrs->size(), ~0u);
+        job.result.read_hi.assign(job.attrs->size(), 0u);
+        UnpackVertices(*job.snap, *job.attrs, job.pos_fetch_const, job.result.count, memory, out,
                        job.result.read_lo, job.result.read_hi, job.result.fetched,
                        job.result.fetch_addr, job.result.fetch_type);
       });
@@ -5271,14 +5216,6 @@ void PlumeDrawContext::EncodeDraws(plume::RenderCommandList* list,
       last_video = i;
     }
   }
-  auto attrs_for = [&](uint64_t vs_hash) {
-    std::vector<VfetchAttr> attrs;
-    std::lock_guard lock(vfetch_mutex_);
-    if (auto it = vfetch_by_shader_.find(vs_hash); it != vfetch_by_shader_.end()) {
-      attrs = it->second;
-    }
-    return attrs;
-  };
   struct BoundUiTex {
     uint64_t key = 0;
     uint32_t base = 0;
@@ -5943,22 +5880,16 @@ void PlumeDrawContext::EncodeDraws(plume::RenderCommandList* list,
     }
   }
   if (last_resolve_dest_ != 0 && drawn_since_copy) {
-    // If the frame cleared the target after resolve, draw_target was wiped to black.
-    // Whatever is drawn after that clear (sparks, collision flash, debris) cannot
-    // restore the wiped scene. Presenting draw_target directly would result in a black screen
-    // with floating sparks. We must always present the resolved front buffer.
+    // If the frame cleared the target after resolve and drew ONLY tiny secondary effects
+    // (sparks, collision flash, debris <= 8 draws), draw_target cannot restore the scene.
+    // In that specific case, revert to the last resolved front buffer.
     const bool only_secondary =
-        frame_cleared_after_resolve_
-            ? true
-            : (frame_draws_after_resolve_ <= 8 && frame_indices_after_resolve_ <= 128);
-    if (only_secondary) {
+        frame_draws_after_resolve_ <= 8 && frame_indices_after_resolve_ <= 128;
+    if (only_secondary && frame_cleared_after_resolve_) {
       drawn_since_copy = false;
       frame_output_dest_ =
           last_front_buffer_resolve_ != 0 ? last_front_buffer_resolve_ : last_resolve_dest_;
     }
-  }
-  if (!drawn_since_copy && last_front_buffer_resolve_ != 0) {
-    frame_output_dest_ = last_front_buffer_resolve_;
   }
   if (drawn_since_copy) {
     frame_output_dest_ = 0;
