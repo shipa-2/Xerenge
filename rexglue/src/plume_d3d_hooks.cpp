@@ -1157,10 +1157,16 @@ REX_HOOK_RAW(D3DDevice_DrawIndexedVertices) {
                 words += fmt::format(" {:08X}", w ? static_cast<uint32_t>(*w) : 0u);
               }
               if ((texture & 0xF0000000u) == 0xE0000000u) {
+                // A physical address, so read as one: taken as a virtual
+                // address it lands where nothing is mapped on Windows, and
+                // the title faulted here on its first 3D frame.
                 const uint32_t windowed = (texture & 0x1FFFFFFFu) + 0x1000u;
+                auto* memory = REX_KERNEL_MEMORY();
                 words += " |";
                 for (uint32_t i = 0; i < 10; ++i) {
-                  const auto* w = GuestPtr<const rex::be_u32>(windowed + i * 4);
+                  const auto* w =
+                      memory ? memory->TranslatePhysical<const rex::be_u32*>(windowed + i * 4)
+                             : nullptr;
                   words += fmt::format(" {:08X}", w ? static_cast<uint32_t>(*w) : 0u);
                 }
               }
