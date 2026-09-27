@@ -1035,6 +1035,7 @@ REX_HOOK_RAW(D3DDevice_ClearF) {
     std::lock_guard lock(g_state_mutex);
     target = g_state.render_target;
   }
+  const bool is_main_target = (SurfaceWidth(target) >= 1280);
   auto* graphics = DrawingIntoFrame(target) ? ActiveGraphicsSystem() : nullptr;
   if (graphics && RenderTargetsFromDirect3D()) {
     // ClearF(device, flags, count, rects, const D3DVECTOR4* color, z, stencil)
@@ -1045,7 +1046,10 @@ REX_HOOK_RAW(D3DDevice_ClearF) {
         std::memcpy(&color[i], &bits, 4);
       }
     }
-    graphics->NoteGuestClearColor(ctx.r4.u32, color, ctx.r5.u32 == 0,
+    const bool whole_target = (ctx.r5.u32 == 0) && is_main_target;
+    // An offscreen sub-target must not wipe the frame's depth buffer either.
+    const uint32_t flags = is_main_target ? ctx.r4.u32 : (ctx.r4.u32 & ~0x10u);
+    graphics->NoteGuestClearColor(flags, color, whole_target,
                                   static_cast<float>(ctx.f1.f64));
   } else if (graphics) {
     graphics->NoteGuestClear(ctx.r4.u32, static_cast<float>(ctx.f1.f64), ctx.r8.u32);
