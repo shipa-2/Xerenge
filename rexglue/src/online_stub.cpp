@@ -57,6 +57,9 @@ extern "C" void __imp__sub_822037C0(PPCContext& __restrict, uint8_t*);
 extern "C" void __imp__sub_8240A8F0(PPCContext& __restrict, uint8_t*);
 extern "C" void __imp__sub_82408DF8(PPCContext& __restrict, uint8_t*);
 extern "C" void __imp__sub_82370AA0(PPCContext& __restrict, uint8_t*);
+extern "C" void __imp__sub_8240F650(PPCContext& __restrict, uint8_t*);
+extern "C" void __imp__sub_8240EAD8(PPCContext& __restrict, uint8_t*);
+extern "C" void __imp__sub_824095D8(PPCContext& __restrict, uint8_t*);
 
 namespace {
 
@@ -462,4 +465,47 @@ REX_HOOK_RAW(sub_82370AA0) {
     REXLOG_INFO("--online: lobby connect callback, status {}", int32_t(ctx.r5.u32));
   }
   __imp__sub_82370AA0(ctx, base);
+}
+
+// LobbyApiUpdate(ref): receives and dispatches the lobby's messages, then
+// raises event 5 (an idle tick) to its listeners - the login steps among
+// them. Logged when the connection's state (ref+12) changes, with how many
+// updates ran before it.
+REX_HOOK_RAW(sub_8240F650) {
+  if (Online() && !Faking()) {
+    const uint32_t ref = ctx.r3.u32;
+    static uint32_t last_state = ~0u;
+    static uint64_t calls = 0;
+    ++calls;
+    const uint32_t state = LoadU32(base, ref + 12);
+    if (state != last_state) {
+      last_state = state;
+      REXLOG_INFO("--online: LobbyApiUpdate #{}: connection '{}'", calls, FourCC(state));
+    }
+  }
+  __imp__sub_8240F650(ctx, base);
+}
+
+// The reply to the lobby's 'news NAME=7' request (ref, msg): keeps the body as
+// the configuration when the reply's command is 'new7', then raises event 3
+// ('conn') - the lobby counts as connected from here.
+REX_HOOK_RAW(sub_8240EAD8) {
+  if (Online()) {
+    const uint32_t msg = ctx.r4.u32;
+    REXLOG_INFO("--online: lobby configuration reply, command '{}'",
+                msg ? FourCC(LoadU32(base, msg + 12)) : std::string("-"));
+  }
+  __imp__sub_8240EAD8(ctx, base);
+}
+
+// The login's listener for event 3 (connection events): 'conn' should move
+// the connect step on.
+REX_HOOK_RAW(sub_824095D8) {
+  if (Online()) {
+    const uint32_t event = ctx.r4.u32;
+    REXLOG_INFO("--online: lobby connection event {} '{}'",
+                event ? int32_t(LoadU32(base, event + 4)) : -1,
+                event ? FourCC(LoadU32(base, event + 8)) : std::string("-"));
+  }
+  __imp__sub_824095D8(ctx, base);
 }
