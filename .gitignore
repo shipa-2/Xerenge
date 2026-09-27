@@ -53,3 +53,7 @@ rexglue/tools/rehost_runtime_shader
 rexglue/tools/wrap_runtime_pixel_shader
 rexglue/tools/wrap_runtime_vertex_shader
 rexglue/tools/make_runtime_shader_recipe
+# Claw Code local artifacts
+.claw/settings.local.json
+.claw/sessions/
+.clawhip/
