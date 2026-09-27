@@ -200,15 +200,19 @@ const ShaderMicrocodeEntry* PlumeShaderCache::FindByMicrocode(uint64_t microcode
             FindMicrocodeIn(g_shaderMicrocodeEntries, g_shaderMicrocodeEntryCount, hash)) {
       return it;
     }
-    if (ExtraAvailable()) {
-      if (const ShaderMicrocodeEntry* it = FindMicrocodeIn(
-              g_shaderMicrocodeEntriesExtra, g_shaderMicrocodeEntryCountExtra, hash)) {
-        return it;
-      }
-    }
+    // The runtime cache (bootstrap slot) before the extra one: it is rebuilt
+    // from the disc with its HLSL kept, so its shaders are in the source-info
+    // table. The extra cache's hand-wrapped ones are not - the interface panel
+    // VS among them lost its position scaling and was converted twice.
     if (BootstrapAvailable()) {
       if (const ShaderMicrocodeEntry* it = FindMicrocodeIn(
               g_shaderMicrocodeEntriesBootstrap, g_shaderMicrocodeEntryCountBootstrap, hash)) {
+        return it;
+      }
+    }
+    if (ExtraAvailable()) {
+      if (const ShaderMicrocodeEntry* it = FindMicrocodeIn(
+              g_shaderMicrocodeEntriesExtra, g_shaderMicrocodeEntryCountExtra, hash)) {
         return it;
       }
     }
