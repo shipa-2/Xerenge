@@ -67,7 +67,9 @@ bool Online() {
   return REXCVAR_GET(online);
 }
 
-// The stand-ins for EA's servers; the Voip guards below hold regardless.
+// The stand-ins for EA's lobby server; the Voip guards below hold regardless.
+// Locker (rivals, clips) and the news/terms downloads are skipped with any
+// --online: no server of ours provides them.
 bool Faking() {
   return REXCVAR_GET(online) && REXCVAR_GET(online_fake_lobby);
 }
@@ -189,7 +191,7 @@ REX_HOOK_RAW(sub_82229FA8) {
 // live in EA's Locker storage, on the same servers. Nothing is fetched; the
 // table stays empty.
 REX_HOOK_RAW(sub_8222FB00) {
-  if (Faking()) {
+  if (Online()) {
     REXLOG_INFO("--online: Revenge rivals table not downloaded (no Locker server); left empty");
     return;
   }
@@ -202,7 +204,7 @@ REX_HOOK_RAW(sub_8222FB00) {
 // state 3 after it returns, over whatever the callback set.)
 REX_HOOK_RAW(sub_82230B70) {
   const uint32_t self = ctx.r3.u32;
-  if (Faking() && LoadU32(base, self) == 3) {
+  if (Online() && LoadU32(base, self) == 3) {
     REXLOG_INFO("--online: rivals download reported finished");
     ctx.r3.u64 = 1;
     ctx.r4.u64 = self;
@@ -216,7 +218,7 @@ REX_HOOK_RAW(sub_82230B70) {
 // queued by RivalsDownloadedCallback with ReplayManagerOnLoginCallback, which
 // only sets the post-login manager (r6) to state 5. Not queued; state 5 set.
 REX_HOOK_RAW(sub_8211F448) {
-  if (Faking()) {
+  if (Online()) {
     REXLOG_INFO("--online: replay manager login skipped (no Locker server)");
     const uint32_t value = __builtin_bswap32(5u);
     std::memcpy(base + ctx.r6.u32, &value, sizeof(value));
@@ -231,7 +233,7 @@ REX_HOOK_RAW(sub_8211F448) {
 // faults without one). There is no news: nothing is fetched, and
 // UpdateNewsTos stays idle.
 REX_HOOK_RAW(sub_821E9638) {
-  if (Faking()) {
+  if (Online()) {
     static bool logged = false;
     if (!logged) {
       logged = true;
@@ -270,7 +272,7 @@ REX_HOOK_RAW(sub_82224DD0) {
 // undone, the download state points at an HTTP transfer that was never
 // created, and ProtoHttpUpdate faults on it. No terms either.
 REX_HOOK_RAW(sub_821E95A8) {
-  if (Faking()) {
+  if (Online()) {
     static bool logged = false;
     if (!logged) {
       logged = true;
@@ -487,12 +489,12 @@ REX_HOOK_RAW(sub_8240F650) {
 }
 
 // The reply to the lobby's 'news NAME=7' request (ref, msg): keeps the body as
-// the configuration when the reply's command is 'new7', then raises event 3
+// the configuration when the reply's header code is 'new7', then raises event 3
 // ('conn') - the lobby counts as connected from here.
 REX_HOOK_RAW(sub_8240EAD8) {
   if (Online()) {
     const uint32_t msg = ctx.r4.u32;
-    REXLOG_INFO("--online: lobby configuration reply, command '{}'",
+    REXLOG_INFO("--online: lobby configuration reply, code '{}'",
                 msg ? FourCC(LoadU32(base, msg + 12)) : std::string("-"));
   }
   __imp__sub_8240EAD8(ctx, base);

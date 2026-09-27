@@ -42,8 +42,9 @@
 #   ./run.sh --real-lobby
 #                       --online, but the title talks to a lobby server
 #                       (tools/ealobby) instead of being answered from inside.
-#                       With no --lobby-server it looks for one on the LAN
-#                       (UDP 31859) and hosts one itself when there is none.
+#                       With no --lobby-server every copy starts a lobby of its
+#                       own and announces it on the LAN (UDP 31859); all of
+#                       them use the one started first.
 #   ./run.sh --lobby-server=HOST
 #                       --real-lobby against a server of your own (tools/ealobby).
 #   ./run.sh --online-address=IP

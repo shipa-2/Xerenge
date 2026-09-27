@@ -6,6 +6,7 @@
 
 #include <rex/rex_app.h>
 
+#include "online_lobby.h"
 #include "plume_d3d.h"
 
 class BurnoutApp : public rex::ReXApp {
@@ -18,7 +19,12 @@ class BurnoutApp : public rex::ReXApp {
         PPCImageConfig));
   }
 
-  void OnPostSetup() override { xerenge::plume_d3d::InstallPlumeRuntimeHooks(); }
+  void OnPostSetup() override {
+    xerenge::plume_d3d::InstallPlumeRuntimeHooks();
+    // --online: this copy's lobby is up (and heard on the LAN) from the start,
+    // not only once its own player signs in.
+    xerenge::online::StartLobbyNetwork();
+  }
   // void OnCreateDialogs(rex::ui::ImGuiDrawer* drawer) override {}
   // std::unique_ptr<rex::ui::ImGuiDialog> CreateAchievementsOverlay() override;
   // std::unique_ptr<rex::ui::AchievementNotificationDialog>

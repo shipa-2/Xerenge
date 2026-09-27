@@ -325,6 +325,16 @@ void Server::Run() {
     for (SocketHandle fd : closed) {
       connections_.erase(fd);
     }
+    // DirtySock drops a lobby connection it has heard nothing on for 60 s
+    // (LobbyApi ref+0x34, renewed by every message). EA's server kept it
+    // alive with '~png', which the client answers in kind.
+    const auto now = std::chrono::steady_clock::now();
+    for (auto& [fd, connection] : connections_) {
+      if (connection->role == Role::kLobby && connection->id != 0 &&
+          now - connection->last_sent >= std::chrono::seconds(20)) {
+        Send(*connection, Encode("~png", Fields{{"REF", std::to_string(next_ping_++)}}));
+      }
+    }
   }
 }
 
@@ -402,11 +412,17 @@ void Server::Flush(Connection& connection) {
 }
 
 void Server::Send(Connection& connection, const std::vector<uint8_t>& bytes) {
+  connection.last_sent = std::chrono::steady_clock::now();
   connection.out.insert(connection.out.end(), bytes.begin(), bytes.end());
   Flush(connection);
 }
 
 void Server::Handle(Connection& connection, const Message& message) {
+  if (message.command == "~png") {
+    // The answer to our keepalive (or the client's own): nothing to say back,
+    // and every 20 s is too often to log.
+    return;
+  }
   const char* who = connection.role == Role::kDirectory ? "directory" : "lobby";
   Log(std::string(who) + " <- " + Printable(message.command) + " [" + Printable(message.code) +
       "] " + Printable(message.body));
@@ -438,8 +454,20 @@ void Server::HandleDirectory(Connection& connection, const Message& message) {
 }
 
 void Server::HandleLobby(Connection& connection, const Message& message) {
+  // The client as its peers see it: what it said in 'addr', else where its
+  // connection comes from.
+  const auto PeerAddress = [](const Connection& c) {
+    return !c.address.empty() ? c.address : c.peer.substr(0, c.peer.find(':'));
+  };
   if (message.command == "addr") {
-    // The client's own address and port, as it sees them.
+    // The client's own address and port, as it sees them. Kept: it is the
+    // address its peers reach it at, which the connection's own source (on
+    // one machine, 127.0.0.1) is not.
+    const Fields asked = ParseFields(message.body);
+    const auto addr = asked.find("ADDR");
+    if (addr != asked.end() && !addr->second.empty()) {
+      connection.address = addr->second;
+    }
     Send(connection, Encode("addr", std::string(1, '\0')));
     return;
   }
@@ -463,8 +491,16 @@ void Server::HandleLobby(Connection& connection, const Message& message) {
     reply["TOSAC_URL"] = "";
     reply["NEWS_URL"] = "";
     reply["NEWS_DATE"] = "2006.2.10-0:00:00";
-    Log("lobby -> news " + Printable(FormatFields(reply)));
-    Send(connection, Encode("news", reply));
+    // The client files the reply by its header code, 'new' and the NAME asked
+    // for (sub_8240EAD8 checks for 'new7'); without it the configuration is
+    // dropped and the login waits at the connect step for good.
+    const Fields asked = ParseFields(message.body);
+    const auto name = asked.find("NAME");
+    const std::string code =
+        "new" + (name != asked.end() && !name->second.empty() ? name->second.substr(0, 1)
+                                                              : std::string("7"));
+    Log("lobby -> news/" + code + " " + Printable(FormatFields(reply)));
+    Send(connection, Encode("news", reply, code));
     return;
   }
 
@@ -515,7 +551,7 @@ void Server::HandleLobby(Connection& connection, const Message& message) {
     reply["GEND"] = "M";
     reply["MAIL"] = "player@xerenge.local";
     reply["LAST"] = "2006.2.10-0:00:00";
-    reply["ADDR"] = connection.peer.substr(0, connection.peer.find(':'));
+    reply["ADDR"] = PeerAddress(connection);
     reply_with(reply);
     return;
   }
@@ -530,7 +566,52 @@ void Server::HandleLobby(Connection& connection, const Message& message) {
     reply["LKEY"] = RandomHex(16);
     reply["LAST"] = "2006.2.10-0:00:00";
     reply["PLAST"] = "2006.2.10-0:00:00";
-    reply["ADDR"] = connection.peer.substr(0, connection.peer.find(':'));
+    reply["ADDR"] = PeerAddress(connection);
+    reply_with(reply);
+
+    // '+who': the user's own record, which the client files as 'self'
+    // (handler 0x8241C4C8, LobbyApiExtractUserRecord). Until it arrives the
+    // login's last request stays in flight - CGtLobbyDirtySock's rejoin
+    // step (0x823719B8) waits for self's I, then reads G, the game the user
+    // was in (0: none) - and the lobby reports itself busy for good.
+    if (connection.id == 0) {
+      connection.id = next_user_++;
+    }
+    Fields who;
+    who["I"] = std::to_string(connection.id);
+    who["N"] = name;
+    who["M"] = name;
+    who["F"] = "0";
+    who["A"] = PeerAddress(connection);
+    who["LA"] = PeerAddress(connection);
+    who["P"] = "0";
+    who["S"] = "";
+    who["X"] = "";
+    who["G"] = "0";
+    who["AT"] = "";
+    who["CL"] = "0";
+    who["LV"] = "0";
+    who["MD"] = "0";
+    who["HW"] = "0";
+    who["RP"] = "0";
+    Log("lobby -> +who " + Printable(FormatFields(who)));
+    Send(connection, Encode("+who", who));
+    return;
+  }
+  if (message.command == "cate") {
+    // The ranking categories (DirtySock's LobbyRank, reply parsed at
+    // 0x824066D0). CC, IC and VC (each defaulting to 1) size its tables;
+    // then R, comma separated: per category "name,indices", per index
+    // "name,variations", per variation "name,n,columns" and that many column
+    // values. The category's and the index's counts drive the parser's loop
+    // (0 underflows it). Only once R has been read to the end is the fetch
+    // reported done - short of that it stays in flight and the lobby busy
+    // for good. One empty ranking table.
+    Fields reply;
+    reply["CC"] = "1";
+    reply["IC"] = "1";
+    reply["VC"] = "1";
+    reply["R"] = "RANKED,1,ALL,1,DEFAULT,0,0";
     reply_with(reply);
     return;
   }
@@ -539,7 +620,7 @@ void Server::HandleLobby(Connection& connection, const Message& message) {
     // connected to it.
     Fields reply = asked;
     reply["NAME"] = field("PERS", field("NAME", connection.user));
-    reply["ADDR"] = connection.peer.substr(0, connection.peer.find(':'));
+    reply["ADDR"] = PeerAddress(connection);
     reply_with(reply);
     return;
   }

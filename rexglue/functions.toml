@@ -65,3 +65,8 @@
 0x82382798 = { name = "D3D_BlockOnFence" }
 0x82382E40 = { name = "D3D_KickOff" }
 0x82382AB8 = { name = "D3D_MakeSpace" }
+
+# Reached through a function pointer once the lobby login's 'pers' reply is in:
+# a four-instruction guard (a zero flag byte tail-branches to 0x8258BAA8, else
+# E_INVALIDARG through 0x8258BB40) that the analyser folded into nothing.
+0x8258BB30 = { size = 0x10 }

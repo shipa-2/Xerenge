@@ -11,6 +11,7 @@
 #pragma once
 
 #include <atomic>
+#include <chrono>
 #include <cstdint>
 #include <functional>
 #include <map>
@@ -56,6 +57,10 @@ class Server {
     std::string peer;
     std::string local_address;  // the address the client reached us at
     std::string user;           // the persona it logged in as, once it has
+    std::string address;        // the address the client gives for itself (addr)
+    uint32_t id = 0;            // its user id in this lobby, from the login on
+    // When it was last sent anything: a quiet lobby connection is pinged.
+    std::chrono::steady_clock::time_point last_sent = std::chrono::steady_clock::now();
     std::vector<uint8_t> in;
     std::vector<uint8_t> out;
   };
@@ -82,6 +87,8 @@ class Server {
   std::thread thread_;
   std::atomic<bool> running_{false};
   uint32_t next_session_ = 100000;
+  uint32_t next_user_ = 1;
+  uint32_t next_ping_ = 1;
 };
 
 }  // namespace ealobby
