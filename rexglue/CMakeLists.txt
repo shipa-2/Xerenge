@@ -94,6 +94,11 @@ set(REXGPU_PLUME_SOURCES
     src/plume_renderer/shader_source_info.cpp
     "${XENON_RECOMP_ROOT}/thirdparty/smol-v/source/smolv.cpp"
 )
+if(WIN32)
+    # A Windows DLL can't leave rex_frame_clock_provider unresolved at link
+    # time the way a POSIX shared object can; see frame_clock_provider.h.
+    list(APPEND REXGPU_PLUME_SOURCES src/plume_renderer/frame_clock_provider_win.cpp)
+endif()
 
 # What the renderer needs from each translated shader's HLSL, read at build
 # time into a table (shader_source_info.h), so the sources are not shipped.

@@ -91,6 +91,8 @@ class PlumeGraphicsSystem final : public system::IGraphicsSystem {
   void RequestVideoCapture(const GuestDrawSnapshot& snap);
   void StartVideoWorker();
   void StopVideoWorker();
+  void StartPresentWorker();
+  void StopPresentWorker();
   void StartVsyncWorker();
   void StopVsyncWorker();
   void MarkVblank();
@@ -185,10 +187,9 @@ class PlumeGraphicsSystem final : public system::IGraphicsSystem {
   // earliest - which is why rank badges and their labels went missing while
   // the banner, drawn last, survived. Sized with headroom; an overflow now
   // warns rather than quietly costing UI.
-  // Scene frames run several hundred draws past what menus ever did - car
-  // select lost 147 of them here - so this is sized for geometry, not text.
-  static constexpr uint32_t kDrawRingSize = 2048;
-  std::array<GuestDrawSnapshot, kDrawRingSize> draw_ring_{};
+  // Scene frames with crashes/particles can exceed 2500 draws, so size with plenty of headroom.
+  static constexpr uint32_t kDrawRingSize = 16384;
+  std::vector<GuestDrawSnapshot> draw_ring_;
   uint32_t draw_ring_next_ = 0;
   uint32_t draw_ring_count_ = 0;
 
@@ -316,6 +317,13 @@ class PlumeGraphicsSystem final : public system::IGraphicsSystem {
   GuestDrawSnapshot video_request_;
   bool video_request_pending_ = false;
   std::atomic<bool> video_worker_running_{false};
+  std::thread present_worker_;
+  std::mutex present_request_mutex_;
+  std::condition_variable present_request_cv_;
+  bool present_request_pending_ = false;
+  uint32_t present_request_width_ = 0;
+  uint32_t present_request_height_ = 0;
+  std::atomic<bool> present_worker_running_{false};
   uint32_t last_secondary_cursor_ = 0;
   uint32_t secondary_lap_ = 0;
   bool secondary_cursor_seen_ = false;

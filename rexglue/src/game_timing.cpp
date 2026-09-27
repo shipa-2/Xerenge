@@ -38,6 +38,8 @@
 #include <rex/logging.h>
 #include <rex/ppc.h>
 
+#include "frame_clock_provider.h"
+
 namespace {
 // What the timer returned last (the steps the coming frame runs), and the one
 // before (the steps the current frame has run). The timer is called before
@@ -219,7 +221,7 @@ PER_FRAME_HOOK(sub_822AE800)  // CB4SoundManager::Update
 // For the renderer (plume reads rex_frame_clock_provider): where the drawn state is
 // in logic steps and where the wall clock is, so frames drawn between two
 // steps can be drawn between the two states.
-extern "C" void (*rex_frame_clock_provider)(void*, size_t);
+extern "C" REX_HOST_EXPORT RexFrameClockProviderFn rex_frame_clock_provider = nullptr;
 
 namespace {
 void CopyFrameClock(void* out, size_t size) {
