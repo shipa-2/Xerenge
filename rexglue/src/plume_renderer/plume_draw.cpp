@@ -4876,17 +4876,20 @@ bool PlumeDrawContext::ReadsResolvedCopy(const GuestDrawSnapshot& snap,
   if (snap.d3d_vertex_buffer == 0 || snap.d3d_index_buffer != 0) {
     return false;
   }
-  // Slot 0 only: that is where these passes take the picture they work on.
-  // The other slots keep whatever the scene left in them - its cube map copy
-  // among them - so scanning them all counted every interface draw as a pass
-  // over a copy, and its positions were converted twice and collapsed.
+  // Checked across all four texture slots: a pass over a copy does not
+  // always take it through slot 0 (see the 3D scenes in the garage and
+  // races), and skipping the rest stretched some of their textures into
+  // black triangles - reading a stale cube map copy left in an unrelated
+  // slot as if it were the resolved picture this pass works on.
   using rex::graphics::xenos::FetchConstantType;
-  const auto fetch = TextureFetchAt(snap, 0);
-  if (fetch.type == FetchConstantType::kTexture && fetch.base_address != 0) {
-    auto it = resolved_targets_.find(fetch.base_address << 12);
-    if (it != resolved_targets_.end() && !it->second.cube &&
-        (!this_frame || frame_resolved_dests_.count(fetch.base_address << 12) != 0)) {
-      return true;
+  for (uint32_t slot = 0; slot < 4; ++slot) {
+    const auto fetch = TextureFetchAt(snap, slot);
+    if (fetch.type == FetchConstantType::kTexture && fetch.base_address != 0) {
+      auto it = resolved_targets_.find(fetch.base_address << 12);
+      if (it != resolved_targets_.end() && !it->second.cube &&
+          (!this_frame || frame_resolved_dests_.count(fetch.base_address << 12) != 0)) {
+        return true;
+      }
     }
   }
   return false;
