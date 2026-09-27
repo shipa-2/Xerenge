@@ -41,6 +41,8 @@
 namespace rex::plume_renderer {
 
 namespace {
+// Encoding time of the present being made on this thread, for its breakdown.
+thread_local uint64_t g_present_encode_us = 0;
 // Per-present accounting for the overlay ring. All four are read and written
 // only under snapshot_mutex_.
 // A short history of what the command processor last did, so a stall can be
@@ -131,8 +133,12 @@ bool PlumeGraphicsSystem::InitializePlumeDevice() {
   if (!renderdoc_api_) {
     renderdoc_api_ = rex::ui::RenderDocAPI::CreateIfConnected();
     if (renderdoc_api_ && renderdoc_api_->api_1_0_0()) {
-      renderdoc_api_->api_1_0_0()->SetLogFilePathTemplate("logs/captures/plume");
-      REXLOG_INFO("plume: RenderDoc loaded - F12 captures to logs/captures/");
+      // This template overrides renderdoccmd's --capture-file, so run.sh
+      // --capture names its per-run directory here instead.
+      const char* dir = std::getenv("XERENGE_CAPTURE_DIR");
+      const std::string capture_dir = dir && *dir ? dir : "logs/captures";
+      renderdoc_api_->api_1_0_0()->SetLogFilePathTemplate((capture_dir + "/plume").c_str());
+      REXLOG_INFO("plume: RenderDoc loaded - F12 captures to {}/", capture_dir);
     }
   }
 
@@ -1420,6 +1426,22 @@ void PlumeGraphicsSystem::PresentGuestFrame(uint32_t width, uint32_t height) {
       }
       return times;
     }();
+    // A capture just written (F12 or requested): log the draw queue of the
+    // next frame beside its file name. The screens captured by hand are the
+    // still ones, so the next frame is the same picture.
+    {
+      static uint32_t captures_seen = 0;
+      const uint32_t captures = renderdoc_api_->api_1_0_0()->GetNumCaptures();
+      if (captures > captures_seen && draw_context_) {
+        char path[1024] = {};
+        uint32_t length = sizeof(path);
+        uint64_t timestamp = 0;
+        renderdoc_api_->api_1_0_0()->GetCapture(captures - 1, path, &length, &timestamp);
+        draw_context_->RequestQueueDump(path);
+        call_trace_requested_.store(true);
+      }
+      captures_seen = captures;
+    }
     if (!wanted_seconds.empty()) {
       static const auto first_present = std::chrono::steady_clock::now();
       static size_t next_capture = 0;
@@ -1453,9 +1475,31 @@ void PlumeGraphicsSystem::PresentGuestFrame(uint32_t width, uint32_t height) {
   if (!wait_for_present) {
     StartPresentWorker();
     {
+      const auto wait_started = std::chrono::steady_clock::now();
       std::unique_lock lock(present_flight_mutex_);
-      if (!present_flight_cv_.wait_for(lock, std::chrono::milliseconds(2000),
-                                       [this] { return !present_in_flight_; })) {
+      const bool ready = present_flight_cv_.wait_for(lock, std::chrono::milliseconds(2000),
+                                                     [this] { return !present_in_flight_; });
+      // The title's own thread, blocked on this renderer: per second, so a
+      // frozen scene change shows whether the time went here or elsewhere.
+      {
+        static std::chrono::steady_clock::time_point second_started = wait_started;
+        static uint64_t waited_us = 0;
+        static uint32_t swaps = 0;
+        const auto now = std::chrono::steady_clock::now();
+        waited_us += uint64_t(
+            std::chrono::duration_cast<std::chrono::microseconds>(now - wait_started).count());
+        ++swaps;
+        if (now - second_started >= std::chrono::seconds(1)) {
+          if (waited_us >= 100000) {
+            REXLOG_WARN("plume: VdSwap waited {} ms for the previous frame in {} swaps", waited_us / 1000,
+                        swaps);
+          }
+          second_started = now;
+          waited_us = 0;
+          swaps = 0;
+        }
+      }
+      if (!ready) {
         REXLOG_WARN("plume: present_flight timed out waiting for previous frame");
         return;
       }
@@ -1534,6 +1578,8 @@ void PlumeGraphicsSystem::PresentClearColorOnUiThread(uint32_t guest_width,
   } present_timer{present_started, &slow_present_log_count_};
 
   std::lock_guard lock(present_mutex_);
+  const auto present_locked = std::chrono::steady_clock::now();
+  g_present_encode_us = 0;
 
   std::vector<GuestDrawSnapshot> batch;
   {
@@ -1729,6 +1775,7 @@ void PlumeGraphicsSystem::PresentClearColorOnUiThread(uint32_t guest_width,
                 std::chrono::steady_clock::now() - started)
                 .count());
         total_us.fetch_add(took, std::memory_order_relaxed);
+        g_present_encode_us = took;
         const uint64_t n = frames.fetch_add(1, std::memory_order_relaxed) + 1;
         const uint64_t now = static_cast<uint64_t>(
             std::chrono::duration_cast<std::chrono::milliseconds>(
@@ -1768,7 +1815,25 @@ void PlumeGraphicsSystem::PresentClearColorOnUiThread(uint32_t guest_width,
         list, color, encode_ctx->system->swap_frontbuffer_.load(std::memory_order_relaxed));
   };
 
+  const auto present_prepared = std::chrono::steady_clock::now();
   swapchain_->ClearAndPresent(0.03f, 0.04f, 0.07f, 1.0f, encode, &ctx, resolve);
+  // A slow frame, split: waiting for this renderer's lock, taking the queue,
+  // encoding the draws (textures included), and the rest of the swapchain's
+  // work - acquire, submit, present, fences.
+  const auto present_done = std::chrono::steady_clock::now();
+  const auto us = [](auto from, auto to) {
+    return uint64_t(std::chrono::duration_cast<std::chrono::microseconds>(to - from).count());
+  };
+  const uint64_t total_us = us(present_started, present_done);
+  if (total_us >= 100000) {
+    const uint64_t swap_us = us(present_prepared, present_done);
+    REXLOG_WARN("plume: slow present {} ms = lock {} ms, queue {} ms, encode {} ms, "
+                "swapchain rest {} ms ({} draws)",
+                total_us / 1000, us(present_started, present_locked) / 1000,
+                us(present_locked, present_prepared) / 1000, g_present_encode_us / 1000,
+                (swap_us > g_present_encode_us ? swap_us - g_present_encode_us : 0) / 1000,
+                batch.size());
+  }
 }
 
 void PlumeGraphicsSystem::SetInterruptCallback(uint32_t callback, uint32_t user_data) {
@@ -2714,7 +2779,10 @@ void PlumeGraphicsSystem::ExecutePrimaryRing() {
       // twelve bytes further on. That gives both sides of the comparison the
       // title is stuck on, which its own registers would have shown had the
       // debugger been able to see them.
-      if (memory_ && g_fence_count != 0) {
+      // Half a second of the title's own thread (every word of 512 MB), paid on
+      // the first load of every run - opt in with XERENGE_RING_STALL_SCAN=1.
+      static const bool scan_enabled = std::getenv("XERENGE_RING_STALL_SCAN") != nullptr;
+      if (scan_enabled && memory_ && g_fence_count != 0) {
         static bool scanned = false;
         if (!scanned) {
           scanned = true;

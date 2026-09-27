@@ -62,6 +62,7 @@ class PlumeGraphicsSystem final : public system::IGraphicsSystem {
   void NoteGuestClearColor(uint32_t flags, const float color[4], bool whole_target,
                            float depth) override;
   void NoteGuestFrameEnd() override;
+  bool TakeCallTraceRequest() override { return call_trace_requested_.exchange(false); }
   void NoteGuestResolve(uint32_t flags, uint32_t dest_physical, uint32_t source_width,
                         uint32_t source_height, uint32_t face, bool cube) override;
   void PushMarker(GuestDrawSnapshot marker);
@@ -163,6 +164,7 @@ class PlumeGraphicsSystem final : public system::IGraphicsSystem {
   system::object_ref<system::XHostThread> vsync_worker_thread_;
   std::atomic<bool> vsync_worker_running_{false};
   std::atomic<uint32_t> frame_counter_{0};
+  std::atomic<bool> call_trace_requested_{false};
   std::atomic<uint64_t> vblank_count_{0};
   uint64_t last_swap_vblank_ = 0;
   std::mutex vblank_mutex_;

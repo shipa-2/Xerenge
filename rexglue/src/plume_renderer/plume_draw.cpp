@@ -2606,8 +2606,35 @@ plume::RenderPipeline* PlumeDrawContext::GetOrCreatePipeline(
                          (uint32_t(WriteMaskForRt0(color_mask >> 4)) << 26) |
                          ((alpha_test ? 1u : 0u) << 30);
   PipelineKey key{vs_hash, ps_hash, uint32_t(topology), state};
+  // XERENGE_PIPELINE_LOG=1: every pipeline's full guest blend state, and any
+  // draw that reuses a pipeline built for a different alpha blend - the key
+  // above keeps only the colour half of RB_BLENDCONTROL.
+  static const bool pipeline_log = std::getenv("XERENGE_PIPELINE_LOG") != nullptr;
+  static std::map<std::pair<uint64_t, uint64_t>, uint32_t> built_with;
+  const auto built_id = std::make_pair(vs_hash ^ ps_hash, (uint64_t(topology) << 32) | state);
   if (auto it = pipelines_.find(key); it != pipelines_.end()) {
+    if (pipeline_log) {
+      static std::set<std::pair<uint64_t, uint32_t>> reported;
+      auto [at, fresh] = built_with.emplace(built_id, blend_control);
+      if (!fresh && at->second != blend_control && reported.size() < 64 &&
+          reported.emplace(built_id.first, blend_control).second) {
+        REXLOG_WARN("plume: pipeline vs={:016X} ps={:016X} built for blend {:08X} reused for {:08X}",
+                    vs_hash, ps_hash, at->second, blend_control);
+      }
+    }
     return it->second.get();
+  }
+  if (pipeline_log) {
+    built_with[built_id] = blend_control;
+    rex::graphics::reg::RB_BLENDCONTROL bc;
+    bc.value = blend_control;
+    const auto constant = [](auto f) { return uint32_t(f) >= 12 && uint32_t(f) <= 15; };
+    const bool uses_constant = constant(bc.color_srcblend) || constant(bc.color_destblend) ||
+                               constant(bc.alpha_srcblend) || constant(bc.alpha_destblend);
+    REXLOG_INFO("plume: new pipeline vs={:016X} ps={:016X} topo={} blend={:08X} mask={:X} "
+                "depth={:08X} alphatest={}{}",
+                vs_hash, ps_hash, uint32_t(topology), blend_control, color_mask, depth_control,
+                alpha_test ? 1 : 0, uses_constant ? " USES BLEND CONSTANT" : "");
   }
 
   PlumeShaderCache& cache = PlumeShaderCache::Instance();
@@ -4555,6 +4582,7 @@ void PlumeDrawContext::BindGuestTextures(plume::RenderCommandList* list,
         if (!queued.insert(key).second) {
           continue;
         }
+        EncodeStage("textures: prepare", nullptr);
         rex::graphics::TextureInfo info{};
         if (!rex::graphics::TextureInfo::Prepare(fetch, &info)) {
           continue;
@@ -4579,6 +4607,7 @@ void PlumeDrawContext::BindGuestTextures(plume::RenderCommandList* list,
         }
         // The mips are part of the texture: a change to them alone must
         // re-upload it just the same.
+        EncodeStage("textures: mips", nullptr);
         GuestMipSource mips;
         const uint8_t* mip_src = nullptr;
         if (LocateGuestMips(fetch, &mips)) {
@@ -4589,6 +4618,7 @@ void PlumeDrawContext::BindGuestTextures(plume::RenderCommandList* list,
           // Watched first, then the writes counted, then (if they changed)
           // hashed: a write at any point after the watch is set shows in the
           // count by the next frame at the latest.
+          EncodeStage("textures: watching", nullptr);
           memory->EnablePhysicalMemoryAccessCallbacks(info.memory.base_address, uint32_t(size),
                                                       true, false);
           uint64_t writes = PageWrites(info.memory.base_address, size);
@@ -4597,6 +4627,7 @@ void PlumeDrawContext::BindGuestTextures(plume::RenderCommandList* list,
                                                         false);
             writes += PageWrites(mips.address, mip_size);
           }
+          EncodeStage("textures", nullptr);
           if (auto known = texture_watch_.find(key);
               known != texture_watch_.end() && known->second.writes == writes) {
             frame_hashes.emplace(key, known->second.hash);
@@ -5023,17 +5054,40 @@ void AccountEncodeStage(const char* next) {
   if (!PlumeTiming()) {
     return;
   }
+  static std::mutex stage_mutex;
+  std::lock_guard stage_lock(stage_mutex);
   static const char* current = nullptr;
   static auto since = std::chrono::steady_clock::now();
   static std::map<const char*, uint64_t> totals;
   static auto last_report = since;
   static uint64_t frames = 0;
+  static std::map<const char*, uint64_t> frame_totals;
   const auto now = std::chrono::steady_clock::now();
   if (current) {
-    totals[current] += uint64_t(std::chrono::duration_cast<std::chrono::nanoseconds>(now - since).count());
+    const uint64_t ns =
+        uint64_t(std::chrono::duration_cast<std::chrono::nanoseconds>(now - since).count());
+    totals[current] += ns;
+    if (std::strcmp(current, "idle") != 0) {
+      frame_totals[current] += ns;
+    }
   }
   if (std::strcmp(next, "idle") == 0) {
     ++frames;
+    // One slow frame on its own: an average over two seconds hides it.
+    uint64_t frame_ns = 0;
+    for (const auto& [stage, ns] : frame_totals) {
+      frame_ns += ns;
+    }
+    if (frame_ns >= 100000000ull) {
+      std::string out;
+      for (const auto& [stage, ns] : frame_totals) {
+        if (ns >= 1000000ull) {
+          out += fmt::format(" {}={}ms", stage, ns / 1000000);
+        }
+      }
+      REXLOG_WARN("plume: slow encode {} ms:{}", frame_ns / 1000000, out);
+    }
+    frame_totals.clear();
   }
   current = next;
   since = now;
@@ -5712,7 +5766,36 @@ void PlumeDrawContext::EncodeDraws(plume::RenderCommandList* list,
       const char* v = std::getenv("XERENGE_DUMP_ORDER");
       return v ? std::strtoull(v, nullptr, 10) : 0ull;
     }();
-    if (dump_frame != 0 && frame_serial_ >= dump_frame && frame_serial_ < dump_frame + 8) {
+    // XERENGE_DUMP_ORDER_EVERY=<seconds>: one frame's queue every so often,
+    // for a screen whose frame number is not known in advance.
+    static const double dump_every = [] {
+      const char* v = std::getenv("XERENGE_DUMP_ORDER_EVERY");
+      return v ? std::strtod(v, nullptr) : 0.0;
+    }();
+    bool dump_now = false;
+    if (dump_every > 0.0) {
+      static auto next_dump = std::chrono::steady_clock::now();
+      const auto now = std::chrono::steady_clock::now();
+      if (now >= next_dump) {
+        next_dump = now + std::chrono::duration_cast<std::chrono::steady_clock::duration>(
+                              std::chrono::duration<double>(dump_every));
+        dump_now = true;
+      }
+    }
+    std::string dump_tag;
+    {
+      std::lock_guard lock(dump_request_mutex_);
+      if (dump_requested_) {
+        dump_requested_ = false;
+        dump_tag = std::move(dump_request_tag_);
+        dump_now = true;
+      }
+    }
+    if (!dump_tag.empty()) {
+      REXLOG_INFO("plume: the queue below goes with {}", dump_tag);
+    }
+    if (dump_now ||
+        (dump_frame != 0 && frame_serial_ >= dump_frame && frame_serial_ < dump_frame + 8)) {
       std::string out;
       for (size_t i = 0; i < draws.size(); ++i) {
         const GuestDrawSnapshot& d = draws[i];
@@ -5724,11 +5807,17 @@ void PlumeDrawContext::EncodeDraws(plume::RenderCommandList* list,
           out += fmt::format("\n  {} copy -> {:08X} {}x{} source {}", i, d.resolve_dest,
                              d.resolve_width, d.resolve_height, d.resolve_source);
         } else {
+          const auto t0 = TextureFetchAt(d, 0);
           out += fmt::format("\n  {} draw prim {} n {} vs {:016X} ps {:016X} vb {:08X} ib {:08X} "
-                             "target {}x{}{}",
+                             "target {}x{} blend {:08X} mask {:X} at {} ref {:.3f} tex0 t{} {:08X} "
+                             "fmt {} {}x{} swz {:03X}{}",
                              i, d.prim_type, d.num_indices, d.vs_hash, d.ps_hash,
                              d.d3d_vertex_buffer, d.d3d_index_buffer, d.d3d_target_width,
-                             d.d3d_target_height, d.video_rgba.empty() ? "" : " video");
+                             d.d3d_target_height, d.blend_control, d.color_mask,
+                             d.alpha_test ? 1 : 0, d.alpha_ref, uint32_t(t0.type),
+                             uint32_t(t0.base_address) << 12, uint32_t(t0.format),
+                             uint32_t(t0.size_2d.width) + 1, uint32_t(t0.size_2d.height) + 1,
+                             uint32_t(t0.swizzle), d.video_rgba.empty() ? "" : " video");
         }
       }
       REXLOG_INFO("plume: queue of frame {} ({} entries):{}", frame_serial_, draws.size(), out);

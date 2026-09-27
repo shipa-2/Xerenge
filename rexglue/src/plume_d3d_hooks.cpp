@@ -386,16 +386,26 @@ void TraceSwap() {
     const char* v = std::getenv("XERENGE_TRACE_FRAME");
     return v ? std::strtoull(v, nullptr, 10) : 0ull;
   }();
-  if (!wanted) {
-    return;
-  }
   static std::atomic<uint64_t> swaps{0};
   const uint64_t n = swaps.fetch_add(1) + 1;
-  if (n == wanted) {
+  // A capture was just written: trace the next frame to go with it.
+  static bool traced_for_capture = false;
+  if (!g_tracing.load() && ActiveGraphicsSystem() &&
+      ActiveGraphicsSystem()->TakeCallTraceRequest()) {
+    traced_for_capture = true;
     g_tracing.store(true);
     return;
   }
-  if (n == wanted + 1 && g_tracing.exchange(false)) {
+  const bool ends_capture_trace = traced_for_capture;
+  if (!wanted && !ends_capture_trace) {
+    return;
+  }
+  if (wanted && n == wanted) {
+    g_tracing.store(true);
+    return;
+  }
+  if ((ends_capture_trace || n == wanted + 1) && g_tracing.exchange(false)) {
+    traced_for_capture = false;
     std::lock_guard lock(g_trace_mutex);
     std::string out;
     size_t i = 0;

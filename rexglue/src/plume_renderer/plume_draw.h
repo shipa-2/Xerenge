@@ -204,6 +204,13 @@ class PlumeDrawContext {
   bool Initialize(plume::RenderDevice* device);
   void Shutdown();
   bool IsReady() const { return ready_; }
+  // Logs the next encoded frame's queue, tagged - so a RenderDoc capture taken
+  // by hand comes with the list of draws the frame was made of.
+  void RequestQueueDump(std::string tag) {
+    std::lock_guard lock(dump_request_mutex_);
+    dump_request_tag_ = std::move(tag);
+    dump_requested_ = true;
+  }
 
   void RegisterVsUcode(uint64_t shader_hash, const uint8_t* bytes, uint32_t byte_size);
   // Renders the vertex-fetch declarations XenosRecomp's container wrapper
@@ -391,6 +398,9 @@ class PlumeDrawContext {
   uint32_t UsedTextureSlots(const GuestDrawSnapshot& snap) const;
   mutable std::unordered_map<uint64_t, uint32_t> sampler_slots_by_shader_;
   uint64_t frame_serial_ = 0;
+  std::mutex dump_request_mutex_;
+  bool dump_requested_ = false;
+  std::string dump_request_tag_;
   // A bindless slot for a new guest texture: a fresh one while any are left,
   // then the slot of the texture unused for longest (and not in the last few
   // frames, which may still be on the GPU). 0 when none can be had.
