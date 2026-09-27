@@ -46,7 +46,11 @@ std::string Stamp() {
   const auto ms = std::chrono::duration_cast<std::chrono::milliseconds>(
                       now.time_since_epoch()).count() % 1000;
   std::tm local{};
+#if defined(_WIN32)
+  localtime_s(&local, &seconds);
+#else
   localtime_r(&seconds, &local);
+#endif
   char text[24];
   std::snprintf(text, sizeof(text), "%02d:%02d:%02d.%03d ", local.tm_hour, local.tm_min,
                 local.tm_sec, int(ms));
