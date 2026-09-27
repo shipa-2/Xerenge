@@ -2597,35 +2597,22 @@ void PlumeDrawContext::RecordShaderCoverage(uint64_t vs_hash, uint64_t ps_hash) 
 
 plume::RenderPipeline* PlumeDrawContext::GetOrCreatePipeline(
     uint64_t vs_hash, uint64_t ps_hash, plume::RenderPrimitiveTopology topology,
-    uint32_t blend_control, uint32_t color_mask, uint32_t depth_control, bool alpha_test) {
+    uint32_t blend_control, uint32_t color_mask, uint32_t depth_control, bool alpha_test,
+    bool depth_bias) {
   const GuestDepthState key_depth = DepthStateFromGuest(depth_control);
   const uint32_t state = (blend_control & 0xFFFFu) | (WriteMaskForRt0(color_mask) << 16) |
                          ((key_depth.enabled ? 1u : 0u) << 20) |
                          ((key_depth.write ? 1u : 0u) << 21) |
                          (uint32_t(key_depth.function) << 22) |
                          (uint32_t(WriteMaskForRt0(color_mask >> 4)) << 26) |
-                         ((alpha_test ? 1u : 0u) << 30);
-  PipelineKey key{vs_hash, ps_hash, uint32_t(topology), state};
-  // XERENGE_PIPELINE_LOG=1: every pipeline's full guest blend state, and any
-  // draw that reuses a pipeline built for a different alpha blend - the key
-  // above keeps only the colour half of RB_BLENDCONTROL.
+                         ((alpha_test ? 1u : 0u) << 30) | ((depth_bias ? 1u : 0u) << 31);
+  PipelineKey key{vs_hash, ps_hash, uint32_t(topology), state, blend_control >> 16};
+  // XERENGE_PIPELINE_LOG=1: every pipeline's full guest blend state.
   static const bool pipeline_log = std::getenv("XERENGE_PIPELINE_LOG") != nullptr;
-  static std::map<std::pair<uint64_t, uint64_t>, uint32_t> built_with;
-  const auto built_id = std::make_pair(vs_hash ^ ps_hash, (uint64_t(topology) << 32) | state);
   if (auto it = pipelines_.find(key); it != pipelines_.end()) {
-    if (pipeline_log) {
-      static std::set<std::pair<uint64_t, uint32_t>> reported;
-      auto [at, fresh] = built_with.emplace(built_id, blend_control);
-      if (!fresh && at->second != blend_control && reported.size() < 64 &&
-          reported.emplace(built_id.first, blend_control).second) {
-        REXLOG_WARN("plume: pipeline vs={:016X} ps={:016X} built for blend {:08X} reused for {:08X}",
-                    vs_hash, ps_hash, at->second, blend_control);
-      }
-    }
     return it->second.get();
   }
   if (pipeline_log) {
-    built_with[built_id] = blend_control;
     rex::graphics::reg::RB_BLENDCONTROL bc;
     bc.value = blend_control;
     const auto constant = [](auto f) { return uint32_t(f) >= 12 && uint32_t(f) <= 15; };
@@ -2663,6 +2650,8 @@ plume::RenderPipeline* PlumeDrawContext::GetOrCreatePipeline(
   desc.depthWriteEnabled = depth.write;
   desc.depthFunction = depth.function;
   desc.depthClipEnabled = false;
+  // The bias itself is set per draw (setDepthBias): its values vary by decal.
+  desc.dynamicDepthBiasEnabled = depth_bias;
   // The framebuffer carries a depth attachment whether or not the test is on,
   // and the pipeline has to agree with it.
   desc.depthTargetFormat = kPlumeDepthFormat;
@@ -4790,13 +4779,38 @@ void PlumeDrawContext::BindGuestTextures(plume::RenderCommandList* list,
         }
       }
 
+      bool dumped_now = false;
       static uint32_t dump_count = 0;
       static std::vector<uint32_t> dumped_addrs;
       static const bool dump_enabled = std::getenv("XERENGE_DUMP_TEXTURES") != nullptr;
-      if (dump_enabled && dump_count < 256 &&
+      // XERENGE_DUMP_TEXTURES=<hex>,<hex>...: only textures at these physical
+      // addresses (as the queue dump prints them); any other value, the first 256.
+      static const std::vector<uint32_t> dump_only = [] {
+        std::vector<uint32_t> addresses;
+        if (const char* list = std::getenv("XERENGE_DUMP_TEXTURES")) {
+          for (const char* p = list; *p;) {
+            char* end = nullptr;
+            const unsigned long value = std::strtoul(p, &end, 16);
+            if (end == p) {
+              break;
+            }
+            if (value > 1) {
+              addresses.push_back(uint32_t(value));
+            }
+            p = *end == ',' ? end + 1 : end;
+          }
+        }
+        return addresses;
+      }();
+      const bool wanted =
+          dump_only.empty() ||
+          std::find(dump_only.begin(), dump_only.end(), info.memory.base_address) !=
+              dump_only.end();
+      if (dump_enabled && wanted && dump_count < 256 &&
           std::find(dumped_addrs.begin(), dumped_addrs.end(), info.memory.base_address) ==
               dumped_addrs.end()) {
         dumped_addrs.push_back(info.memory.base_address);
+        dumped_now = true;
         char path[256];
         std::snprintf(path, sizeof(path), "logs/tex_%03u_%ux%u_fmt%u_addr%08X_%s.png", dump_count,
                      width, height, uint32_t(fetch.format), info.memory.base_address,
@@ -4815,6 +4829,29 @@ void PlumeDrawContext::BindGuestTextures(plume::RenderCommandList* list,
       if (mip_src) {
         DecodeGuestMips(fetch, mips, mip_src, info.endianness, expand_r8, alpha_mask,
                         swizzle_bgra, forced_opaque, &mip_levels);
+      }
+      // Its mips too, when the texture was dumped: a sprite drawn smaller than
+      // its texture is sampled from them, and a bad mip shows only there.
+      if (dumped_now) {
+        const uint32_t block_bytes = base_fmt == TextureFormat::k_DXT1 ? 8u : 16u;
+        for (size_t level = 0; level < mip_levels.size(); ++level) {
+          const HostMipLevel& mip = mip_levels[level];
+          if (mip.width == 0 || mip.height == 0) {
+            continue;
+          }
+          char mip_path[256];
+          std::snprintf(mip_path, sizeof(mip_path), "logs/tex_addr%08X_mip%zu_%ux%u.png",
+                        info.memory.base_address, level + 1, mip.width, mip.height);
+          std::vector<uint8_t> decoded;
+          if (DecodeCompressedForDump(base_fmt, mip.pixels, mip.row_texels / 4 * block_bytes,
+                                      mip.width, mip.height, &decoded)) {
+            DumpTextureToPng(mip_path, decoded.data(), mip.width, mip.height, mip.width * 4);
+          } else if (swizzle_bgra &&
+                     mip.pixels.size() >= size_t(mip.row_texels) * mip.height * 4) {
+            DumpTextureToPng(mip_path, mip.pixels.data(), mip.width, mip.height,
+                             mip.row_texels * 4);
+          }
+        }
       }
       if (!UploadHostTexture(list, key, width, height, host_format, pixels, row_texels,
                              &mip_levels)) {
@@ -5028,8 +5065,27 @@ void PlumeDrawContext::FillSharedConstants(uint8_t* dst, const GuestDrawSnapshot
     }
   }
   words[64] = snap.vs_bool;
-  float half_x = width ? 1.0f / float(width) : (1.0f / 1280.0f);
-  float half_y = height ? 1.0f / float(height) : (1.0f / 720.0f);
+  // Direct3D 9 samples at whole guest-pixel coordinates; the interface lays
+  // its pieces out for that grid. Drawn f times larger (1920 from 1280: 1.5),
+  // no shift matches that for every pixel, so pick the one whose samples stay
+  // just inside each guest pixel - 0.1 of it past the left edge, i.e. a shift
+  // of 0.5 - 0.1 f of our pixels (exactly half a pixel at f = 1). Half of our
+  // pixel (0.5) put a sample at 0.667, inside the menu buttons' 0.653-0.678
+  // overlap: a dark line down the middle of every button. Half of theirs
+  // (0.75) left the first column's sample at -0.17, outside the full-screen
+  // mask: a gap down the left edge.
+  const auto shift = [](uint32_t host, uint32_t guest) {
+    if (host == 0) {
+      return 0.0f;
+    }
+    const float scale = guest ? float(host) / float(guest) : 1.0f;
+    const float pixels = scale > 1.001f ? 0.5f - 0.1f * scale : 0.5f;
+    return 2.0f * pixels / float(host);
+  };
+  const uint32_t grid_w = snap.d3d_target_width ? snap.d3d_target_width : width;
+  const uint32_t grid_h = snap.d3d_target_height ? snap.d3d_target_height : height;
+  float half_x = width ? shift(width, grid_w) : (1.0f / 1280.0f);
+  float half_y = height ? shift(height, grid_h) : (1.0f / 720.0f);
   std::memcpy(dst + 280, &half_x, 4);
   std::memcpy(dst + 284, &half_y, 4);
   float alpha = snap.alpha_test ? snap.alpha_ref : 0.0f;
@@ -5555,7 +5611,7 @@ void PlumeDrawContext::EncodeDraws(plume::RenderCommandList* list,
       pipeline = GetOrCreatePipeline(snap.vs_hash, snap.ps_hash, topology, blend_control,
                                      snap.rt1_bound ? snap.color_mask
                                                     : (snap.color_mask & 0xFu),
-                                     snap.depth_control, snap.alpha_test);
+                                     snap.depth_control, snap.alpha_test, snap.poly_offset);
       passthrough = pipeline == nullptr;
     }
     {
@@ -5649,6 +5705,21 @@ void PlumeDrawContext::EncodeDraws(plume::RenderCommandList* list,
     }
     if (vertex_count == 0) {
       ++fate.no_vertices;
+      // Which draws these are, once per shader pair: a whole kind of geometry
+      // (a shadow, a decal) can be lost here without anything else saying so.
+      {
+        static std::mutex seen_mutex;
+        static std::set<std::pair<uint64_t, uint64_t>> seen;
+        std::lock_guard lock(seen_mutex);
+        if (seen.size() < 40 && seen.emplace(snap.vs_hash, snap.ps_hash).second) {
+          REXLOG_WARN("plume: draw has no vertices: vs={:016X} ps={:016X} prim {} indices {} "
+                      "vb {:08X}+{} ib {:08X} d3d {} target {}x{}",
+                      snap.vs_hash, snap.ps_hash, snap.prim_type, snap.num_indices,
+                      snap.d3d_vertex_buffer, snap.d3d_vertex_stride, snap.d3d_index_buffer,
+                      snap.d3d_vertex_buffer != 0 ? 1 : 0, snap.d3d_target_width,
+                      snap.d3d_target_height);
+        }
+      }
       return;
     }
 
@@ -5696,6 +5767,14 @@ void PlumeDrawContext::EncodeDraws(plume::RenderCommandList* list,
     if (pipeline != bound_pipeline) {
       list->setPipeline(pipeline);
       bound_pipeline = pipeline;
+    }
+    if (!passthrough && snap.poly_offset) {
+      // Xenos keeps the slope term in 1/16 subpixel units and the constant in
+      // depth range units; Vulkan wants the slope as is and the constant in
+      // steps of the depth format - 2^-24 around the near end, where the
+      // reversed depth of the road under the car sits.
+      list->setDepthBias(snap.poly_offset_offset * 16777216.0f, 0.0f,
+                         snap.poly_offset_scale * (1.0f / 16.0f));
     }
     {
       uint32_t vw = width;
@@ -5810,14 +5889,42 @@ void PlumeDrawContext::EncodeDraws(plume::RenderCommandList* list,
           const auto t0 = TextureFetchAt(d, 0);
           out += fmt::format("\n  {} draw prim {} n {} vs {:016X} ps {:016X} vb {:08X} ib {:08X} "
                              "target {}x{} blend {:08X} mask {:X} at {} ref {:.3f} tex0 t{} {:08X} "
-                             "fmt {} {}x{} swz {:03X}{}",
+                             "fmt {} {}x{} swz {:03X} clamp {}{}{}",
                              i, d.prim_type, d.num_indices, d.vs_hash, d.ps_hash,
                              d.d3d_vertex_buffer, d.d3d_index_buffer, d.d3d_target_width,
                              d.d3d_target_height, d.blend_control, d.color_mask,
                              d.alpha_test ? 1 : 0, d.alpha_ref, uint32_t(t0.type),
                              uint32_t(t0.base_address) << 12, uint32_t(t0.format),
                              uint32_t(t0.size_2d.width) + 1, uint32_t(t0.size_2d.height) + 1,
-                             uint32_t(t0.swizzle), d.video_rgba.empty() ? "" : " video");
+                             uint32_t(t0.swizzle), uint32_t(t0.clamp_x), uint32_t(t0.clamp_y),
+                             d.video_rgba.empty() ? "" : " video");
+          // A small interface draw's vertices, raw: where its quads meet and
+          // which texels they reach is what a seam between them comes down to.
+          const uint32_t vb = d.d3d_vertex_buffer;
+          const uint32_t stride = d.d3d_vertex_stride;
+          if (memory && vb != 0 && d.d3d_index_buffer == 0 && stride >= 8 && stride <= 64 &&
+              d.num_indices != 0 && d.num_indices <= 48) {
+            uint32_t phys = vb & 0x1FFFFFFFu;
+            if (vb >= 0xE0000000u) {
+              phys += 0x1000u;
+            }
+            const uint8_t* base = memory->TranslatePhysical<const uint8_t*>(phys);
+            const uint32_t count = std::min<uint32_t>(d.num_indices, stride <= 16 ? 24u : 6u);
+            const uint32_t words = std::min<uint32_t>(stride / 4, 6);
+            for (uint32_t v = 0; base && v < count; ++v) {
+              out += "\n      v";
+              for (uint32_t w = 0; w < words; ++w) {
+                uint32_t bits = 0;
+                std::memcpy(&bits, base + v * stride + w * 4, 4);
+                bits = __builtin_bswap32(bits);
+                float value = 0.0f;
+                std::memcpy(&value, &bits, 4);
+                out += (std::fabs(value) < 1e6f && std::fabs(value) > 1e-6f) || bits == 0
+                           ? fmt::format(" {:.4f}", value)
+                           : fmt::format(" #{:08X}", bits);
+              }
+            }
+          }
         }
       }
       REXLOG_INFO("plume: queue of frame {} ({} entries):{}", frame_serial_, draws.size(), out);

@@ -919,6 +919,23 @@ void PlumeGraphicsSystem::PublishDrawSnapshot(uint32_t prim_type, uint32_t sourc
                       snap.ps_hash);
         }
       }
+      if (RangeReadable(memory_, device + 0x2D88, 4) && RangeReadable(memory_, device + 0x2E90, 8)) {
+        uint32_t sc_mode = 0;
+        CopyBeDwords(memory_, &sc_mode, device + 0x2D88, 1);
+        if ((sc_mode >> 11) & 1u) {
+          uint32_t offset_bits[2] = {};
+          CopyBeDwords(memory_, offset_bits, device + 0x2E90, 2);
+          std::memcpy(&snap.poly_offset_scale, &offset_bits[0], 4);
+          std::memcpy(&snap.poly_offset_offset, &offset_bits[1], 4);
+          snap.poly_offset = snap.poly_offset_scale != 0.0f || snap.poly_offset_offset != 0.0f;
+          static std::atomic<uint32_t> shown{0};
+          if (snap.poly_offset && shown.fetch_add(1, std::memory_order_relaxed) < 8) {
+            REXLOG_INFO("plume: polygon offset scale {:g} offset {:g} vs={:016X} ps={:016X}",
+                        snap.poly_offset_scale, snap.poly_offset_offset, snap.vs_hash,
+                        snap.ps_hash);
+          }
+        }
+      }
       snap.alpha_test = (colorcontrol & 0x8u) != 0 && (alpha_func == 4u || alpha_func == 6u);
       if (snap.alpha_test && RangeReadable(memory_, device + 0x2D44, 4)) {
         uint32_t ref_bits = 0;
@@ -1528,10 +1545,10 @@ void PlumeGraphicsSystem::PresentClearColorOnUiThread(uint32_t guest_width,
     return;
   }
 
-  // This runs on a guest thread, through VdSwap - so whatever it costs is time
-  // the title is not running. Real shaders make each draw far more work than
-  // the passthrough path, and the scene issues a hundred of them, so measure
-  // it rather than assume it is free.
+  // This runs on the present worker (on a guest thread through VdSwap only
+  // with XERENGE_SYNC_PRESENT). Either way the title waits for it at its next
+  // VdSwap once it takes longer than a frame, so measure it rather than assume
+  // it is free.
   const auto present_started = std::chrono::steady_clock::now();
   struct PresentTimer {
     std::chrono::steady_clock::time_point started;
@@ -1572,7 +1589,7 @@ void PlumeGraphicsSystem::PresentClearColorOnUiThread(uint32_t guest_width,
       }
       const uint32_t n = counter->fetch_add(1);
       if (n < 8 || (n % 120) == 0) {
-        REXLOG_WARN("plume: present took {} us on the guest thread", took);
+        REXLOG_WARN("plume: present took {} us", took);
       }
     }
   } present_timer{present_started, &slow_present_log_count_};

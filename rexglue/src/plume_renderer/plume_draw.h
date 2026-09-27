@@ -134,6 +134,13 @@ struct GuestDrawSnapshot {
   // pipeline's specialisation constant asks them to.
   bool alpha_test = false;
   float alpha_ref = 0.0f;
+  // Polygon offset for front faces (PA_SU_SC_MODE_CNTL bit 11, device + 0x2D88):
+  // PA_SU_POLY_OFFSET_FRONT_SCALE at + 0x2E90 (1/16 subpixel units) and
+  // _FRONT_OFFSET at + 0x2E94 (depth range units), as SetRenderState_DepthBias
+  // and _SlopeScaleDepthBias store them. Decals on the road need it.
+  bool poly_offset = false;
+  float poly_offset_scale = 0.0f;
+  float poly_offset_offset = 0.0f;
   // The title's scissor rectangle (D3DDevice_SetScissorRect, device + 0x3220)
   // in render target pixels, when its scissor test is on (device + 0x2EB0).
   bool scissor_enabled = false;
@@ -251,16 +258,19 @@ class PlumeDrawContext {
     uint64_t ps = 0;
     uint32_t topology = 0;
     uint32_t state = 0;
+    // The alpha half of RB_BLENDCONTROL, which `state` has no room for: two
+    // draws differing only there must not share a pipeline.
+    uint32_t alpha_blend = 0;
 
     bool operator==(const PipelineKey& other) const {
       return vs == other.vs && ps == other.ps && topology == other.topology &&
-             state == other.state;
+             state == other.state && alpha_blend == other.alpha_blend;
     }
   };
   struct PipelineKeyHash {
     size_t operator()(const PipelineKey& key) const {
       return size_t(key.vs ^ (key.ps * 0x9E3779B97F4A7C15ull) ^ uint64_t(key.topology) ^
-                    (uint64_t(key.state) << 8));
+                    (uint64_t(key.state) << 8) ^ (uint64_t(key.alpha_blend) << 40));
     }
   };
 
@@ -271,7 +281,8 @@ class PlumeDrawContext {
   plume::RenderPipeline* GetOrCreatePipeline(uint64_t vs_hash, uint64_t ps_hash,
                                              plume::RenderPrimitiveTopology topology,
                                              uint32_t blend_control, uint32_t color_mask,
-                                             uint32_t depth_control, bool alpha_test = false);
+                                             uint32_t depth_control, bool alpha_test = false,
+                                             bool depth_bias = false);
   uint32_t FillVertices(const GuestDrawSnapshot& snap, memory::Memory* memory,
                         uint32_t base_vertex, bool passthrough);
   void UploadNullTexture(plume::RenderCommandList* list);
