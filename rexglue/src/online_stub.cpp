@@ -29,6 +29,11 @@ REXCVAR_DECLARE(bool, online);
 REXCVAR_DEFINE_BOOL(online_fake_lobby, true, "Network",
                     "With --online, stand in for EA's lobby servers inside the title (off: talk to "
                     "a real lobby server)");
+// Where --online, without --online_fake_lobby, points the title: empty (or a
+// loopback address) starts the embedded ealobby server itself, anything else
+// dials out to it there instead.
+REXCVAR_DEFINE_STRING(lobby_server, "", "Network",
+                      "Host to reach the lobby server at (empty: run one embedded in the title)");
 
 extern "C" void __imp__sub_82217590(PPCContext& __restrict, uint8_t*);
 extern "C" void __imp__sub_82366C90(PPCContext& __restrict, uint8_t*);

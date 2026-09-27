@@ -198,6 +198,17 @@ std::string CurrentTimeString() {
   return stamp;
 }
 
+// std::stoul throws on anything that isn't a valid number, which a client
+// field (IDENT and the like) is never guaranteed to be; letting that escape
+// the server thread's poll loop would take both players down with it.
+uint32_t ParseUint(const std::string& text, uint32_t fallback = 0) {
+  try {
+    return uint32_t(std::stoul(text));
+  } catch (const std::exception&) {
+    return fallback;
+  }
+}
+
 }  // namespace
 
 Server::Server(Options options, LogFunction log) : options_(std::move(options)), log_(std::move(log)) {}
@@ -748,7 +759,7 @@ void Server::HandleMove(Connection& connection, const Message& message) {
   if (ident.empty() || ident == "0") {
     ident = "1";
   }
-  connection.player.room_id = std::stoul(ident);
+  connection.player.room_id = ParseUint(ident, 1);
 
   Fields reply;
   reply["IDENT"] = ident;
@@ -829,7 +840,7 @@ void Server::HandleGcre(Connection& connection, const Message& message) {
 void Server::HandleGjoi(Connection& connection, const Message& message) {
   Fields fields = ParseFields(message.body);
   std::string ident = fields["IDENT"];
-  uint32_t gid = ident.empty() ? 0 : std::stoul(ident);
+  uint32_t gid = ParseUint(ident, 0);
   auto it = games_.find(gid);
   if (it == games_.end() || it->second.started || it->second.players.size() >= it->second.maxsize) {
     Log("lobby -> gjoiugam (unknown or full game)");
@@ -857,7 +868,7 @@ void Server::HandleGjoi(Connection& connection, const Message& message) {
 void Server::HandleGget(Connection& connection, const Message& message) {
   Fields fields = ParseFields(message.body);
   std::string ident = fields["IDENT"];
-  uint32_t gid = ident.empty() ? 0 : std::stoul(ident);
+  uint32_t gid = ParseUint(ident, 0);
   auto it = games_.find(gid);
   if (it != games_.end()) {
     Fields reply = FormatGameInfo(it->second);
