@@ -20,7 +20,10 @@
 #include <cstdint>
 #include <cstdlib>
 #include <cstring>
+#include <cstdio>
+#include <ctime>
 #include <iostream>
+#include <string>
 
 #include <rex/hook.h>
 #include <rex/ppc.h>
@@ -33,6 +36,21 @@ constexpr uint32_t kVideoPlayerState = 0x82A53360u;  // CB4VideoManager + 0x98
 bool Tracing() {
   static const bool on = std::getenv("XERENGE_MOVIE_TRACE") != nullptr;
   return on;
+}
+
+// Wall-clock time in the SDK log's format, so a line here lines up with the
+// log file and with a profile.
+std::string Stamp() {
+  const auto now = std::chrono::system_clock::now();
+  const std::time_t seconds = std::chrono::system_clock::to_time_t(now);
+  const auto ms = std::chrono::duration_cast<std::chrono::milliseconds>(
+                      now.time_since_epoch()).count() % 1000;
+  std::tm local{};
+  localtime_r(&seconds, &local);
+  char text[24];
+  std::snprintf(text, sizeof(text), "%02d:%02d:%02d.%03d ", local.tm_hour, local.tm_min,
+                local.tm_sec, int(ms));
+  return text;
 }
 
 uint32_t LoadGuestU32(const uint8_t* base, uint32_t address) {
@@ -85,13 +103,13 @@ REX_HOOK_RAW(sub_821FEBC0) {
   const uint32_t name = descriptor != 0 ? LoadGuestU32(base, descriptor) : 0;
   const char* name_text = name != 0 ? reinterpret_cast<const char*>(base + name) : nullptr;
   if (Tracing()) {
-    std::cerr << "movie: clip requested: " << (name_text ? name_text : "(none)") << '\n';
+    std::cerr << Stamp() << "movie: clip requested: " << (name_text ? name_text : "(none)") << '\n';
   }
   const bool is_logo = SkipLogos() && NameIsStartupLogo(name_text);
   g_playing_logo.store(is_logo, std::memory_order_relaxed);
   g_logo_calls.store(0, std::memory_order_relaxed);
   if (is_logo) {
-    std::cerr << "movie: skipping logo clip " << name_text << " (XERENGE_SKIP_LOGOS)\n";
+    std::cerr << Stamp() << "movie: skipping logo clip " << name_text << " (XERENGE_SKIP_LOGOS)\n";
   }
   __imp__sub_821FEBC0(ctx, base);
 }
@@ -108,7 +126,7 @@ REX_HOOK_RAW(sub_821FF558) {
   const uint32_t status_after = LoadGuestU32(base, kAptVideoStatus);
   const uint32_t player_after = LoadGuestU32(base, kVideoPlayerState);
   if (status_after != status_before || player_after != player_before) {
-    std::cerr << "movie: apt status " << status_before << " -> " << status_after << "  player "
+    std::cerr << Stamp() << "movie: apt status " << status_before << " -> " << status_after << "  player "
               << player_before << " -> " << player_after << "  wanted=" << wanted << '\n';
   } else {
     // A status that never moves is the failure, so report it on a clock rather
@@ -123,7 +141,7 @@ REX_HOOK_RAW(sub_821FF558) {
     const auto now = std::chrono::steady_clock::now();
     if (status_after != 3 && now - window >= std::chrono::seconds(2)) {
       window = now;
-      std::cerr << "movie: apt status held at " << status_after << ", player " << player_after
+      std::cerr << Stamp() << "movie: apt status held at " << status_after << ", player " << player_after
                 << " (" << n << " calls with no change)\n";
     }
   }
@@ -133,7 +151,7 @@ REX_HOOK_RAW(sub_8248D398) {
   if (Tracing()) {
     const uint32_t previous = LoadGuestU32(base, ctx.r3.u32 + 0xD8u);
     if (previous != ctx.r4.u32) {
-      std::cerr << "movie: player status " << previous << " -> " << ctx.r4.u32 << '\n';
+      std::cerr << Stamp() << "movie: player status " << previous << " -> " << ctx.r4.u32 << '\n';
     }
   }
   __imp__sub_8248D398(ctx, base);
@@ -155,7 +173,7 @@ REX_HOOK_RAW(sub_82357CC0) {
     static std::atomic<uint32_t> last{0xFFFFFFFFu};
     const uint32_t answer = ctx.r3.u32 & 0xFFu;
     if (last.exchange(answer, std::memory_order_relaxed) != answer) {
-      std::cerr << "movie: decoder says finished = " << answer << '\n';
+      std::cerr << Stamp() << "movie: decoder says finished = " << answer << '\n';
     }
   }
 }
@@ -187,7 +205,7 @@ void Heartbeat(const char* what, std::atomic<uint32_t>& counter,
   const auto now = std::chrono::steady_clock::now();
   if (now - window >= std::chrono::seconds(2)) {
     window = now;
-    std::cerr << "apt: " << what << " x" << n << '\n';
+    std::cerr << Stamp() << "apt: " << what << " x" << n << '\n';
   }
 }
 
@@ -222,7 +240,7 @@ REX_HOOK_RAW(sub_8247EE88) {
 
 REX_HOOK_RAW(sub_821FD498) {
   if (Tracing()) {
-    std::cerr << "apt: screen requested: " << (ctx.r4.u32 & 0xFFu) << '\n';
+    std::cerr << Stamp() << "apt: screen requested: " << (ctx.r4.u32 & 0xFFu) << '\n';
   }
   __imp__sub_821FD498(ctx, base);
 }

@@ -54,6 +54,15 @@
 #                       launcher sets them). Saved burnout.toml has
 #                       gpu_plugin=xenos, so --gpu_backend alone is ignored;
 #                       this flag sets gpu_plugin too.
+#   ./run.sh --verbose
+#                       every category (core, cpu, apu, gpu, krnl, sys, fs) at
+#                       spdlog trace level plus the noisy (per-frame) log
+#                       macros, and turns on --trace and --movie too. The log
+#                       file gets large fast; use for a single short repro, not
+#                       a long session.
+#   ./run.sh --log-level=LEVEL
+#                       just the level (trace, debug, info, warn, error,
+#                       critical, off) without --verbose's other switches.
 #   ./run.sh --gdb      runs under gdb. Attaching to an already-running instance
 #                       does not work here - Yama's ptrace_scope is 1, so only a
 #                       descendant of the debugger can be traced - which is why
@@ -108,6 +117,8 @@ NOBLOOM=
 NOMOTIONBLUR=
 NOMSAA=
 MOVIE=
+LOGLEVEL=info
+NOISY=
 MODE=run
 for arg in "$@"; do
     case "$arg" in
@@ -123,6 +134,8 @@ for arg in "$@"; do
         --no-bloom) NOBLOOM=1 ;;
         --no-motion-blur) NOMOTIONBLUR=1 ;;
         --no-msaa) NOMSAA=1 ;;
+        --verbose) LOGLEVEL=trace; NOISY=1; TRACE=1; MOVIE=1 ;;
+        --log-level=*) LOGLEVEL=${arg#*=} ;;
         --plume)   GPU_BACKEND=plume ;;
         --online)  ONLINE=1 ;;
         --real-lobby) ONLINE=1; REAL_LOBBY=1 ;;
@@ -177,11 +190,13 @@ fi
 [ -n "$LOBBY_SERVER" ] && set -- "$@" --lobby_server="$LOBBY_SERVER"
 [ -n "$ONLINE_ADDRESS" ] && set -- "$@" --online_address="$ONLINE_ADDRESS"
 
+[ -n "$NOISY" ] && set -- "$@" --log_noisy=true
+
 set -- "$@" --game_data_root "$GAME" \
        --gpu_plugin "$GPU_BACKEND" \
        --gpu_backend "$GPU_BACKEND" \
        --no-vulkan_async_skip_incomplete_frames \
-       --log_level info \
+       --log_level "$LOGLEVEL" \
        --log_file "$LOG" \
        --log_max_file_size_mb 32 \
        --log_max_files 3
@@ -196,6 +211,8 @@ echo "      $(pwd)/$CONSOLE"
 if [ "$MODE" = capture ]; then
     CAPDIR=logs/capture$N
     mkdir -p "$CAPDIR"
+    # plume sets RenderDoc's capture path itself, over --capture-file below.
+    export XERENGE_CAPTURE_DIR="$(pwd)/$CAPDIR"
     # RenderDoc launches the target with an environment of its own making, which
     # drops the SDK's library path set above. Hand it a stub that restores the
     # path and replaces itself with the game: the capture hook is preloaded, so
