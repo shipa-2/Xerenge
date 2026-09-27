@@ -91,6 +91,8 @@ class PlumeGraphicsSystem final : public system::IGraphicsSystem {
   void RequestVideoCapture(const GuestDrawSnapshot& snap);
   void StartVideoWorker();
   void StopVideoWorker();
+  void StartPresentWorker();
+  void StopPresentWorker();
   void StartVsyncWorker();
   void StopVsyncWorker();
   void MarkVblank();
@@ -315,6 +317,13 @@ class PlumeGraphicsSystem final : public system::IGraphicsSystem {
   GuestDrawSnapshot video_request_;
   bool video_request_pending_ = false;
   std::atomic<bool> video_worker_running_{false};
+  std::thread present_worker_;
+  std::mutex present_request_mutex_;
+  std::condition_variable present_request_cv_;
+  bool present_request_pending_ = false;
+  uint32_t present_request_width_ = 0;
+  uint32_t present_request_height_ = 0;
+  std::atomic<bool> present_worker_running_{false};
   uint32_t last_secondary_cursor_ = 0;
   uint32_t secondary_lap_ = 0;
   bool secondary_cursor_seen_ = false;

@@ -676,6 +676,45 @@ void PlumeGraphicsSystem::StopVideoWorker() {
   }
 }
 
+void PlumeGraphicsSystem::StartPresentWorker() {
+  if (present_worker_running_.exchange(true, std::memory_order_acq_rel)) {
+    return;
+  }
+  present_worker_ = std::thread([this] {
+    for (;;) {
+      uint32_t w = 0, h = 0;
+      {
+        std::unique_lock lock(present_request_mutex_);
+        present_request_cv_.wait(lock, [this] {
+          return present_request_pending_ || !present_worker_running_.load(std::memory_order_acquire);
+        });
+        if (!present_worker_running_.load(std::memory_order_acquire)) {
+          return;
+        }
+        w = present_request_width_;
+        h = present_request_height_;
+        present_request_pending_ = false;
+      }
+      PresentClearColorOnUiThread(w, h);
+      {
+        std::lock_guard lock(present_flight_mutex_);
+        present_in_flight_ = false;
+      }
+      present_flight_cv_.notify_one();
+    }
+  });
+}
+
+void PlumeGraphicsSystem::StopPresentWorker() {
+  if (!present_worker_running_.exchange(false, std::memory_order_acq_rel)) {
+    return;
+  }
+  present_request_cv_.notify_all();
+  if (present_worker_.joinable()) {
+    present_worker_.join();
+  }
+}
+
 void PlumeGraphicsSystem::PublishDrawSnapshot(uint32_t prim_type, uint32_t source_select,
                                               uint32_t num_indices) {
   // Both halves of this are per-draw and neither is cheap: the pull copies
@@ -1412,32 +1451,27 @@ void PlumeGraphicsSystem::PresentGuestFrame(uint32_t width, uint32_t height) {
   // draw, but it can never get more than a frame ahead of what is on screen.
   static const bool wait_for_present = std::getenv("XERENGE_SYNC_PRESENT") != nullptr;
   if (!wait_for_present) {
+    StartPresentWorker();
     {
       std::unique_lock lock(present_flight_mutex_);
-      present_flight_cv_.wait(lock, [this] { return !present_in_flight_; });
+      if (!present_flight_cv_.wait_for(lock, std::chrono::milliseconds(2000),
+                                       [this] { return !present_in_flight_; })) {
+        REXLOG_WARN("plume: present_flight timed out waiting for previous frame");
+        return;
+      }
       present_in_flight_ = true;
     }
-    if (app_context_->CallInUIThreadDeferred([this, width, height]() {
-          PresentClearColorOnUiThread(width, height);
-          {
-            std::lock_guard lock(present_flight_mutex_);
-            present_in_flight_ = false;
-          }
-          present_flight_cv_.notify_one();
-        })) {
-      return;
-    }
     {
-      std::lock_guard lock(present_flight_mutex_);
-      present_in_flight_ = false;
+      std::lock_guard lock(present_request_mutex_);
+      present_request_width_ = width;
+      present_request_height_ = height;
+      present_request_pending_ = true;
     }
-    present_flight_cv_.notify_one();
-  } else if (app_context_->CallInUIThreadSynchronous(
-                 [this, width, height]() { PresentClearColorOnUiThread(width, height); })) {
+    present_request_cv_.notify_one();
     return;
   }
 
-  // Fallback if we're already on the UI thread.
+  // Fallback for synchronous present.
   PresentClearColorOnUiThread(width, height);
 }
 
@@ -1641,13 +1675,25 @@ void PlumeGraphicsSystem::PresentClearColorOnUiThread(uint32_t guest_width,
     // Without a place of its own this frame the video is not drawn at all
     // there: the stale frame put in front of the garage made it flicker.
     static const bool targets_followed = std::getenv("XERENGE_D3D_TARGETS") != nullptr;
-    if (!video_placed && !targets_followed && !pending_video_.video_rgba.empty()) {
+    bool has_3d = false;
+    for (const auto& ov : overlays) {
+      if (ov.d3d_vertex_buffer != 0 && ov.num_indices > 100) {
+        has_3d = true;
+        break;
+      }
+    }
+    if (!video_placed && (!targets_followed || !has_3d) && !pending_video_.video_rgba.empty()) {
       batch.push_back(pending_video_);
     }
     batch.insert(batch.end(), overlays.begin(), overlays.end());
     InterpolateFrame(batch);
     if (batch.empty()) {
-      if (presented_once_) {
+      bool has_resolves = false;
+      {
+        std::lock_guard res_lock(resolve_mutex_);
+        has_resolves = !pending_resolves_.empty();
+      }
+      if (presented_once_ && !has_resolves) {
         return;
       }
     }
@@ -3563,6 +3609,7 @@ void PlumeGraphicsSystem::DispatchInterruptCallback(uint32_t source, uint32_t cp
 }
 
 void PlumeGraphicsSystem::Shutdown() {
+  StopPresentWorker();
   StopVideoWorker();
   StopVsyncWorker();
 

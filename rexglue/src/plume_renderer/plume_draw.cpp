@@ -4295,7 +4295,8 @@ void PlumeDrawContext::PresentResolvedFrame(plume::RenderCommandList* list,
   // shown from the target it was a black frame. Show the last picture again.
   const bool empty_or_cleared_secondary =
       (frame_encoded_draws_ == 0) ||
-      (frame_resolved_dests_.empty() && frame_cleared_whole_ && frame_encoded_draws_ <= 8);
+      (frame_cleared_whole_ && frame_encoded_draws_ <= 8) ||
+      (!frame_drawn_since_copy_ && frame_cleared_whole_);
   if (frame_output_dest_ == 0 && empty_or_cleared_secondary) {
     const uint32_t fallback = last_output_dest_ != 0 ? last_output_dest_ : front_buffer;
     if (fallback != 0 && resolved_targets_.find(fallback) != resolved_targets_.end()) {
@@ -4880,14 +4881,12 @@ bool PlumeDrawContext::ReadsResolvedCopy(const GuestDrawSnapshot& snap,
   // among them - so scanning them all counted every interface draw as a pass
   // over a copy, and its positions were converted twice and collapsed.
   using rex::graphics::xenos::FetchConstantType;
-  for (uint32_t slot = 0; slot < 4; ++slot) {
-    const auto fetch = TextureFetchAt(snap, slot);
-    if (fetch.type == FetchConstantType::kTexture && fetch.base_address != 0) {
-      auto it = resolved_targets_.find(fetch.base_address << 12);
-      if (it != resolved_targets_.end() && !it->second.cube &&
-          (!this_frame || frame_resolved_dests_.count(fetch.base_address << 12) != 0)) {
-        return true;
-      }
+  const auto fetch = TextureFetchAt(snap, 0);
+  if (fetch.type == FetchConstantType::kTexture && fetch.base_address != 0) {
+    auto it = resolved_targets_.find(fetch.base_address << 12);
+    if (it != resolved_targets_.end() && !it->second.cube &&
+        (!this_frame || frame_resolved_dests_.count(fetch.base_address << 12) != 0)) {
+      return true;
     }
   }
   return false;
@@ -5826,7 +5825,7 @@ void PlumeDrawContext::EncodeDraws(plume::RenderCommandList* list,
         if (is_front) {
           last_front_buffer_resolve_ = snap.resolve_dest;
           frame_output_dest_ = snap.resolve_dest;
-        } else if (last_front_buffer_resolve_ == 0) {
+        } else if (last_front_buffer_resolve_ == 0 && rw >= 1280 && rh >= 720 && !snap.resolve_cube) {
           frame_output_dest_ = snap.resolve_dest;
         }
         frame_resolved_dests_.insert(snap.resolve_dest);
@@ -5894,6 +5893,7 @@ void PlumeDrawContext::EncodeDraws(plume::RenderCommandList* list,
   if (drawn_since_copy) {
     frame_output_dest_ = 0;
   }
+  frame_drawn_since_copy_ = drawn_since_copy;
   {
     static const bool probing = std::getenv("XERENGE_FRAME_PROBE") != nullptr;
     if (probing) {

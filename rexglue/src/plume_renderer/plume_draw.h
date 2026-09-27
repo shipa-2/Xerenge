@@ -555,6 +555,7 @@ class PlumeDrawContext {
   uint32_t last_front_buffer_resolve_ = 0;
   bool frame_cleared_after_resolve_ = false;
   bool frame_cleared_whole_ = false;
+  bool frame_drawn_since_copy_ = true;
   uint32_t frame_draws_after_resolve_ = 0;
   uint32_t frame_indices_after_resolve_ = 0;
   std::unordered_set<uint32_t> known_front_buffers_{0x06C90000, 0x068F8000};
