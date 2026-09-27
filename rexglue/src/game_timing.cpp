@@ -39,6 +39,7 @@
 #include <rex/ppc.h>
 
 #include "frame_clock_provider.h"
+#include "guest_memory.h"
 
 namespace {
 // What the timer returned last (the steps the coming frame runs), and the one
@@ -77,11 +78,11 @@ bool LogicFollowsWallClock() {
 }
 
 uint32_t LoadU32(const uint8_t* base, uint32_t address) {
-  return __builtin_bswap32(*reinterpret_cast<const uint32_t*>(base + address));
+  return xerenge::LoadGuestU32(base, address);
 }
 
 uint64_t LoadU64(const uint8_t* base, uint32_t address) {
-  return __builtin_bswap64(*reinterpret_cast<const uint64_t*>(base + address));
+  return xerenge::LoadGuestU64(base, address);
 }
 }  // namespace
 
@@ -103,7 +104,7 @@ REX_HOOK_RAW(sub_82363E68) {
                   ctx.r4.u32, ctx.r5.u32);
     }
     if (mode == 0) {
-      *reinterpret_cast<uint32_t*>(base + timer) = __builtin_bswap32(1u);
+      xerenge::StoreGuestU32(base, timer, 1u);
     }
     // Not before it has started: until its step count is positive the timer
     // only takes the time and hands back the minimum, and with a minimum of 0

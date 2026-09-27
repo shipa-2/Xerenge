@@ -22,6 +22,7 @@
 #include <rex/hook.h>
 #include <rex/logging.h>
 #include <rex/ppc.h>
+#include "guest_memory.h"
 
 REXCVAR_DECLARE(bool, online);
 // Off, the lobby is not stood in for: the title talks to a lobby server (ours,
@@ -81,9 +82,7 @@ bool g_lobby_connecting = false;  // login reached state 6: the lobby is prepare
 bool g_lobby_logged_in = false;   // login reached state 10: logged in
 
 uint32_t LoadU32(const uint8_t* base, uint32_t address) {
-  uint32_t value;
-  std::memcpy(&value, base + address, sizeof(value));
-  return __builtin_bswap32(value);
+  return xerenge::LoadGuestU32(base, address);
 }
 
 const char* LoginStateName(uint32_t state) {
@@ -146,8 +145,8 @@ REX_HOOK_RAW(sub_82366C90) {
     // changes - a request in flight (+0xc), busy (+0x10), done (+0x11),
     // failed (+0x12) - and what GetLobbyStatus made of it.
     const uint32_t pending = LoadU32(base, lobby + 0xC);
-    const uint32_t flags = (uint32_t(base[lobby + 0x10]) << 16) |
-                           (uint32_t(base[lobby + 0x11]) << 8) | base[lobby + 0x12];
+    const uint32_t flags = (uint32_t(*xerenge::GuestPointer(base, lobby + 0x10)) << 16) |
+                           (uint32_t(*xerenge::GuestPointer(base, lobby + 0x11)) << 8) | *xerenge::GuestPointer(base, lobby + 0x12);
     static uint64_t last = ~0ull;
     const uint64_t now = (uint64_t(pending) << 32) ^ (uint64_t(flags) << 8) ^ ctx.r3.u32;
     if (now != last) {
@@ -221,7 +220,7 @@ REX_HOOK_RAW(sub_8211F448) {
   if (Online()) {
     REXLOG_INFO("--online: replay manager login skipped (no Locker server)");
     const uint32_t value = __builtin_bswap32(5u);
-    std::memcpy(base + ctx.r6.u32, &value, sizeof(value));
+    std::memcpy(xerenge::GuestPointer(base, ctx.r6.u32), &value, sizeof(value));
     return;
   }
   __imp__sub_8211F448(ctx, base);

@@ -27,6 +27,7 @@
 
 #include <rex/hook.h>
 #include <rex/ppc.h>
+#include "guest_memory.h"
 
 namespace {
 
@@ -57,11 +58,7 @@ std::string Stamp() {
   return text;
 }
 
-uint32_t LoadGuestU32(const uint8_t* base, uint32_t address) {
-  uint32_t value = 0;
-  std::memcpy(&value, base + address, sizeof(value));
-  return __builtin_bswap32(value);
-}
+using xerenge::LoadGuestU32;
 
 }  // namespace
 
@@ -105,7 +102,7 @@ bool NameIsStartupLogo(const char* name) {
 REX_HOOK_RAW(sub_821FEBC0) {
   const uint32_t descriptor = ctx.r4.u32;
   const uint32_t name = descriptor != 0 ? LoadGuestU32(base, descriptor) : 0;
-  const char* name_text = name != 0 ? reinterpret_cast<const char*>(base + name) : nullptr;
+  const char* name_text = name != 0 ? reinterpret_cast<const char*>(xerenge::GuestPointer(base, name)) : nullptr;
   if (Tracing()) {
     std::cerr << Stamp() << "movie: clip requested: " << (name_text ? name_text : "(none)") << '\n';
   }
@@ -153,10 +150,17 @@ REX_HOOK_RAW(sub_821FF558) {
 
 REX_HOOK_RAW(sub_8248D398) {
   if (Tracing()) {
-    const uint32_t previous = LoadGuestU32(base, ctx.r3.u32 + 0xD8u);
-    if (previous != ctx.r4.u32) {
-      std::cerr << Stamp() << "movie: player status " << previous << " -> " << ctx.r4.u32 << '\n';
+    const uint32_t player = ctx.r3.u32;
+    const uint32_t wanted = ctx.r4.u32;
+    const uint32_t previous = LoadGuestU32(base, player + 0xD8u);
+    __imp__sub_8248D398(ctx, base);
+    const uint32_t after = LoadGuestU32(base, player + 0xD8u);
+    if (previous != wanted || after != wanted) {
+      // The player at its address, and whether the status really landed there.
+      std::fprintf(stderr, "%smovie: player %08X status %u -> %u (reads back %u)\n", Stamp().c_str(),
+                   player, previous, wanted, after);
     }
+    return;
   }
   __imp__sub_8248D398(ctx, base);
 }

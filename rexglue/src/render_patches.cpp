@@ -16,6 +16,7 @@
 
 #include <rex/hook.h>
 #include <rex/ppc.h>
+#include "guest_memory.h"
 
 namespace {
 bool SkipSkyBloom() {
@@ -65,7 +66,7 @@ REX_HOOK_RAW(sub_8215B068) {
 REX_HOOK_RAW(sub_821436D0) {
   if (SkipMotionBlur()) {
     uint16_t raw = 0;
-    std::memcpy(&raw, base + ctx.r3.u32, sizeof(raw));
+    std::memcpy(&raw, xerenge::GuestPointer(base, ctx.r3.u32), sizeof(raw));
     const int16_t value = int16_t(__builtin_bswap16(raw));
     if (value <= 0) {
       ctx.r3.u64 = 1;

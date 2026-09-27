@@ -30,6 +30,8 @@
 #include <rex/system/interfaces/graphics.h>
 #include <rex/system/kernel_state.h>
 
+#include "guest_memory.h"
+
 extern "C" void __imp__sub_82482680(PPCContext& __restrict, uint8_t*);  // Render
 extern "C" void __imp__sub_824823F0(PPCContext& __restrict, uint8_t*);  // retire callback
 extern "C" void __imp__sub_824822C8(PPCContext& __restrict, uint8_t*);  // Stop
@@ -59,9 +61,7 @@ bool Tracing() {
 }
 
 uint32_t InFlight(const uint8_t* base, uint32_t renderer) {
-  uint32_t value = 0;
-  std::memcpy(&value, base + renderer + kInFlightOffset, sizeof(value));
-  return __builtin_bswap32(value);
+  return xerenge::LoadGuestU32(base, renderer + kInFlightOffset);
 }
 
 // Bounded, so a counter that never falls - a renderer already torn down, or one

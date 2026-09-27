@@ -18,6 +18,7 @@
 
 #include <rex/hook.h>
 #include <rex/ppc.h>
+#include "guest_memory.h"
 
 extern "C" void __imp__sub_8247BDD8(PPCContext& __restrict, uint8_t*);
 
@@ -30,7 +31,7 @@ REX_HOOK_RAW(sub_8247BDD8) {
     float words[12];
     for (uint32_t word = 0; word < 12; ++word) {
       uint32_t raw = 0;
-      std::memcpy(&raw, base + transform + word * 4, sizeof(raw));
+      std::memcpy(&raw, xerenge::GuestPointer(base, transform + word * 4), sizeof(raw));
       raw = __builtin_bswap32(raw);
       std::memcpy(&words[word], &raw, sizeof(words[word]));
     }
