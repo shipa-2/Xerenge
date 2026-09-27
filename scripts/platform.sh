@@ -17,7 +17,9 @@ case "$(uname -s)" in
         XR_EXE=
         ;;
 esac
-XR_JOBS=$(nproc 2>/dev/null || echo 4)
+# XR_JOBS may be set to fewer: the generated code is large, and a machine with
+# little memory runs out of it at one job per core.
+XR_JOBS=${XR_JOBS:-$(nproc 2>/dev/null || echo 4)}
 
 # Every path the scripts build from $root reaches native programs too (CMake
 # options, the manifest), and those read D:/..., not the shell's /d/...

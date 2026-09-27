@@ -75,15 +75,22 @@ set -e
 cd "$(dirname "$0")"
 mkdir -p logs
 
+# Windows (under Git for Windows' bash) differs in the SDK's preset, the
+# executable's name and how the runtime libraries are found.
+case "$(uname -s)" in
+    MINGW*|MSYS*|CYGWIN*) PRESET=win-amd64; EXE=.exe; WINDOWS=1 ;;
+    *) PRESET=linux-amd64; EXE= ;;
+esac
+
 # Resolve the SDK and the game without hard-coding one machine's layout. The
 # SDK sits beside the project in the repository; a working copy kept elsewhere
 # can name it with XERENGE_SDK. The game directory is whatever the manifest was
 # pointed at when the project was built, so there is one place to change it.
 if [ -n "$XERENGE_SDK" ]; then
-    SDK_LIB="$XERENGE_SDK/out/linux-amd64"
+    SDK_LIB="$XERENGE_SDK/out/$PRESET"
 else
     for candidate in ../rexglue-sdk ../Xerenge/rexglue-sdk; do
-        [ -d "$candidate/out/linux-amd64" ] && SDK_LIB="$candidate/out/linux-amd64" && break
+        [ -d "$candidate/out/$PRESET" ] && SDK_LIB="$candidate/out/$PRESET" && break
     done
 fi
 if [ -z "$SDK_LIB" ]; then
@@ -169,8 +176,13 @@ fi
 [ -n "$NOBLOOM" ] && XERENGE_NO_BLOOM=1 && export XERENGE_NO_BLOOM
 [ -n "$NOMOTIONBLUR" ] && XERENGE_NO_MOTION_BLUR=1 && export XERENGE_NO_MOTION_BLUR
 
-export SDL_VIDEODRIVER=x11
-export LD_LIBRARY_PATH="$SDK_LIB${LD_LIBRARY_PATH:+:$LD_LIBRARY_PATH}"
+if [ -n "$WINDOWS" ]; then
+    # The libraries built with the game first, then the SDK's.
+    export PATH="$(pwd)/build:$SDK_LIB:$PATH"
+else
+    export SDL_VIDEODRIVER=x11
+    export LD_LIBRARY_PATH="$SDK_LIB${LD_LIBRARY_PATH:+:$LD_LIBRARY_PATH}"
+fi
 
 # The guest's colour targets are 2x multisampled, and a multisampled target
 # cannot be read back from a capture, which makes a frame much harder to take
@@ -237,5 +249,5 @@ elif [ "$MODE" = gdb ]; then
         -ex "handle SIGBUS nostop noprint pass" \
         -ex run --args ./build/burnout "$@"
 else
-    exec ./build/burnout "$@" 2>&1 | tee "$CONSOLE"
+    exec ./build/burnout$EXE "$@" 2>&1 | tee "$CONSOLE"
 fi
