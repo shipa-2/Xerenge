@@ -72,6 +72,7 @@ bool Faking() {
 // before it is prepared sends it into structures that are not there yet.
 bool g_lobby_connecting = false;  // login reached state 6: the lobby is prepared
 bool g_lobby_logged_in = false;   // login reached state 10: logged in
+int g_frames_connecting = 0;
 
 uint32_t LoadU32(const uint8_t* base, uint32_t address) {
   uint32_t value;
@@ -121,48 +122,75 @@ REX_HOOK_RAW(sub_82217590) {
     REXLOG_INFO("--online: login state {} ({}) -> {} ({})", before, LoginStateName(before), after,
                 LoginStateName(after));
     if (after == 6) {
+      // Entering state 6: start forcing GetLobbyStatus=2 after a few frames.
       g_lobby_connecting = true;
-    } else if (after == 10) {
-      g_lobby_logged_in = true;
+      g_frames_connecting = 0;
+    } else if (after == 7 || after == 8) {
+      // States 7 (logging in to lobby) and 8 (downloading ToS) also poll
+      // GetLobbyStatus. Keep g_lobby_connecting so the hook keeps forcing 2.
+      // Don't reset g_frames_connecting — already past the threshold.
+      g_lobby_connecting = true;
+    } else {
+      g_lobby_connecting = false;
+      if (after == 10) {
+        g_lobby_logged_in = true;
+      }
     }
   }
 }
 
 // CGtLobbyDirtySock::GetLobbyStatus (the lobby's vtable slot 3, reached
 // directly and through CB4NetworkManager): 0 while busy, 1 on failure, 2 once
-// connected to EA's lobby server. There is no server, so it is connected.
+// connected to EA's lobby server.
 REX_HOOK_RAW(sub_82366C90) {
   const uint32_t lobby = ctx.r3.u32;
   __imp__sub_82366C90(ctx, base);
-  if (Online() && !Faking()) {
-    // Talking to a real lobby server: log the lobby's own state whenever it
-    // changes - a request in flight (+0xc), busy (+0x10), done (+0x11),
-    // failed (+0x12) - and what GetLobbyStatus made of it.
-    const uint32_t pending = LoadU32(base, lobby + 0xC);
-    const uint32_t flags = (uint32_t(base[lobby + 0x10]) << 16) |
-                           (uint32_t(base[lobby + 0x11]) << 8) | base[lobby + 0x12];
-    static uint64_t last = ~0ull;
-    const uint64_t now = (uint64_t(pending) << 32) ^ (uint64_t(flags) << 8) ^ ctx.r3.u32;
-    if (now != last) {
-      last = now;
-      REXLOG_INFO("--online: lobby status {} (request in flight {:08X}, busy {} done {} failed {})",
-                  ctx.r3.u32, pending, flags >> 16, (flags >> 8) & 0xFF, flags & 0xFF);
-    }
+  if (!Online()) return;
+
+  // Log the lobby's own state whenever it changes (a request in flight (+0xc),
+  // busy (+0x10), done (+0x11), failed (+0x12)) and what GetLobbyStatus said.
+  const uint32_t pending = LoadU32(base, lobby + 0xC);
+  const uint32_t flags = (uint32_t(base[lobby + 0x10]) << 16) |
+                         (uint32_t(base[lobby + 0x11]) << 8) | base[lobby + 0x12];
+  static uint64_t last_state = ~0ull;
+  const uint64_t now = (uint64_t(pending) << 32) ^ (uint64_t(flags) << 8) ^ ctx.r3.u32;
+  if (now != last_state) {
+    last_state = now;
+    REXLOG_INFO("--online: lobby status {} (in-flight {:08X}, busy {} done {} failed {})",
+                ctx.r3.u32, pending, flags >> 16, (flags >> 8) & 0xFF, flags & 0xFF);
   }
-  if (Faking() && g_lobby_connecting) {
-    static uint32_t last = 0xFFFFFFFF;
-    if (ctx.r3.u32 != last) {
-      last = ctx.r3.u32;
-      REXLOG_INFO("--online: lobby status {} from DirtySock, answered 2 (connected)", last);
+
+  if (Faking()) {
+    // Stand-in mode: always report connected.
+    static uint32_t last_fake = 0xFFFFFFFF;
+    if (ctx.r3.u32 != last_fake) {
+      last_fake = ctx.r3.u32;
+      REXLOG_INFO("--online: fake lobby: status {} -> 2 (connected)", last_fake);
     }
     ctx.r3.u64 = 2;
+  } else {
+    // Real server mode: force 2 (connected) whenever DirtySock didn't report
+    // an actual failure (1). DirtySock may sit "busy" indefinitely while it
+    // processes auth tokens; the title's state machine needs to see 2 to
+    // advance through states 6, 7, and 8.
+    if (ctx.r3.u32 != 1) {
+      static bool forced_once = false;
+      if (!forced_once) {
+        forced_once = true;
+        REXLOG_INFO(
+            "--online: forcing GetLobbyStatus 2 (was {}, busy={} done={} failed={})",
+            ctx.r3.u32, flags >> 16, (flags >> 8) & 0xFF, flags & 0xFF);
+      }
+      ctx.r3.u64 = 2;
+    }
   }
 }
+
 
 // CGtLobbyDirtySock::IsLoggedIntoLobby - it is.
 REX_HOOK_RAW(sub_82368410) {
   __imp__sub_82368410(ctx, base);
-  if (Faking() && g_lobby_logged_in) {
+  if (Online() && g_lobby_logged_in) {
     ctx.r3.u64 = 1;
   }
 }
@@ -184,7 +212,7 @@ REX_HOOK_RAW(sub_82229FA8) {
 // live in EA's Locker storage, on the same servers. Nothing is fetched; the
 // table stays empty.
 REX_HOOK_RAW(sub_8222FB00) {
-  if (Faking()) {
+  if (Online()) {
     REXLOG_INFO("--online: Revenge rivals table not downloaded (no Locker server); left empty");
     return;
   }
@@ -197,7 +225,7 @@ REX_HOOK_RAW(sub_8222FB00) {
 // state 3 after it returns, over whatever the callback set.)
 REX_HOOK_RAW(sub_82230B70) {
   const uint32_t self = ctx.r3.u32;
-  if (Faking() && LoadU32(base, self) == 3) {
+  if (Online() && LoadU32(base, self) == 3) {
     REXLOG_INFO("--online: rivals download reported finished");
     ctx.r3.u64 = 1;
     ctx.r4.u64 = self;
@@ -211,7 +239,7 @@ REX_HOOK_RAW(sub_82230B70) {
 // queued by RivalsDownloadedCallback with ReplayManagerOnLoginCallback, which
 // only sets the post-login manager (r6) to state 5. Not queued; state 5 set.
 REX_HOOK_RAW(sub_8211F448) {
-  if (Faking()) {
+  if (Online()) {
     REXLOG_INFO("--online: replay manager login skipped (no Locker server)");
     const uint32_t value = __builtin_bswap32(5u);
     std::memcpy(base + ctx.r6.u32, &value, sizeof(value));
@@ -226,7 +254,7 @@ REX_HOOK_RAW(sub_8211F448) {
 // faults without one). There is no news: nothing is fetched, and
 // UpdateNewsTos stays idle.
 REX_HOOK_RAW(sub_821E9638) {
-  if (Faking()) {
+  if (Online()) {
     static bool logged = false;
     if (!logged) {
       logged = true;
@@ -265,7 +293,7 @@ REX_HOOK_RAW(sub_82224DD0) {
 // undone, the download state points at an HTTP transfer that was never
 // created, and ProtoHttpUpdate faults on it. No terms either.
 REX_HOOK_RAW(sub_821E95A8) {
-  if (Faking()) {
+  if (Online()) {
     static bool logged = false;
     if (!logged) {
       logged = true;
@@ -297,13 +325,19 @@ REX_HOOK_RAW(sub_8220D100) {
 // object talks to a server that no longer exists; it is logged in.
 REX_HOOK_RAW(sub_822037C0) {
   __imp__sub_822037C0(ctx, base);
-  if (Faking()) {
+  if (Online()) {
     static uint32_t last = 0xFFFFFFFF;
     if (ctx.r3.u32 != last) {
       last = ctx.r3.u32;
-      REXLOG_INFO("--online: lobby login status {} from DirtySock, answered 6 (logged in)", last);
+      if (Faking()) {
+        REXLOG_INFO("--online: lobby login status {} from DirtySock, answered 6 (logged in)", last);
+        ctx.r3.u64 = 6;
+      } else {
+        REXLOG_INFO("--online: lobby login status {} from DirtySock (real server)", last);
+      }
+    } else if (Faking()) {
+      ctx.r3.u64 = 6;
     }
-    ctx.r3.u64 = 6;
   }
 }
 

@@ -50,13 +50,42 @@ class Server {
  private:
   enum class Role { kDirectory, kLobby };
 
+  struct Player {
+    uint32_t id = 0;
+    std::string account_name = "BurnoutPlayer";
+    std::string persona = "BurnoutPlayer";
+    std::string ip = "127.0.0.1";
+    std::string lkey;
+    std::string userparams;
+    std::string userflags = "0";
+    uint32_t room_id = 1;
+    uint32_t game_id = 0;
+    bool is_host = false;
+  };
+
+  struct GameSession {
+    uint32_t id = 0;
+    std::string name;
+    std::string host_persona;
+    std::string params;
+    std::string sysflags = "0";
+    uint32_t minsize = 2;
+    uint32_t maxsize = 6;
+    uint32_t room_id = 1;
+    std::string start_time;
+    bool started = false;
+    std::vector<SocketHandle> players;
+  };
+
   struct Connection {
     SocketHandle fd = -1;
     Role role = Role::kLobby;
     std::string peer;
+    std::string peer_ip;
     std::string local_address;  // the address the client reached us at
     std::vector<uint8_t> in;
     std::vector<uint8_t> out;
+    Player player;
   };
 
   SocketHandle Listen(uint16_t port);
@@ -64,9 +93,42 @@ class Server {
   void Accept(SocketHandle listener, Role role);
   void Receive(Connection& connection);
   void Flush(Connection& connection);
+  void OnDisconnect(SocketHandle fd);
   void Handle(Connection& connection, const Message& message);
   void HandleDirectory(Connection& connection, const Message& message);
   void HandleLobby(Connection& connection, const Message& message);
+
+  // Aries command handlers
+  void HandleAuth(Connection& connection, const Message& message);
+  void HandleUser(Connection& connection, const Message& message);
+  void HandleCper(Connection& connection, const Message& message);
+  void HandlePers(Connection& connection, const Message& message);
+  void HandleSele(Connection& connection, const Message& message);
+  void HandleQdef(Connection& connection, const Message& message);
+  void HandleSlst(Connection& connection, const Message& message);
+  void HandlePriv(Connection& connection, const Message& message);
+  void HandleLlvl(Connection& connection, const Message& message);
+  void HandleUatr(Connection& connection, const Message& message);
+  void HandleRcat(Connection& connection, const Message& message);
+  void HandleRoom(Connection& connection, const Message& message);
+  void HandleMove(Connection& connection, const Message& message);
+  void HandleGsea(Connection& connection, const Message& message);
+  void HandleGcre(Connection& connection, const Message& message);
+  void HandleGjoi(Connection& connection, const Message& message);
+  void HandleGget(Connection& connection, const Message& message);
+  void HandleGset(Connection& connection, const Message& message);
+  void HandleGsta(Connection& connection, const Message& message);
+  void HandleGlea(Connection& connection, const Message& message);
+  void HandleMesg(Connection& connection, const Message& message);
+
+  // Notification / broadcast helpers
+  Fields FormatGameInfo(const GameSession& session);
+  void SendWho(Connection& connection);
+  void SendRoomUpdate(Connection& connection);
+  void BroadcastToRoom(uint32_t room_id, const std::vector<uint8_t>& bytes, SocketHandle except_fd = -1);
+  void BroadcastToGame(uint32_t game_id, const std::vector<uint8_t>& bytes, SocketHandle except_fd = -1);
+  uint32_t GetRoomPlayerCount(uint32_t room_id) const;
+
   void Send(Connection& connection, const std::vector<uint8_t>& bytes);
   void Log(const std::string& line) const;
 
@@ -78,9 +140,12 @@ class Server {
   // WSAPoll() when stopping.
   SocketHandle wake_[2] = {-1, -1};
   std::map<SocketHandle, std::unique_ptr<Connection>> connections_;
+  std::map<uint32_t, GameSession> games_;
   std::thread thread_;
   std::atomic<bool> running_{false};
   uint32_t next_session_ = 100000;
+  uint32_t next_player_id_ = 1;
+  uint32_t next_game_id_ = 1;
 };
 
 }  // namespace ealobby
