@@ -21,12 +21,15 @@ constexpr uint32_t kBufferCount = 2;
 constexpr plume::RenderFormat kSwapchainFormat = plume::RenderFormat::B8G8R8A8_UNORM;
 
 // The window as plume takes it: SDL's own where plume draws through SDL's Vulkan
-// surface, the Win32 handle on Windows.
-plume::RenderWindow NativeRenderWindow(SDL_Window* window) {
+// surface, the Win32 handle on Windows. Not asked of SDL here on Windows:
+// this DLL has its own copy of SDL, which answers null for a window the SDK's
+// copy made - the swap chain then had no window at all.
+plume::RenderWindow NativeRenderWindow(SDL_Window* window, void* native_window) {
 #ifdef _WIN32
-  return static_cast<HWND>(SDL_GetPointerProperty(SDL_GetWindowProperties(window),
-                                                  SDL_PROP_WINDOW_WIN32_HWND_POINTER, nullptr));
+  (void)window;
+  return static_cast<HWND>(native_window);
 #else
+  (void)native_window;
   return window;
 #endif
 }
@@ -37,7 +40,8 @@ PlumeSwapchain::~PlumeSwapchain() {
   Shutdown();
 }
 
-bool PlumeSwapchain::Initialize(plume::RenderDevice* device, SDL_Window* window) {
+bool PlumeSwapchain::Initialize(plume::RenderDevice* device, SDL_Window* window,
+                                void* native_window) {
   Shutdown();
 
   if (!device || !window) {
@@ -47,6 +51,7 @@ bool PlumeSwapchain::Initialize(plume::RenderDevice* device, SDL_Window* window)
 
   device_ = device;
   window_ = window;
+  native_window_ = native_window;
 
   command_queue_ = device_->createCommandQueue(plume::RenderCommandListType::DIRECT);
   if (!command_queue_) {
@@ -56,7 +61,7 @@ bool PlumeSwapchain::Initialize(plume::RenderDevice* device, SDL_Window* window)
   }
 
   swap_chain_ = command_queue_->createSwapChain(
-      plume::RenderSwapChainDesc(NativeRenderWindow(window_), kSwapchainFormat, kBufferCount));
+      plume::RenderSwapChainDesc(NativeRenderWindow(window_, native_window_), kSwapchainFormat, kBufferCount));
   if (!swap_chain_) {
     REXLOG_ERROR("plume: failed to create swap chain");
     Shutdown();
@@ -97,11 +102,7 @@ bool PlumeSwapchain::Initialize(plume::RenderDevice* device, SDL_Window* window)
 
   CreateFramebuffers();
 
-  int pixel_width = 0;
-  int pixel_height = 0;
-  SDL_GetWindowSizeInPixels(window_, &pixel_width, &pixel_height);
-  last_width_ = uint32_t(std::max(pixel_width, 0));
-  last_height_ = uint32_t(std::max(pixel_height, 0));
+  WindowPixelSize(&last_width_, &last_height_);
 
   ready_ = !framebuffers_.empty();
   if (ready_) {
@@ -130,6 +131,7 @@ void PlumeSwapchain::Shutdown() {
   command_queue_.reset();
   device_ = nullptr;
   window_ = nullptr;
+  native_window_ = nullptr;
   last_width_ = 0;
   last_height_ = 0;
 }
@@ -208,16 +210,29 @@ void PlumeSwapchain::CreateFramebuffers() {
   }
 }
 
+void PlumeSwapchain::WindowPixelSize(uint32_t* width, uint32_t* height) const {
+#ifdef _WIN32
+  RECT rect{};
+  GetClientRect(static_cast<HWND>(native_window_), &rect);
+  *width = uint32_t(std::max<LONG>(rect.right - rect.left, 0));
+  *height = uint32_t(std::max<LONG>(rect.bottom - rect.top, 0));
+#else
+  int pixel_width = 0;
+  int pixel_height = 0;
+  SDL_GetWindowSizeInPixels(window_, &pixel_width, &pixel_height);
+  *width = uint32_t(std::max(pixel_width, 0));
+  *height = uint32_t(std::max(pixel_height, 0));
+#endif
+}
+
 void PlumeSwapchain::ResizeIfNeeded() {
   if (!window_ || !swap_chain_) {
     return;
   }
 
-  int pixel_width = 0;
-  int pixel_height = 0;
-  SDL_GetWindowSizeInPixels(window_, &pixel_width, &pixel_height);
-  const uint32_t width = uint32_t(std::max(pixel_width, 0));
-  const uint32_t height = uint32_t(std::max(pixel_height, 0));
+  uint32_t width = 0;
+  uint32_t height = 0;
+  WindowPixelSize(&width, &height);
   if (width == last_width_ && height == last_height_) {
     return;
   }

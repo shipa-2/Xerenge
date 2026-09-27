@@ -190,7 +190,8 @@ void PlumeGraphicsSystem::AttachPresentationWindow(ui::Window* window) {
   }
 
   swapchain_ = std::make_unique<PlumeSwapchain>();
-  if (!swapchain_->Initialize(render_device_.get(), sdl_window)) {
+  if (!swapchain_->Initialize(render_device_.get(), sdl_window,
+                              window_->GetNativeWindowHandle())) {
     REXLOG_ERROR("plume: swapchain initialization failed");
     swapchain_.reset();
     return;

@@ -40,7 +40,9 @@ class PlumeSwapchain {
   PlumeSwapchain(const PlumeSwapchain&) = delete;
   PlumeSwapchain& operator=(const PlumeSwapchain&) = delete;
 
-  bool Initialize(plume::RenderDevice* device, SDL_Window* window);
+  // `native_window` is the HWND on Windows, taken from the SDK: this library
+  // links its own copy of SDL, which knows nothing of the SDK's windows.
+  bool Initialize(plume::RenderDevice* device, SDL_Window* window, void* native_window);
   void Shutdown();
 
   bool IsReady() const { return ready_; }
@@ -61,9 +63,12 @@ class PlumeSwapchain {
  private:
   void CreateFramebuffers();
   void ResizeIfNeeded();
+  // The drawable size in pixels.
+  void WindowPixelSize(uint32_t* width, uint32_t* height) const;
 
   plume::RenderDevice* device_ = nullptr;
   SDL_Window* window_ = nullptr;
+  void* native_window_ = nullptr;
 
   std::unique_ptr<plume::RenderCommandQueue> command_queue_;
   std::unique_ptr<plume::RenderCommandList> command_list_;
