@@ -11,6 +11,7 @@
 #include <map>
 #include <memory>
 #include <mutex>
+#include <shared_mutex>
 #include <string>
 #include <unordered_map>
 #include <vector>
@@ -49,6 +50,18 @@ struct VfetchAttr {
   uint32_t dst_reg = 0;
   uint32_t dst_swiz = 0;
   bool index_rounded = false;
+};
+
+struct ResolvedShaderVfetch {
+  std::vector<VfetchAttr> passthrough_attrs;
+  std::vector<VfetchAttr> real_attrs;
+  int32_t passthrough_pos_fetch_const = -1;
+  uint32_t passthrough_pos_float = 0;
+  int32_t real_pos_fetch_const = -1;
+  uint32_t real_pos_float = 0;
+  bool is_index_instanced = false;
+  bool is_vertex_fetch = false;
+  bool is_position_scaling = false;
 };
 
 // Lets whoever encodes a frame close the render pass and open it again. The
@@ -561,8 +574,15 @@ class PlumeDrawContext {
   std::array<plume::RenderInputElement, 32> input_elements_{};
   plume::RenderVertexBufferView vb_view_{};
 
-  std::mutex vfetch_mutex_;
+  mutable std::shared_mutex vfetch_mutex_;
   std::unordered_map<uint64_t, std::vector<VfetchAttr>> vfetch_by_shader_;
+  std::unordered_map<uint64_t, std::unique_ptr<ResolvedShaderVfetch>> resolved_vfetch_by_shader_;
+
+  const ResolvedShaderVfetch* FindResolvedVfetch(uint64_t vs_hash) const {
+    std::shared_lock lock(vfetch_mutex_);
+    auto it = resolved_vfetch_by_shader_.find(vs_hash);
+    return it != resolved_vfetch_by_shader_.end() ? it->second.get() : nullptr;
+  }
 
   std::unordered_map<PipelineKey, std::unique_ptr<plume::RenderPipeline>, PipelineKeyHash>
       pipelines_;

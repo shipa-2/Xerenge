@@ -1523,12 +1523,12 @@ void PlumeGraphicsSystem::PresentClearColorOnUiThread(uint32_t guest_width,
       std::lock_guard snap_lock(snapshot_mutex_);
       if (draw_ring_count_ != 0) {
         const uint32_t start = (draw_ring_next_ + kDrawRingSize - draw_ring_count_) % kDrawRingSize;
-        // Up to the first Swap the title made for this frame: what it issued after that is the
-        // start of its next frame. Searching forward takes exactly one complete frame.
-        // If we searched backward, two frames would be merged into one, the second frame's
-        // clear would wipe the first frame, and a black frame would flash up.
+        // Up to the last Swap the title made: what it issued after that is the
+        // start of its next frame. Taken along, the next frame's first clear
+        // and draws landed after this frame's final copy, the cleared target
+        // was shown instead of the copy, and a black frame flashed up.
         uint32_t take = draw_ring_count_;
-        for (uint32_t i = 0; i < draw_ring_count_; ++i) {
+        for (uint32_t i = draw_ring_count_; i-- > 0;) {
           if (draw_ring_[(start + i) % kDrawRingSize].is_frame_end) {
             take = i + 1;
             break;
