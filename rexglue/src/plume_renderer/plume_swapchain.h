@@ -106,6 +106,11 @@ class PlumeSwapchain {
   // followed (see PlumeSecondTargetEnabled).
   std::unique_ptr<plume::RenderTexture> scene_texture1_;
   std::unique_ptr<plume::RenderFramebuffer> scene_framebuffer_;
+  // The size the frame is drawn at: the scene target's. The window's, unless
+  // XERENGE_RENDER_RESOLUTION asks for another; the frame is then scaled onto
+  // the window when it is presented.
+  uint32_t render_width_ = 0;
+  uint32_t render_height_ = 0;
 
   uint32_t last_width_ = 0;
   uint32_t last_height_ = 0;

@@ -2,7 +2,9 @@
  * @file        plume_renderer/plume_swapchain.cpp
  * @brief       Minimal plume swapchain: clear color + present (phase 1).
  */
+#include <algorithm>
 #include <chrono>
+#include <cstdio>
 #include <cstdlib>
 #include "plume_renderer/plume_swapchain.h"
 
@@ -17,8 +19,98 @@ namespace rex::plume_renderer {
 
 namespace {
 
-constexpr uint32_t kBufferCount = 2;
+// Three: with two and FIFO presentation the present thread waited 3.6 ms a
+// frame (Ryzen 5 4500U) for an image to come back from the display, and a
+// frame that missed a vblank by that much was held to the next - 30 fps.
+constexpr uint32_t kBufferCount = 3;
 constexpr plume::RenderFormat kSwapchainFormat = plume::RenderFormat::B8G8R8A8_UNORM;
+
+// XERENGE_FPS_SHOW=1: presents per second, in the top left corner.
+bool FpsShown() {
+  static const bool shown = [] {
+    const char* text = std::getenv("XERENGE_FPS_SHOW");
+    return text != nullptr && *text != '\0' && *text != '0';
+  }();
+  return shown;
+}
+
+// The counter, drawn as seven-segment digits made of cleared rectangles: no
+// font, no texture and no pipeline, so it costs nothing to draw and cannot
+// be broken by whatever the frame itself went through. Drawn into the
+// framebuffer bound when called.
+void DrawFpsCounter(plume::RenderCommandList* list, uint32_t height, uint32_t fps) {
+  // Segments a (top) to g (middle), clockwise from the top as usual.
+  static constexpr uint8_t kDigitSegments[10] = {0x3F, 0x06, 0x5B, 0x4F, 0x66,
+                                                 0x6D, 0x7D, 0x07, 0x7F, 0x6F};
+  const int32_t scale = std::max<int32_t>(1, int32_t(height) / 540);
+  const int32_t digit_w = 10 * scale;
+  const int32_t digit_h = 18 * scale;
+  const int32_t stroke = 2 * scale;
+  const int32_t gap = 4 * scale;
+  const int32_t margin = 6 * scale;
+
+  char text[8];
+  const int length = std::snprintf(text, sizeof(text), "%u", std::min(fps, 999u));
+  const int32_t box_w = margin * 2 + length * digit_w + (length - 1) * gap;
+  const int32_t box_h = margin * 2 + digit_h;
+  const plume::RenderRect box(0, 0, box_w, box_h);
+  list->clearColor(0, plume::RenderColor(0.0f, 0.0f, 0.0f, 1.0f), &box, 1);
+
+  plume::RenderRect segments[3 * 7];
+  uint32_t count = 0;
+  for (int i = 0; i < length; ++i) {
+    const uint8_t on = kDigitSegments[text[i] - '0'];
+    const int32_t x = margin + i * (digit_w + gap);
+    const int32_t y = margin;
+    const int32_t mid = y + digit_h / 2;
+    const plume::RenderRect shapes[7] = {
+        {x, y, x + digit_w, y + stroke},                                // a
+        {x + digit_w - stroke, y, x + digit_w, mid},                    // b
+        {x + digit_w - stroke, mid, x + digit_w, y + digit_h},          // c
+        {x, y + digit_h - stroke, x + digit_w, y + digit_h},            // d
+        {x, mid, x + stroke, y + digit_h},                              // e
+        {x, y, x + stroke, mid},                                        // f
+        {x, mid - stroke / 2, x + digit_w, mid - stroke / 2 + stroke},  // g
+    };
+    for (int s = 0; s < 7; ++s) {
+      if (on & (1u << s)) {
+        segments[count++] = shapes[s];
+      }
+    }
+  }
+  if (count != 0) {
+    list->clearColor(0, plume::RenderColor(1.0f, 1.0f, 0.0f, 1.0f), segments, count);
+  }
+}
+
+// XERENGE_RENDER_RESOLUTION=WIDTHxHEIGHT (run.sh --render-resolution): the size
+// the frame is drawn at, scaled onto the window when presented. 0 when unset.
+void RequestedRenderResolution(uint32_t* width, uint32_t* height) {
+  *width = 0;
+  *height = 0;
+  const char* text = std::getenv("XERENGE_RENDER_RESOLUTION");
+  unsigned w = 0, h = 0;
+  if (text && std::sscanf(text, "%ux%u", &w, &h) == 2 && w >= 320 && h >= 180 && w <= 7680 &&
+      h <= 4320) {
+    *width = w;
+    *height = h;
+  }
+}
+
+// Presents in the last whole second.
+uint32_t CountFps() {
+  static auto second_started = std::chrono::steady_clock::now();
+  static uint32_t presents = 0;
+  static uint32_t shown = 0;
+  ++presents;
+  const auto now = std::chrono::steady_clock::now();
+  if (now - second_started >= std::chrono::seconds(1)) {
+    shown = presents;
+    presents = 0;
+    second_started = now;
+  }
+  return shown;
+}
 
 // The window as plume takes it: SDL's own where plume draws through SDL's Vulkan
 // surface, the Win32 handle on Windows. Not asked of SDL here on Windows:
@@ -142,8 +234,21 @@ void PlumeSwapchain::CreateFramebuffers() {
     return;
   }
 
-  const uint32_t width = swap_chain_->getWidth();
-  const uint32_t height = swap_chain_->getHeight();
+  const uint32_t window_width = swap_chain_->getWidth();
+  const uint32_t window_height = swap_chain_->getHeight();
+  // The frame's own size: the window's, or the one asked for - which needs
+  // the scene target, the frame being scaled from it onto the window.
+  static const bool scene_wanted = std::getenv("XERENGE_SCENE_TARGET") != nullptr ||
+                                   std::getenv("XERENGE_D3D_TARGETS") != nullptr;
+  uint32_t requested_width = 0;
+  uint32_t requested_height = 0;
+  RequestedRenderResolution(&requested_width, &requested_height);
+  const bool scaled = scene_wanted && requested_width != 0 &&
+                      (requested_width != window_width || requested_height != window_height);
+  const uint32_t width = scaled ? requested_width : window_width;
+  const uint32_t height = scaled ? requested_height : window_height;
+  render_width_ = width;
+  render_height_ = height;
   depth_texture_.reset();
   scene_framebuffer_.reset();
   scene_texture_.reset();
@@ -191,8 +296,26 @@ void PlumeSwapchain::CreateFramebuffers() {
     if (scene_texture_) {
       REXLOG_INFO("plume: rendering through a {}x{} scene target (XERENGE_SCENE_TARGET)", width,
                   height);
+      if (scaled) {
+        REXLOG_INFO("plume: frames drawn at {}x{} and scaled to the {}x{} window "
+                    "(XERENGE_RENDER_RESOLUTION)",
+                    width, height, window_width, window_height);
+      }
+    } else if (scaled) {
+      // No target to draw at another size into: the window's size after all.
+      REXLOG_ERROR("plume: no scene target; drawing at the window's {}x{}", window_width,
+                   window_height);
+      render_width_ = window_width;
+      render_height_ = window_height;
+      depth_texture_ = device_->createTexture(plume::RenderTextureDesc::DepthTarget(
+          window_width, window_height, kPlumeDepthFormat));
     }
   }
+  // The window's own images take the depth target only when it is theirs in
+  // size: drawn at another size, nothing but the overlay reaches them.
+  plume::RenderTexture* const window_depth =
+      render_width_ == window_width && render_height_ == window_height ? depth_texture_.get()
+                                                                        : nullptr;
 
   const uint32_t texture_count = swap_chain_->getTextureCount();
   framebuffers_.reserve(texture_count);
@@ -204,7 +327,7 @@ void PlumeSwapchain::CreateFramebuffers() {
     plume::RenderFramebufferDesc fb_desc;
     fb_desc.colorAttachments = &color_attachment;
     fb_desc.colorAttachmentsCount = 1;
-    fb_desc.depthAttachment = depth_texture_.get();
+    fb_desc.depthAttachment = window_depth;
     framebuffers_.push_back(device_->createFramebuffer(fb_desc));
     release_semaphores_.push_back(device_->createCommandSemaphore());
   }
@@ -313,8 +436,12 @@ void PlumeSwapchain::ClearAndPresent(float r, float g, float b, float a, DrawEnc
   const plume::RenderFramebuffer* framebuffer = framebuffers_[image_index].get();
   plume::RenderCommandSemaphore* release_semaphore = release_semaphores_[image_index].get();
 
-  const uint32_t width = swap_chain_->getWidth();
-  const uint32_t height = swap_chain_->getHeight();
+  const uint32_t window_width = swap_chain_->getWidth();
+  const uint32_t window_height = swap_chain_->getHeight();
+  // The frame is drawn at the scene target's size, which differs from the
+  // window's under XERENGE_RENDER_RESOLUTION.
+  const uint32_t width = scene_texture_ ? render_width_ : window_width;
+  const uint32_t height = scene_texture_ ? render_height_ : window_height;
 
   // Render into the offscreen scene target when there is one, so the frame can
   // be copied out after the pass ends. Without it, fall back to drawing
@@ -380,6 +507,12 @@ void PlumeSwapchain::ClearAndPresent(float r, float g, float b, float a, DrawEnc
     encode(encode_context, command_list_.get(), width, height, draw_target, pass);
   }
 
+  const uint32_t fps = FpsShown() ? CountFps() : 0;
+  if (FpsShown() && !scene_texture_) {
+    // Drawn straight into the swap chain image: the counter goes on last.
+    command_list_->setFramebuffer(draw_framebuffer);
+    DrawFpsCounter(command_list_.get(), height, fps);
+  }
   // Closing the pass is what makes copying out of the target legal: while it
   // is bound for writing, moving it to a copy source is not.
   command_list_->setFramebuffer(nullptr);
@@ -404,7 +537,29 @@ void PlumeSwapchain::ClearAndPresent(float r, float g, float b, float a, DrawEnc
       probe_pending_ = true;
       probe_summary_ = g_plume_frame_summary;
     }
-    command_list_->copyTexture(swapchain_texture, draw_target);
+    // At another size (XERENGE_RENDER_RESOLUTION) the frame is scaled onto
+    // the window, filtered; at the window's own size it is a straight copy.
+    if (width != window_width || height != window_height) {
+      if (!command_list_->blitTexture(swapchain_texture, draw_target, true)) {
+        static bool warned = false;
+        if (!warned) {
+          warned = true;
+          REXLOG_ERROR("plume: this backend cannot scale the frame onto the window");
+        }
+      }
+    } else {
+      command_list_->copyTexture(swapchain_texture, draw_target);
+    }
+    // On the image shown, after the copy: drawn into the target, the counter
+    // would go wherever the title copies that target to.
+    if (FpsShown()) {
+      command_list_->barriers(plume::RenderBarrierStage::GRAPHICS,
+                              plume::RenderTextureBarrier(swapchain_texture,
+                                                          plume::RenderTextureLayout::COLOR_WRITE));
+      command_list_->setFramebuffer(framebuffer);
+      DrawFpsCounter(command_list_.get(), window_height, fps);
+      command_list_->setFramebuffer(nullptr);
+    }
   }
 
   command_list_->barriers(plume::RenderBarrierStage::NONE,
@@ -435,7 +590,8 @@ void PlumeSwapchain::ClearAndPresent(float r, float g, float b, float a, DrawEnc
     // Where a frame's time goes on the host side: waiting for a swap chain
     // image, recording (the encode callback), presenting, and waiting for the
     // GPU to finish - the last is what the title's thread sits in.
-    static uint64_t acquire_us = 0, record_us = 0, present_us = 0, gpu_us = 0, frames = 0;
+    static uint64_t acquire_us = 0, record_us = 0, present_us = 0, gpu_us = 0, fence_us = 0,
+                    frames = 0;
     static auto last_report = fence_done;
     auto us = [](auto a, auto b) {
       return uint64_t(std::chrono::duration_cast<std::chrono::microseconds>(b - a).count());
@@ -444,13 +600,16 @@ void PlumeSwapchain::ClearAndPresent(float r, float g, float b, float a, DrawEnc
     record_us += us(acquire_done, submit_started);
     present_us += us(submit_started, present_done);
     gpu_us += us(previous_wait_started, previous_wait_done);
+    // The wait for this frame's own GPU work, done right after presenting it
+    // unless XERENGE_ASYNC_PRESENT - the part of a frame the GPU takes.
+    fence_us += us(present_done, fence_done);
     ++frames;
     if (fence_done - last_report >= std::chrono::seconds(2)) {
       REXLOG_INFO("plume: host frame (avg over {}): acquire {} us, record {} us, present {} us, "
-                  "gpu wait {} us",
+                  "previous frame {} us, this frame's GPU {} us",
                   frames, acquire_us / frames, record_us / frames, present_us / frames,
-                  gpu_us / frames);
-      acquire_us = record_us = present_us = gpu_us = frames = 0;
+                  gpu_us / frames, fence_us / frames);
+      acquire_us = record_us = present_us = gpu_us = fence_us = frames = 0;
       last_report = fence_done;
     }
   }
