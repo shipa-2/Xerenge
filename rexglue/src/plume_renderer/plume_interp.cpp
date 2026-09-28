@@ -25,6 +25,7 @@
 // different states, and they jittered against each other.
 #include "plume_renderer/plume_interp.h"
 
+#include <utility>
 #include <algorithm>
 #include <cmath>
 #include <cstdlib>
@@ -243,7 +244,7 @@ void InterpolateFrame(std::vector<GuestDrawSnapshot>& draws) {
       std::vector<bool> taken(before.size(), false);
       for (size_t i = 0; i < members.size(); ++i) {
         Instance& inst = group.instances[i];
-        std::memcpy(inst.curr.data(), members[i]->vs_constants.data(), sizeof(inst.curr));
+        std::memcpy(inst.curr.data(), std::as_const(members[i]->vs_constants).data(), sizeof(inst.curr));
         const Constants* from = nullptr;
         if (before.size() == 1 && members.size() == 1) {
           from = &before[0].curr;

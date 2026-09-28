@@ -29,6 +29,62 @@ struct TextureInfo;
 
 namespace rex::plume_renderer {
 
+// A draw's constant words, shared between copies of its snapshot and copied
+// only when one of them is written. A snapshot carries 9 KB of these, and a
+// thousand snapshots a frame were copied three and four times over - into the
+// ring, out of it, into the frame's batch and into the last frame's - which
+// was most of what the present thread did on a laptop. The interface is
+// std::array's, so what reads them is unchanged; reading through a const
+// snapshot never copies.
+template <size_t N>
+class SharedWords {
+ public:
+  using Words = std::array<uint32_t, N>;
+
+  SharedWords() : words_(Zeroes()) {}
+  SharedWords(const Words& words) : words_(std::make_shared<Words>(words)) {}
+  SharedWords& operator=(const Words& words) {
+    words_ = std::make_shared<Words>(words);
+    return *this;
+  }
+  operator Words() const { return *words_; }
+
+  static constexpr size_t size() { return N; }
+  const uint32_t* data() const { return words_->data(); }
+  uint32_t* data() {
+    Detach();
+    return words_->data();
+  }
+  const uint32_t& operator[](size_t i) const { return (*words_)[i]; }
+  uint32_t& operator[](size_t i) {
+    Detach();
+    return (*words_)[i];
+  }
+  void fill(uint32_t value) {
+    if (value == 0) {
+      words_ = Zeroes();
+      return;
+    }
+    Detach();
+    words_->fill(value);
+  }
+
+ private:
+  static const std::shared_ptr<Words>& Zeroes() {
+    static const std::shared_ptr<Words> zeroes = std::make_shared<Words>();
+    return zeroes;
+  }
+  // Every snapshot starts on the shared zeroes, so the first write always
+  // copies, and a fresh one is written by the thread that owns it alone.
+  void Detach() {
+    if (words_ == Zeroes() || words_.use_count() != 1) {
+      words_ = std::make_shared<Words>(*words_);
+    }
+  }
+
+  std::shared_ptr<Words> words_;
+};
+
 struct VfetchAttr {
   uint32_t fetch_const = 0;
   // Position of this vertex fetch instruction in the shader program. This is
@@ -109,9 +165,9 @@ struct GuestDrawSnapshot {
   float vport_yoffset = 0.0f;
   float vport_zscale = 0.0f;
   float vport_zoffset = 0.0f;
-  std::array<uint32_t, 1024> vs_constants{};
-  std::array<uint32_t, 1024> ps_constants{};
-  std::array<uint32_t, 192> fetch_constants{};
+  SharedWords<1024> vs_constants;
+  SharedWords<1024> ps_constants;
+  SharedWords<192> fetch_constants;
   // Set when the draw came from the title's Direct3D call rather than from a
   // packet: then the buffers are named outright and there is nothing to infer
   // from the fetch constants, which at that moment describe a different draw.
@@ -202,6 +258,10 @@ struct GuestDrawSnapshot {
   uint32_t video_v_row_texels = 0;
   uint64_t video_u_key = 0;
   uint64_t video_v_key = 0;
+  // The planes' guest memory as it was when the title drew the frame, slot
+  // by slot (CopyGuestVideoPlanes): the decoder writes the next frame into
+  // the same memory, and reading it later, on the capture worker, tore it.
+  std::vector<uint8_t> video_source[3];
 
   // A decoded frame, in either form.
   bool has_video_frame() const { return !video_rgba.empty() || !video_y.empty(); }
@@ -213,6 +273,10 @@ struct GuestDrawSnapshot {
   }
 };
 
+// Copies a video draw's planes out of guest memory, as they are, for
+// CaptureGuestVideoFrame to work from later. Cheap - a straight copy - so it
+// runs on the thread that saw the draw, while the frame is still there.
+void CopyGuestVideoPlanes(GuestDrawSnapshot* snap, memory::Memory* memory);
 bool CaptureGuestVideoFrame(GuestDrawSnapshot* snap, memory::Memory* memory);
 bool IsGuestVideoBlit(const GuestDrawSnapshot& snap, uint64_t* key_out = nullptr);
 

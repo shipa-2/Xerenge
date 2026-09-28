@@ -587,10 +587,42 @@ void CopyBeDwords(memory::Memory* memory, uint32_t* dst, uint32_t guest_va, uint
   }
 }
 
+// The Direct3D device's block, once found readable. The device lives as long
+// as the title, and every draw reads it several times over: asking the heap
+// each time - a recursive mutex shared with allocation and the write-watch
+// fault handler, twenty times a draw, a thousand draws a frame - was most of
+// what a draw cost the title's thread.
+std::atomic<uint32_t> g_readable_device{0};
+
+bool DeviceRangeReadable(memory::Memory* memory, uint32_t device_guest) {
+  if (device_guest != 0 && device_guest == g_readable_device.load(std::memory_order_relaxed)) {
+    return true;
+  }
+  if (!RangeReadable(memory, device_guest, kD3DDeviceMinBytes)) {
+    return false;
+  }
+  g_readable_device.store(device_guest, std::memory_order_relaxed);
+  return true;
+}
+
+// CopyBeDwords for a range inside the device's block, which the caller has
+// checked with DeviceRangeReadable.
+void CopyDeviceDwords(memory::Memory* memory, uint32_t* dst, uint32_t device_guest,
+                      uint32_t offset, uint32_t count) {
+  if (offset + count * 4 > kD3DDeviceMinBytes) {
+    CopyBeDwords(memory, dst, device_guest + offset, count);
+    return;
+  }
+  const uint8_t* src = memory->TranslateVirtual<const uint8_t*>(device_guest + offset);
+  for (uint32_t i = 0; i < count; ++i) {
+    dst[i] = rex::memory::load_and_swap<uint32_t>(src + i * 4);
+  }
+}
+
 }  // namespace
 
 bool PlumeGraphicsSystem::DeviceLooksValid(uint32_t device_guest) const {
-  if (!memory_ || !RangeReadable(memory_, device_guest, kD3DDeviceMinBytes)) {
+  if (!memory_ || !DeviceRangeReadable(memory_, device_guest)) {
     return false;
   }
   const uint8_t* p = memory_->TranslateVirtual<const uint8_t*>(device_guest);
@@ -613,11 +645,11 @@ void PlumeGraphicsSystem::PullDeviceConstants(uint32_t device_guest) {
   if (!memory_ || !DeviceLooksValid(device_guest)) {
     return;
   }
-  CopyBeDwords(memory_, &gpu_registers_[0x4000], device_guest + kD3DVsFloatOffset, 1024);
-  CopyBeDwords(memory_, &gpu_registers_[0x4400], device_guest + kD3DPsFloatOffset, 1024);
-  CopyBeDwords(memory_, &gpu_registers_[0x4800], device_guest + kD3DFetchOffset, 192);
-  CopyBeDwords(memory_, &gpu_registers_[0x4900], device_guest + kD3DVsBoolOffset, 4);
-  CopyBeDwords(memory_, &gpu_registers_[0x4904], device_guest + kD3DPsBoolOffset, 4);
+  CopyDeviceDwords(memory_, &gpu_registers_[0x4000], device_guest, kD3DVsFloatOffset, 1024);
+  CopyDeviceDwords(memory_, &gpu_registers_[0x4400], device_guest, kD3DPsFloatOffset, 1024);
+  CopyDeviceDwords(memory_, &gpu_registers_[0x4800], device_guest, kD3DFetchOffset, 192);
+  CopyDeviceDwords(memory_, &gpu_registers_[0x4900], device_guest, kD3DVsBoolOffset, 4);
+  CopyDeviceDwords(memory_, &gpu_registers_[0x4904], device_guest, kD3DPsBoolOffset, 4);
 
   const uint32_t n = device_const_log_count_.fetch_add(1);
   if (n < 8) {
@@ -635,9 +667,14 @@ void PlumeGraphicsSystem::PullDeviceConstants(uint32_t device_guest) {
 // arrives while the previous is still being decoded it simply replaces it -
 // showing the newest frame late beats queueing frames nobody will see.
 void PlumeGraphicsSystem::RequestVideoCapture(const GuestDrawSnapshot& snap) {
+  // The planes are copied here, on the thread that saw the draw, while they
+  // still hold this frame. Read later on the worker, the decoder was already
+  // writing the next one into them, and the menu video came out torn.
+  GuestDrawSnapshot request = snap;
+  CopyGuestVideoPlanes(&request, memory_);
   {
     std::lock_guard lock(video_request_mutex_);
-    video_request_ = snap;
+    video_request_ = std::move(request);
     video_request_pending_ = true;
   }
   video_request_cv_.notify_one();
@@ -804,16 +841,22 @@ void PlumeGraphicsSystem::PublishDrawSnapshot(uint32_t prim_type, uint32_t sourc
   // auto-indexed draws - that field describes a packet, not where a draw came
   // from - and overwriting their constants cost the menu its render.
   if (snap.d3d_vertex_buffer != 0) {
-    const uint32_t device = d3d_device_guest_.load(std::memory_order_relaxed);
-    if (device != 0 && RangeReadable(memory_, device, kD3DPsFloatOffset + 4096)) {
-      CopyBeDwords(memory_, snap.vs_constants.data(), device + kD3DVsFloatOffset,
-                   static_cast<uint32_t>(snap.vs_constants.size()));
-      CopyBeDwords(memory_, snap.ps_constants.data(), device + kD3DPsFloatOffset,
-                   static_cast<uint32_t>(snap.ps_constants.size()));
+    const uint32_t d3d_device = d3d_device_guest_.load(std::memory_order_relaxed);
+    if (d3d_device != 0 && DeviceRangeReadable(memory_, d3d_device)) {
+      // Already here when this snapshot pulled them from the same device at
+      // its start - the register file it was copied from holds them. Copying
+      // them again, byte-swapped, was 8 KB per draw for nothing, a thousand
+      // draws a frame, on the title's thread.
+      if (d3d_device != device) {
+        CopyDeviceDwords(memory_, snap.vs_constants.data(), d3d_device, kD3DVsFloatOffset,
+                         static_cast<uint32_t>(snap.vs_constants.size()));
+        CopyDeviceDwords(memory_, snap.ps_constants.data(), d3d_device, kD3DPsFloatOffset,
+                         static_cast<uint32_t>(snap.ps_constants.size()));
+      }
       // The boolean constants steer the shaders' branches, and the ring's
       // copy belongs to the interface just like its float constants do.
-      CopyBeDwords(memory_, &snap.vs_bool, device + kD3DVsBoolOffset, 1);
-      CopyBeDwords(memory_, &snap.ps_bool, device + kD3DPsBoolOffset, 1);
+      CopyDeviceDwords(memory_, &snap.vs_bool, d3d_device, kD3DVsBoolOffset, 1);
+      CopyDeviceDwords(memory_, &snap.ps_bool, d3d_device, kD3DPsBoolOffset, 1);
     }
   }
   // The textures the draw was made with. Reading the device's own fetch
@@ -829,10 +872,14 @@ void PlumeGraphicsSystem::PublishDrawSnapshot(uint32_t prim_type, uint32_t sourc
   // glyphs and the car's livery in shuffled strips.
   bool fetch_from_device = false;
   if (snap.d3d_vertex_buffer != 0 && memory_) {
-    const uint32_t device = d3d_device_guest_.load(std::memory_order_relaxed);
-    if (device != 0 && RangeReadable(memory_, device + kD3DFetchOffset, 192 * 4)) {
-      std::array<uint32_t, 192> from_device{};
-      CopyBeDwords(memory_, from_device.data(), device + kD3DFetchOffset, 192);
+    const uint32_t d3d_device = d3d_device_guest_.load(std::memory_order_relaxed);
+    if (d3d_device != 0 && DeviceRangeReadable(memory_, d3d_device)) {
+      // Pulled from this device at the snapshot's start already, like the
+      // float constants above; read again only if the device changed since.
+      std::array<uint32_t, 192> from_device = snap.fetch_constants;
+      if (d3d_device != device) {
+        CopyDeviceDwords(memory_, from_device.data(), d3d_device, kD3DFetchOffset, 192);
+      }
       static std::atomic<uint32_t> compared{0};
       if (compared.fetch_add(1, std::memory_order_relaxed) < 6) {
         const uint32_t object = buffers.textures[0];
@@ -1843,6 +1890,27 @@ void PlumeGraphicsSystem::PresentClearColorOnUiThread(uint32_t guest_width,
     return uint64_t(std::chrono::duration_cast<std::chrono::microseconds>(to - from).count());
   };
   const uint64_t total_us = us(present_started, present_done);
+  // The same split for every frame, averaged every two seconds: on a laptop
+  // the present thread was busy the whole frame while the swap chain's own
+  // part was a third of it, and only the slow frames said where the rest went.
+  {
+    static uint64_t lock_sum = 0, queue_sum = 0, encode_sum = 0, swap_sum = 0, frames = 0;
+    static auto last_report = present_done;
+    const uint64_t swap_us = us(present_prepared, present_done);
+    lock_sum += us(present_started, present_locked);
+    queue_sum += us(present_locked, present_prepared);
+    encode_sum += g_present_encode_us;
+    swap_sum += swap_us > g_present_encode_us ? swap_us - g_present_encode_us : 0;
+    ++frames;
+    if (present_done - last_report >= std::chrono::seconds(2)) {
+      REXLOG_INFO("plume: present split (avg over {}): lock {} us, queue {} us, encode {} us, "
+                  "swap chain {} us, {} draws last",
+                  frames, lock_sum / frames, queue_sum / frames, encode_sum / frames,
+                  swap_sum / frames, batch.size());
+      lock_sum = queue_sum = encode_sum = swap_sum = frames = 0;
+      last_report = present_done;
+    }
+  }
   if (total_us >= 100000) {
     const uint64_t swap_us = us(present_prepared, present_done);
     REXLOG_WARN("plume: slow present {} ms = lock {} ms, queue {} ms, encode {} ms, "

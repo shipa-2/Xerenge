@@ -1732,8 +1732,11 @@ struct GuestPlane {
   uint32_t bytes_per_texel = 1;
 };
 
+// From `source`, the plane's memory copied when the frame was drawn, when
+// there is one; from guest memory as it stands now otherwise.
 bool LoadGuestPlane(const rex::graphics::xenos::xe_gpu_texture_fetch_t& fetch,
-                    rex::memory::Memory* memory, GuestPlane* out) {
+                    rex::memory::Memory* memory, const std::vector<uint8_t>& source,
+                    GuestPlane* out) {
   if (!memory || !out) {
     return false;
   }
@@ -1746,7 +1749,15 @@ bool LoadGuestPlane(const rex::graphics::xenos::xe_gpu_texture_fetch_t& fetch,
   if (width == 0 || height == 0 || width > 2048 || height > 2048) {
     return false;
   }
-  const uint8_t* src = memory->TranslatePhysical<const uint8_t*>(info.memory.base_address);
+  const uint8_t* src = nullptr;
+  if (!source.empty()) {
+    if (source.size() < GuestTextureSourceSize(info)) {
+      return false;
+    }
+    src = source.data();
+  } else {
+    src = memory->TranslatePhysical<const uint8_t*>(info.memory.base_address);
+  }
   if (!src) {
     return false;
   }
@@ -1829,6 +1840,33 @@ bool CompositeYuvToRgba(const GuestPlane& y_plane, const GuestPlane& u_plane,
 
 }  // namespace
 
+void CopyGuestVideoPlanes(GuestDrawSnapshot* snap, memory::Memory* memory) {
+  if (!snap || !memory) {
+    return;
+  }
+  using rex::graphics::xenos::FetchConstantType;
+  for (uint32_t slot = 0; slot < 3; ++slot) {
+    snap->video_source[slot].clear();
+    const auto fetch = TextureFetchAt(*snap, slot);
+    if (fetch.type != FetchConstantType::kTexture || fetch.base_address == 0) {
+      continue;
+    }
+    rex::graphics::TextureInfo info{};
+    if (!rex::graphics::TextureInfo::Prepare(fetch, &info)) {
+      continue;
+    }
+    const size_t size = GuestTextureSourceSize(info);
+    // A plane of a 2048-square video at most; anything larger is not one.
+    if (size == 0 || size > 8u * 1024 * 1024) {
+      continue;
+    }
+    const auto* src = memory->TranslatePhysical<const uint8_t*>(info.memory.base_address);
+    if (src) {
+      snap->video_source[slot].assign(src, src + size);
+    }
+  }
+}
+
 bool CaptureGuestVideoFrame(GuestDrawSnapshot* snap, memory::Memory* memory) {
   if (!snap || !memory) {
     return false;
@@ -1865,13 +1903,13 @@ bool CaptureGuestVideoFrame(GuestDrawSnapshot* snap, memory::Memory* memory) {
   // linear memory, and turning them into RGBA - and they want different fixes,
   // so keep them apart in the measurement.
   const auto load_started = std::chrono::steady_clock::now();
-  if (!LoadGuestPlane(y_fetch, memory, &y_plane) || y_plane.width < 320 || y_plane.height < 180) {
+  if (!LoadGuestPlane(y_fetch, memory, snap->video_source[0], &y_plane) || y_plane.width < 320 || y_plane.height < 180) {
     return false;
   }
-  if (!LoadGuestPlane(u_fetch, memory, &u_plane)) {
+  if (!LoadGuestPlane(u_fetch, memory, snap->video_source[1], &u_plane)) {
     return false;
   }
-  if (planar_uv && !LoadGuestPlane(v_fetch, memory, &v_plane)) {
+  if (planar_uv && !LoadGuestPlane(v_fetch, memory, snap->video_source[2], &v_plane)) {
     return false;
   }
 
@@ -1927,6 +1965,10 @@ bool CaptureGuestVideoFrame(GuestDrawSnapshot* snap, memory::Memory* memory) {
   snap->video_key = TextureKey(y_fetch);
   snap->video_luma_mean = luma_mean;
   snap->video_luma_range = luma_range;
+  // The copies have served: the snapshot is copied again on every present.
+  for (auto& source : snap->video_source) {
+    std::vector<uint8_t>().swap(source);
+  }
   if (VideoGpuStage() >= 2) {
     const auto texels_per_row = [](const GuestPlane& plane) {
       return plane.row_bytes / std::max(plane.bytes_per_texel, 1u);
@@ -1947,12 +1989,19 @@ bool CaptureGuestVideoFrame(GuestDrawSnapshot* snap, memory::Memory* memory) {
     snap->video_u = std::move(u_plane.pixels);
     snap->video_y = std::move(y_plane.pixels);
   }
-  static uint32_t yuv_logs = 0;
-  if (yuv_logs < 8) {
-    ++yuv_logs;
-    REXLOG_INFO("plume: capture yuv Y={}x{} U={}x{} V={}x{} packed={}", y_plane.width,
-                y_plane.height, u_plane.width, u_plane.height, v_plane.width, v_plane.height,
-                packed_uv ? 1 : 0);
+  // Every change of shape, not only the first few frames: a clip of another
+  // size is where the planes stop fitting the textures made for the last.
+  static uint64_t last_shape = 0;
+  const uint64_t shape = (uint64_t(y_plane.width) << 48) ^ (uint64_t(y_plane.height) << 32) ^
+                         (uint64_t(y_plane.row_bytes) << 16) ^ (uint64_t(u_plane.width) << 8) ^
+                         u_plane.row_bytes ^ (packed_uv ? 1u : 0u) ^ (TextureKey(y_fetch) << 1);
+  if (shape != last_shape) {
+    last_shape = shape;
+    REXLOG_INFO("plume: capture yuv Y={}x{} (row {}) U={}x{} (row {}) V={}x{} (row {}) packed={} "
+                "Y at {:08X}",
+                y_plane.width, y_plane.height, y_plane.row_bytes, u_plane.width, u_plane.height,
+                u_plane.row_bytes, v_plane.width, v_plane.height, v_plane.row_bytes,
+                packed_uv ? 1 : 0, uint32_t(y_fetch.base_address) << 12);
   }
   return true;
 }
@@ -4774,10 +4823,29 @@ void PlumeDrawContext::BindGuestTextures(plume::RenderCommandList* list,
     const auto upload_planes = [&] {
       const auto upload = [&](uint64_t key, uint32_t width, uint32_t height, uint32_t row_texels,
                               uint32_t bytes_per_sample, const std::vector<uint8_t>& bytes) {
-        return UploadHostTexture(list, PackedPlaneKey(key),
-                                 PackedPlaneWidth(width, bytes_per_sample), height,
-                                 plume::RenderFormat::R8G8B8A8_UNORM, bytes,
-                                 row_texels * bytes_per_sample / 4);
+        // A clip of another size in the same decoder buffer: the texture made
+        // for the last one no longer fits, and refusing the upload left it
+        // drawn - the old frame's planes sampled at the new frame's size.
+        if (auto it = guest_textures_.find(PackedPlaneKey(key));
+            it != guest_textures_.end() && it->second &&
+            (it->second->width != PackedPlaneWidth(width, bytes_per_sample) ||
+             it->second->height != height)) {
+          guest_textures_.erase(it);
+        }
+        const bool ok = UploadHostTexture(list, PackedPlaneKey(key),
+                                          PackedPlaneWidth(width, bytes_per_sample), height,
+                                          plume::RenderFormat::R8G8B8A8_UNORM, bytes,
+                                          row_texels * bytes_per_sample / 4);
+        if (!ok) {
+          static uint32_t shown = 0;
+          if (shown < 16) {
+            ++shown;
+            REXLOG_WARN("plume: video plane {:016X} not uploaded: {}x{} row {} texels, {} bytes",
+                        key, PackedPlaneWidth(width, bytes_per_sample), height,
+                        row_texels * bytes_per_sample / 4, bytes.size());
+          }
+        }
+        return ok;
       };
       return upload(snap.video_key, snap.video_width, snap.video_height, snap.video_y_row_texels, 1,
                     snap.video_y) &&
