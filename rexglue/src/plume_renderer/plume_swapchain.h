@@ -77,6 +77,16 @@ class PlumeSwapchain {
   // The wait happens at the start of the next frame, so the GPU works while
   // the title computes that frame instead of the title waiting for it.
   bool submit_pending_ = false;
+  // A second set of the above, swapped with the first every frame when the
+  // wait is left to the next frame (XERENGE_ASYNC_PRESENT): a frame is then
+  // written while the GPU draws the one before, and what is waited for at a
+  // frame's start is the frame before that, which used this set.
+  std::unique_ptr<plume::RenderCommandList> spare_command_list_;
+  std::unique_ptr<plume::RenderCommandFence> spare_submit_fence_;
+  std::unique_ptr<plume::RenderCommandSemaphore> spare_acquire_semaphore_;
+  bool spare_submit_pending_ = false;
+  // Waits for every frame still on the GPU.
+  void WaitForFrames();
   // A small square from the middle of each frame, read back after the frame
   // has finished: a frame far darker than the ones before is reported with
   // what it held (XERENGE_FRAME_PROBE).

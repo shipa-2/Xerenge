@@ -181,7 +181,11 @@ bool PlumeSwapchain::Initialize(plume::RenderDevice* device, SDL_Window* window,
   command_list_ = command_queue_->createCommandList();
   submit_fence_ = device_->createCommandFence();
   acquire_semaphore_ = device_->createCommandSemaphore();
-  if (!command_list_ || !submit_fence_ || !acquire_semaphore_) {
+  spare_command_list_ = command_queue_->createCommandList();
+  spare_submit_fence_ = device_->createCommandFence();
+  spare_acquire_semaphore_ = device_->createCommandSemaphore();
+  if (!command_list_ || !submit_fence_ || !acquire_semaphore_ || !spare_command_list_ ||
+      !spare_submit_fence_ || !spare_acquire_semaphore_) {
     REXLOG_ERROR("plume: failed to create swapchain sync objects");
     Shutdown();
     return false;
@@ -203,11 +207,19 @@ bool PlumeSwapchain::Initialize(plume::RenderDevice* device, SDL_Window* window,
   return ready_;
 }
 
-void PlumeSwapchain::Shutdown() {
+void PlumeSwapchain::WaitForFrames() {
   if (submit_pending_ && command_queue_ && submit_fence_) {
     command_queue_->waitForCommandFence(submit_fence_.get());
   }
   submit_pending_ = false;
+  if (spare_submit_pending_ && command_queue_ && spare_submit_fence_) {
+    command_queue_->waitForCommandFence(spare_submit_fence_.get());
+  }
+  spare_submit_pending_ = false;
+}
+
+void PlumeSwapchain::Shutdown() {
+  WaitForFrames();
   ready_ = false;
   framebuffers_.clear();
   release_semaphores_.clear();
@@ -219,6 +231,9 @@ void PlumeSwapchain::Shutdown() {
   probe_buffer_.reset();
   submit_fence_.reset();
   command_list_.reset();
+  spare_acquire_semaphore_.reset();
+  spare_submit_fence_.reset();
+  spare_command_list_.reset();
   swap_chain_.reset();
   command_queue_.reset();
   device_ = nullptr;
@@ -360,6 +375,8 @@ void PlumeSwapchain::ResizeIfNeeded() {
     return;
   }
 
+  // The targets about to be remade may still be drawn to by a frame in flight.
+  WaitForFrames();
   framebuffers_.clear();
   if (!swap_chain_->resize()) {
     REXLOG_WARN("plume: swap chain resize failed");
@@ -406,8 +423,19 @@ void PlumeSwapchain::ClearAndPresent(float r, float g, float b, float a, DrawEnc
     return;
   }
 
-  // The previous frame first: this frame reuses its command list, its acquire
-  // semaphore and the upload buffers it read from.
+  // With the wait left to the next frame, two sets take turns: this frame
+  // takes the set the frame before last used, and waits only for that frame -
+  // the last one may still be on the GPU while this one is written. The draw
+  // context alternates the halves of its buffers the same way.
+  static const bool frames_overlap = std::getenv("XERENGE_ASYNC_PRESENT") != nullptr;
+  if (frames_overlap) {
+    std::swap(command_list_, spare_command_list_);
+    std::swap(submit_fence_, spare_submit_fence_);
+    std::swap(acquire_semaphore_, spare_acquire_semaphore_);
+    std::swap(submit_pending_, spare_submit_pending_);
+  }
+  // The frame that used this set first: this frame reuses its command list,
+  // its acquire semaphore and the upload buffers it read from.
   const auto previous_wait_started = std::chrono::steady_clock::now();
   if (submit_pending_) {
     command_queue_->waitForCommandFence(submit_fence_.get());

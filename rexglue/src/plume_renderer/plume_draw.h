@@ -423,7 +423,9 @@ class PlumeDrawContext {
     uint32_t levels = 1;
     std::unique_ptr<plume::RenderTexture> texture;
     std::unique_ptr<plume::RenderTextureView> view;
-    std::unique_ptr<plume::RenderBuffer> staging;
+    // Two, used alternately by frame: the GPU may still be copying from the
+    // one the last frame filled while this frame fills the other.
+    std::unique_ptr<plume::RenderBuffer> staging[2];
     bool uploaded = false;
     // Hash of the guest memory this was built from, and the size of the
     // staging buffer already allocated for it. Guest textures are mostly
@@ -431,7 +433,7 @@ class PlumeDrawContext {
     // pure cost, and so is allocating a staging buffer that already exists at
     // the right size.
     uint64_t content_hash = 0;
-    size_t staging_size = 0;
+    size_t staging_size[2] = {0, 0};
     // The frame this texture was last bound in, for evicting the stalest one
     // when the bindless slots run out.
     uint64_t last_used = 0;
@@ -531,8 +533,8 @@ class PlumeDrawContext {
   struct LayeredTexture {
     std::unique_ptr<plume::RenderTexture> texture;
     std::unique_ptr<plume::RenderTextureView> view;
-    std::unique_ptr<plume::RenderBuffer> staging;
-    size_t staging_size = 0;
+    std::unique_ptr<plume::RenderBuffer> staging[2];
+    size_t staging_size[2] = {0, 0};
     uint32_t index = 0;
     uint64_t content = 0;
     uint32_t width = 0;
@@ -667,6 +669,8 @@ class PlumeDrawContext {
   // Set by FillVertices: where in cache_vb_ the draw's vertices are, or ~0u
   // when they went into the per-frame buffer as usual.
   uint32_t last_fill_cache_offset_ = ~0u;
+  // The end of this frame's half of the vertex buffer (see EncodeDraws).
+  uint32_t vb_limit_ = 0;
   uint64_t cache_hits_ = 0;
   uint64_t cache_misses_ = 0;
   uint64_t cache_resets_ = 0;

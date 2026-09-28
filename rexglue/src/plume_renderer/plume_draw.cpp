@@ -319,12 +319,16 @@ constexpr uint32_t kSharedConstantBytes = 512;
 // post-processing, and everything after - the final composite and the whole
 // interface - was dropped, over a hundred thousand draws a run.
 constexpr uint32_t kDummyVertexCount = 1048576;
+constexpr uint32_t kVertsPerFrame = kDummyVertexCount / 2;
 constexpr uint32_t kCacheVertexCount = 1048576;
 constexpr uint32_t kInputLocationCount = 20;
 constexpr uint32_t kVertexStrideBytes = kInputLocationCount * 16;
 // One slot per encoded draw. Kept in step with the overlay ring that feeds
 // this, so a frame the ring managed to hold is not then truncated here.
 constexpr uint32_t kCbSlots = 16384;
+// Each frame uses half of the vertex and constant buffers, alternating, so the
+// frame being written never shares a half with the one the GPU is drawing.
+constexpr uint32_t kSlotsPerFrame = kCbSlots / 2;
 constexpr uint32_t kCbAlign = 256;
 constexpr uint32_t kVsSlotBytes = (kVsConstantBytes + kCbAlign - 1) & ~(kCbAlign - 1);
 constexpr uint32_t kPsSlotBytes = (kPsConstantBytes + kCbAlign - 1) & ~(kCbAlign - 1);
@@ -2942,7 +2946,8 @@ bool PlumeDrawContext::AllocateCacheRegion(uint32_t count, uint32_t* offset) {
     uint32_t blocked_until = 0;
     for (auto it = first; it != cache_by_offset_.end() && it->first < end; ++it) {
       auto e = mesh_cache_.find(it->second);
-      if (e != mesh_cache_.end() && e->second.last_used == frame_serial_) {
+      // Drawn this frame or the last, which may still be on the GPU.
+      if (e != mesh_cache_.end() && e->second.last_used + 1 >= frame_serial_) {
         blocked_until = std::max(blocked_until, it->first + e->second.count);
       }
     }
@@ -3435,10 +3440,10 @@ uint32_t PlumeDrawContext::FillVertices(const GuestDrawSnapshot& snap, memory::M
     }
     return 0;
   };
-  if (!vb_mapped_ || snap.num_indices == 0 || base_vertex >= kDummyVertexCount) {
+  if (!vb_mapped_ || snap.num_indices == 0 || base_vertex >= vb_limit_) {
     return refuse("no vb / empty / base past end");
   }
-  const uint32_t vertex_count = std::min(snap.num_indices, kDummyVertexCount - base_vertex);
+  const uint32_t vertex_count = std::min(snap.num_indices, vb_limit_ - base_vertex);
 
   static const std::vector<VfetchAttr> kEmptyAttrs;
   const auto* vs_info = FindResolvedVfetch(snap.vs_hash);
@@ -3949,10 +3954,10 @@ uint32_t PlumeDrawContext::FillVertices(const GuestDrawSnapshot& snap, memory::M
   // of a full frame expanded past it, the copy below wrote beyond the mapped
   // upload heap, the draw read beyond it, and the GPU hung. Keep whole
   // triangles only.
-  if (base_vertex >= kDummyVertexCount) {
+  if (base_vertex >= vb_limit_) {
     return 0;
   }
-  const uint32_t room = kDummyVertexCount - base_vertex;
+  const uint32_t room = vb_limit_ - base_vertex;
   if (draw_count > room) {
     static std::atomic<uint32_t> clipped{0};
     if (clipped.fetch_add(1, std::memory_order_relaxed) < 8) {
@@ -4105,17 +4110,20 @@ void PlumeDrawContext::UploadLayeredTexture(plume::RenderCommandList* list, uint
     REXLOG_INFO("plume: layered texture {:08X} {}x{}x{} as 2D array (volume index {})",
                 info.memory.base_address, width, height, layers, tex.index);
   }
-  if (!tex.staging || tex.staging_size < all.size()) {
-    tex.staging = device_->createBuffer(plume::RenderBufferDesc::UploadBuffer(all.size()));
-    if (!tex.staging) {
-      tex.staging_size = 0;
+  // This frame's staging buffer; the last frame's may still be copied from.
+  const uint32_t half = uint32_t(frame_serial_ & 1);
+  auto& staging = tex.staging[half];
+  if (!staging || tex.staging_size[half] < all.size()) {
+    staging = device_->createBuffer(plume::RenderBufferDesc::UploadBuffer(all.size()));
+    if (!staging) {
+      tex.staging_size[half] = 0;
       return;
     }
-    tex.staging_size = all.size();
+    tex.staging_size[half] = all.size();
   }
-  if (void* mapped = tex.staging->map()) {
+  if (void* mapped = staging->map()) {
     std::memcpy(mapped, all.data(), all.size());
-    tex.staging->unmap();
+    staging->unmap();
   } else {
     return;
   }
@@ -4126,7 +4134,7 @@ void PlumeDrawContext::UploadLayeredTexture(plume::RenderCommandList* list, uint
     list->copyTextureRegion(
         plume::RenderTextureCopyLocation::Subresource(tex.texture.get(), 0, layer),
         plume::RenderTextureCopyLocation::PlacedFootprint(
-            tex.staging.get(), host_format, width, height, 1, row_texels,
+            staging.get(), host_format, width, height, 1, row_texels,
             uint64_t(row_bytes) * height * layer),
         0, 0, 0, nullptr);
   }
@@ -4395,21 +4403,24 @@ bool PlumeDrawContext::UploadHostTexture(plume::RenderCommandList* list, uint64_
   // Reuse the staging buffer when one of sufficient size is already here. A
   // texture that is genuinely re-uploaded every frame - a video plane - would
   // otherwise allocate a fresh upload buffer every frame.
-  if (!host->staging || host->staging_size < staging_needed) {
-    host->staging = device_->createBuffer(plume::RenderBufferDesc::UploadBuffer(staging_needed));
-    if (!host->staging) {
-      host->staging_size = 0;
+  // This frame's staging buffer: the last frame's may still be copied from.
+  const uint32_t half = uint32_t(frame_serial_ & 1);
+  auto& staging = host->staging[half];
+  if (!staging || host->staging_size[half] < staging_needed) {
+    staging = device_->createBuffer(plume::RenderBufferDesc::UploadBuffer(staging_needed));
+    if (!staging) {
+      host->staging_size[half] = 0;
       return false;
     }
-    host->staging_size = staging_needed;
+    host->staging_size[half] = staging_needed;
   }
-  if (auto* mapped = static_cast<uint8_t*>(host->staging->map())) {
+  if (auto* mapped = static_cast<uint8_t*>(staging->map())) {
     std::memcpy(mapped, pixels.data(), pixels.size());
     for (uint32_t level = 1; level < levels; ++level) {
       const auto& mip = (*mips)[level - 1];
       std::memcpy(mapped + level_offsets[level], mip.pixels.data(), mip.pixels.size());
     }
-    host->staging->unmap();
+    staging->unmap();
   }
 
   list->barriers(plume::RenderBarrierStage::COPY,
@@ -4421,7 +4432,7 @@ bool PlumeDrawContext::UploadHostTexture(plume::RenderCommandList* list, uint64_
     const uint32_t level_row = level ? (*mips)[level - 1].row_texels : row_texels;
     list->copyTextureRegion(
         plume::RenderTextureCopyLocation::Subresource(host->texture.get(), level, 0),
-        plume::RenderTextureCopyLocation::PlacedFootprint(host->staging.get(), host_format,
+        plume::RenderTextureCopyLocation::PlacedFootprint(staging.get(), host_format,
                                                           level_width, level_height, 1, level_row,
                                                           level_offsets[level]),
         0, 0, 0, nullptr);
@@ -5473,7 +5484,7 @@ void PlumeDrawContext::EncodeDraws(plume::RenderCommandList* list,
     for (const GuestDrawSnapshot& snap : draws) {
       if (!snap.valid || snap.is_clear || snap.is_resolve || snap.d3d_vertex_buffer == 0 ||
           snap.d3d_vertex_stride == 0 || snap.has_video_frame() || snap.num_indices == 0 ||
-          snap.num_indices > kDummyVertexCount) {
+          snap.num_indices > kVertsPerFrame) {
         continue;
       }
       if (auto check = mesh_checks_.find(&snap); check != mesh_checks_.end() && check->second.hit) {
@@ -5521,7 +5532,14 @@ void PlumeDrawContext::EncodeDraws(plume::RenderCommandList* list,
   list->setGraphicsDescriptorSet(sampler_set_.get(), 3);
 
   uint32_t encoded = 0;
-  uint32_t vb_used = 0;
+  // Frames alternate between two halves of the vertex and constant buffers:
+  // the GPU may still be drawing the last frame from its half while this one
+  // is written (XERENGE_ASYNC_PRESENT keeps a frame in flight).
+  const uint32_t half = uint32_t(frame_serial_ & 1);
+  const uint32_t vb_base = half * kVertsPerFrame;
+  const uint32_t slot_base = half * kSlotsPerFrame;
+  uint32_t vb_used = vb_base;
+  vb_limit_ = vb_base + kVertsPerFrame;
   uint32_t guest_draws = 0;
   using rex::graphics::xenos::PrimitiveType;
   size_t last_video = draws.size();
@@ -5666,7 +5684,7 @@ void PlumeDrawContext::EncodeDraws(plume::RenderCommandList* list,
       note_skip("degenerate point list");
       return;
     }
-    if (vb_used >= kDummyVertexCount || encoded >= kCbSlots) {
+    if (vb_used >= vb_base + kVertsPerFrame || encoded >= kSlotsPerFrame) {
       ++fate.full;
       // Dropping the rest of the frame is not something to do quietly - it
       // costs whole strings and panels on screen, and looks like a shading
@@ -5674,8 +5692,8 @@ void PlumeDrawContext::EncodeDraws(plume::RenderCommandList* list,
       static uint32_t overflow_logs = 0;
       if (overflow_logs < 8) {
         ++overflow_logs;
-        REXLOG_WARN("plume: draw dropped, buffers full (verts {}/{}, draws {}/{})", vb_used,
-                    kDummyVertexCount, encoded, kCbSlots);
+        REXLOG_WARN("plume: draw dropped, buffers full (verts {}/{}, draws {}/{})", vb_used - vb_base,
+                    kVertsPerFrame, encoded, kSlotsPerFrame);
       }
       return;
     }
@@ -5941,9 +5959,9 @@ void PlumeDrawContext::EncodeDraws(plume::RenderCommandList* list,
     // the last draw wrote, which is then used again: neighbouring draws often
     // share their pixel constants, and every block written is 4 KB going into
     // memory the GPU reads.
-    uint32_t vs_slot = encoded;
-    uint32_t ps_slot = encoded;
-    uint32_t shared_slot = encoded;
+    uint32_t vs_slot = slot_base + encoded;
+    uint32_t ps_slot = slot_base + encoded;
+    uint32_t shared_slot = slot_base + encoded;
     if (last_vs && std::memcmp(last_vs, snap.vs_constants.data(), kVsConstantBytes) == 0) {
       vs_slot = last_vs_slot;
     } else {
