@@ -30,6 +30,8 @@
 #include <QVBoxLayout>
 #include <QtConcurrent/QtConcurrentRun>
 
+#include <functional>
+
 namespace {
 
 // The retail European image the recompiled code was made from (see SETUP.md).
@@ -118,6 +120,14 @@ export SDL_VIDEODRIVER=x11
 export LD_LIBRARY_PATH="$dir/bin${LD_LIBRARY_PATH:+:$LD_LIBRARY_PATH}"
 logs="${XDG_STATE_HOME:-$HOME/.local/state}/xerenge-burnout"
 mkdir -p "$logs"
+
+# Started from a shortcut there is no terminal to show why a start failed
+# before the game's own log opened, so what it prints goes to a file.
+if [ ! -t 2 ]; then
+    exec >"$logs/launcher.log" 2>&1
+    echo "$(date) session=$XDG_SESSION_TYPE DISPLAY=$DISPLAY WAYLAND_DISPLAY=$WAYLAND_DISPLAY"
+    echo "args: $extra $*"
+fi
 
 cd "$dir"
 exec "$dir/bin/burnout" \
@@ -299,15 +309,30 @@ class KeyEdit : public QLineEdit {
  public:
   using QLineEdit::QLineEdit;
 
+  // Called with the key's name when one is pressed in the field.
+  std::function<void(const QString&)> on_captured;
+
  protected:
   void keyPressEvent(QKeyEvent* event) override {
     const QString name = GameKeyName(event);
     if (!name.isEmpty()) {
       setText(name);
+      if (on_captured) {
+        on_captured(name);
+      }
     }
     event->accept();
   }
 };
+
+// The keys of a keybind value: "A,Left" -> {A, Left}.
+QStringList BindKeys(const QString& value) {
+  QStringList keys;
+  for (const QString& key : value.split(',', Qt::SkipEmptyParts)) {
+    keys.append(key.trimmed());
+  }
+  return keys;
+}
 
 QString DefaultInstallDir() {
   return QDir::home().filePath("Games/Burnout Revenge");
@@ -482,6 +507,40 @@ InstallerWindow::InstallerWindow(QWidget* parent) : QWidget(parent) {
     grid->addWidget(edit, row % kRows, column + 1);
     key_edits_.append({QString::fromLatin1(control.setting), edit});
     ++row;
+  }
+  // One key, one control: a key held for two controls presses both buttons at
+  // once, and the menus take neither (V on both A and the right stick press
+  // left A dead in them). A key chosen for a control is taken off any other,
+  // and a key still on two - from a hand-edited xerenge.conf - shows in red.
+  for (const auto& [setting, edit] : key_edits_) {
+    auto* key_edit = static_cast<KeyEdit*>(edit);
+    key_edit->on_captured = [this, key_edit](const QString& name) {
+      for (const auto& [other_setting, other] : key_edits_) {
+        if (other == key_edit) {
+          continue;
+        }
+        QStringList keys = BindKeys(other->text());
+        if (keys.removeAll(name) > 0) {
+          other->setText(keys.join(','));
+        }
+      }
+    };
+    connect(edit, &QLineEdit::textChanged, this, [this] {
+      QMap<QString, int> uses;
+      for (const auto& [setting, other] : key_edits_) {
+        for (const QString& key : BindKeys(other->text())) {
+          ++uses[key];
+        }
+      }
+      for (const auto& [setting, other] : key_edits_) {
+        bool shared = false;
+        for (const QString& key : BindKeys(other->text())) {
+          shared = shared || uses.value(key) > 1;
+        }
+        other->setStyleSheet(shared ? "color: #d03030;" : QString());
+        other->setToolTip(shared ? tr("This key is on another control as well.") : QString());
+      }
+    });
   }
   keys_layout->addLayout(grid);
   keys_layout->addStretch(1);

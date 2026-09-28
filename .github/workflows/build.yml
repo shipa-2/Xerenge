@@ -186,9 +186,75 @@ jobs:
           windeployqt --release --no-translations "$package/xerenge-installer.exe"
           ls -laR "$package"
 
+      # One .exe: an Inno Setup wrapper that unpacks the package to a
+      # temporary folder and runs the installer from it.
+      - name: Installer .exe
+        run: |
+          choco install innosetup -y --no-progress
+          iscc=$(ls "/c/Program Files (x86)/Inno Setup 6/ISCC.exe" "/c/Program Files/Inno Setup 6/ISCC.exe" 2>/dev/null | head -n 1)
+          "$iscc" "/DPackage=$(cygpath -w "$RUNNER_TEMP/package")" "/DVersion=$(cat VERSION)" \
+            "/O$(cygpath -w "$RUNNER_TEMP/setup")" rexglue/installer/windows-setup.iss
+          ls -la "$RUNNER_TEMP/setup"
+
       - uses: actions/upload-artifact@v6
         with:
           name: burnout-revenge-installer-win-amd64
-          path: ${{ runner.temp }}/package
+          path: ${{ runner.temp }}/setup/Burnout_Revenge_Installer-win-amd64.exe
           retention-days: 7
           if-no-files-found: error
+
+  # A release when VERSION names one that does not exist yet: a push to main
+  # that raises VERSION publishes both installers as the latest release.
+  release:
+    needs: [linux-amd64, win-amd64]
+    if: github.ref == 'refs/heads/main'
+    runs-on: ubuntu-24.04
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/checkout@v6
+
+      - name: Version
+        id: version
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          version=$(tr -d '[:space:]' < VERSION)
+          echo "version=$version" >> "$GITHUB_OUTPUT"
+          if gh release view "v$version" >/dev/null 2>&1; then
+            echo "v$version is already released"
+            echo "new=false" >> "$GITHUB_OUTPUT"
+          else
+            echo "new=true" >> "$GITHUB_OUTPUT"
+          fi
+
+      - uses: actions/download-artifact@v6
+        if: steps.version.outputs.new == 'true'
+        with:
+          path: artifacts
+          merge-multiple: true
+
+      - name: Publish
+        if: steps.version.outputs.new == 'true'
+        env:
+          GH_TOKEN: ${{ github.token }}
+          VERSION: ${{ steps.version.outputs.version }}
+        run: |
+          ls -la artifacts
+          cat > notes.md <<'EOF'
+          The game comes built: the installer only needs your own Burnout Revenge disc image (PAL, see `SETUP.md`).
+
+          **Windows:** download `Burnout_Revenge_Installer-win-amd64.exe` and run it.
+
+          **Linux:** download `Burnout_Revenge_Installer-x86_64.AppImage`, then
+          ```bash
+          chmod +x Burnout_Revenge_Installer-x86_64.AppImage
+          ./Burnout_Revenge_Installer-x86_64.AppImage
+          ```
+
+          Run the installer again over an installed copy to update it; your settings are kept.
+          EOF
+          gh release create "v$VERSION" --title "$VERSION" --latest --target "$GITHUB_SHA" \
+            --notes-file notes.md \
+            artifacts/Burnout_Revenge_Installer-x86_64.AppImage \
+            artifacts/Burnout_Revenge_Installer-win-amd64.exe
