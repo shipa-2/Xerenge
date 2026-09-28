@@ -101,7 +101,7 @@ uint32_t g_ring_overwritten_since_present = 0;
 uint32_t g_video_classified_since_present = 0;
 
 bool VideoFrameWeakerThan(const GuestDrawSnapshot& next, const GuestDrawSnapshot& current) {
-  if (current.video_rgba.empty()) {
+  if (!current.has_video_frame()) {
     return false;
   }
   if (next.video_luma_range + 8 < current.video_luma_range && next.video_luma_mean < 28) {
@@ -1030,7 +1030,7 @@ void PlumeGraphicsSystem::PublishDrawSnapshot(uint32_t prim_type, uint32_t sourc
     // ring walk.
     const bool already_have_this_frame =
         video_key != 0 && video_key == last_video_key_.load(std::memory_order_relaxed) &&
-        !pending_video_.video_rgba.empty();
+        pending_video_.has_video_frame();
     if (!already_have_this_frame &&
         (last_video_capture_.time_since_epoch().count() == 0 ||
          now - last_video_capture_ >= std::chrono::milliseconds(2))) {
@@ -1059,7 +1059,7 @@ void PlumeGraphicsSystem::PublishDrawSnapshot(uint32_t prim_type, uint32_t sourc
         ++draw_ring_count_;
       }
     }
-    if (!snap.video_rgba.empty()) {
+    if (snap.has_video_frame()) {
       // The "weaker frame" test exists to skip the odd mid-decode grey frame,
       // but it measures against the frame currently on screen, and that frame
       // only changes when a frame is accepted. So one rejection makes every
@@ -1121,7 +1121,7 @@ void PlumeGraphicsSystem::PublishDrawSnapshot(uint32_t prim_type, uint32_t sourc
   static const bool interface_from_d3d = std::getenv("XERENGE_D3D_UI") != nullptr;
   const bool from_draw_indx = ring_draw_opcode_ == 0x22 || ring_draw_opcode_ == 0x34;
   const bool ring_duplicate = interface_from_d3d && snap.d3d_vertex_buffer == 0 &&
-                              snap.video_rgba.empty() && from_draw_indx;
+                              !snap.has_video_frame() && from_draw_indx;
   if (snap.valid && num_indices >= 3 && !ring_duplicate) {
     if (snap.d3d_vertex_buffer != 0) {
       d3d_snapshots_pushed_.fetch_add(1, std::memory_order_relaxed);
@@ -1705,14 +1705,14 @@ void PlumeGraphicsSystem::PresentClearColorOnUiThread(uint32_t guest_width,
     }
     if (!overlays.empty()) {
       last_overlays_ = overlays;
-    } else if (!pending_video_.video_rgba.empty() && last_overlays_.size() < 16) {
+    } else if (pending_video_.has_video_frame() && last_overlays_.size() < 16) {
       overlays = last_overlays_;
     }
     // pending_video_ is written by the command processor, so reading it needs
     // the mutex - but only for the read, not for what is built from it.
     std::lock_guard video_lock(snapshot_mutex_);
     if (!saw_video && no_video_presents_ > 45 && overlays.size() >= 8) {
-      pending_video_.video_rgba.clear();
+      pending_video_.clear_video_frame();
       last_video_key_.store(0, std::memory_order_relaxed);
     }
     // With targets followed the frame goes where the title drew it - into
@@ -1728,7 +1728,7 @@ void PlumeGraphicsSystem::PresentClearColorOnUiThread(uint32_t guest_width,
       // Every slot: a present can hold two of the title's frames, each
       // drawing the video and copying it out, and a slot left empty made that
       // copy black - a black flash.
-      if (!pending_video_.video_rgba.empty()) {
+      if (pending_video_.has_video_frame()) {
         *it = pending_video_;
         video_placed = true;
         ++it;
@@ -1746,7 +1746,7 @@ void PlumeGraphicsSystem::PresentClearColorOnUiThread(uint32_t guest_width,
         break;
       }
     }
-    if (!video_placed && (!targets_followed || !has_3d) && !pending_video_.video_rgba.empty()) {
+    if (!video_placed && (!targets_followed || !has_3d) && pending_video_.has_video_frame()) {
       batch.push_back(pending_video_);
     }
     batch.insert(batch.end(), overlays.begin(), overlays.end());

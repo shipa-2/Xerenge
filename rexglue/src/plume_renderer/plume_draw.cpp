@@ -30,6 +30,7 @@
 #include <rex/system/xmemory.h>
 
 #include "plume_renderer/plume_passthrough_spirv.h"
+#include "plume_renderer/plume_video_spirv.h"
 #include "plume_renderer/plume_shader_cache.h"
 #include "shader_cache.h"
 #include "plume_renderer/plume_swapchain.h"
@@ -410,7 +411,7 @@ bool PlausibleColorValue(const float* v) {
 
 bool ResolveUiTint(const GuestDrawSnapshot& snap, bool has_color_attr, float tint[4], int* slot_out,
                    int learned_slot = -1) {
-  if (!tint || has_color_attr || !snap.video_rgba.empty() || IsGuestVideoBlit(snap)) {
+  if (!tint || has_color_attr || snap.has_video_frame() || IsGuestVideoBlit(snap)) {
     return false;
   }
   const float* ps0 = reinterpret_cast<const float*>(snap.ps_constants.data());
@@ -1695,6 +1696,34 @@ bool IsPackedUvFormat(rex::graphics::xenos::TextureFormat format) {
   return rex::graphics::GetBaseFormat(format) == rex::graphics::xenos::TextureFormat::k_8_8;
 }
 
+// XERENGE_VIDEO_GPU: how much of the video frame's conversion runs on the
+// GPU, brought up a step at a time - an earlier attempt lost the device on
+// AMD's Windows driver the moment the video was drawn.
+//   0  the frame is turned into RGBA on the CPU
+//   1  as 0, and the video pipeline is built, unused
+//   2  as 1, and the planes go up to the GPU as well, unused
+//   3  the planes alone go up and the video pipeline converts them (the
+//      default: all three steps held on the 4500U's AMD driver)
+int VideoGpuStage() {
+  static const int stage = [] {
+    const char* text = std::getenv("XERENGE_VIDEO_GPU");
+    return text && *text ? std::clamp(std::atoi(text), 0, 3) : 3;
+  }();
+  return stage;
+}
+
+// Where a video plane's packed copy lives: apart from any guest texture at
+// the same address, which the usual texture path builds in its own shape.
+uint64_t PackedPlaneKey(uint64_t key) {
+  return key ^ 0x9E3779B97F4A7C15ull;
+}
+
+// A plane's bytes as RGBA8 texels, four bytes to one - video.frag takes them
+// apart again.
+uint32_t PackedPlaneWidth(uint32_t width, uint32_t bytes_per_sample) {
+  return (width * bytes_per_sample + 3) / 4;
+}
+
 struct GuestPlane {
   std::vector<uint8_t> pixels;
   uint32_t width = 0;
@@ -1804,7 +1833,7 @@ bool CaptureGuestVideoFrame(GuestDrawSnapshot* snap, memory::Memory* memory) {
   if (!snap || !memory) {
     return false;
   }
-  snap->video_rgba.clear();
+  snap->clear_video_frame();
   snap->video_width = 0;
   snap->video_height = 0;
   snap->video_row_bytes = 0;
@@ -1869,7 +1898,9 @@ bool CaptureGuestVideoFrame(GuestDrawSnapshot* snap, memory::Memory* memory) {
   std::vector<uint8_t> rgba;
   uint32_t row_bytes = 0;
   uint32_t row_texels = 0;
-  if (!CompositeYuvToRgba(y_plane, u_plane, v_plane, packed_uv, &rgba, &row_bytes, &row_texels)) {
+  // From stage 3 the GPU converts the planes, and the CPU does not.
+  if (VideoGpuStage() < 3 &&
+      !CompositeYuvToRgba(y_plane, u_plane, v_plane, packed_uv, &rgba, &row_bytes, &row_texels)) {
     return false;
   }
   {
@@ -1896,6 +1927,26 @@ bool CaptureGuestVideoFrame(GuestDrawSnapshot* snap, memory::Memory* memory) {
   snap->video_key = TextureKey(y_fetch);
   snap->video_luma_mean = luma_mean;
   snap->video_luma_range = luma_range;
+  if (VideoGpuStage() >= 2) {
+    const auto texels_per_row = [](const GuestPlane& plane) {
+      return plane.row_bytes / std::max(plane.bytes_per_texel, 1u);
+    };
+    snap->video_packed_uv = packed_uv;
+    snap->video_y_row_texels = texels_per_row(y_plane);
+    snap->video_u_width = u_plane.width;
+    snap->video_u_height = u_plane.height;
+    snap->video_u_row_texels = texels_per_row(u_plane);
+    snap->video_u_key = TextureKey(u_fetch);
+    if (!packed_uv) {
+      snap->video_v_width = v_plane.width;
+      snap->video_v_height = v_plane.height;
+      snap->video_v_row_texels = texels_per_row(v_plane);
+      snap->video_v_key = TextureKey(v_fetch);
+      snap->video_v = std::move(v_plane.pixels);
+    }
+    snap->video_u = std::move(u_plane.pixels);
+    snap->video_y = std::move(y_plane.pixels);
+  }
   static uint32_t yuv_logs = 0;
   if (yuv_logs < 8) {
     ++yuv_logs;
@@ -2000,6 +2051,9 @@ void PlumeDrawContext::Shutdown() {
   null_texture_view_.reset();
   null_texture_.reset();
   passthrough_pipelines_.clear();
+  video_pipelines_.clear();
+  video_vs_.reset();
+  video_ps_.reset();
   passthrough_vs_.reset();
   passthrough_ps_.reset();
   sampler_index_by_key_.clear();
@@ -2272,7 +2326,51 @@ plume::RenderPipeline* PlumeDrawContext::PassthroughFor(plume::RenderPrimitiveTo
                                                         uint32_t blend_control,
                                                         uint32_t color_mask,
                                                         uint32_t depth_control) {
-  if (!device_ || !passthrough_vs_ || !passthrough_ps_) {
+  return ScreenPipelineFor(passthrough_vs_.get(), passthrough_ps_.get(), passthrough_pipelines_,
+                           "passthrough", topology, blend_control, color_mask, depth_control);
+}
+
+plume::RenderPipeline* PlumeDrawContext::VideoPipelineFor(plume::RenderPrimitiveTopology topology,
+                                                          uint32_t blend_control,
+                                                          uint32_t color_mask,
+                                                          uint32_t depth_control) {
+  if (!video_vs_ || !video_ps_) {
+    if (!device_) {
+      return nullptr;
+    }
+    video_vs_ = device_->createShader(kVideoVsSpirv, kVideoVsSpirv_count * 4, "main",
+                                      plume::RenderShaderFormat::SPIRV);
+    video_ps_ = device_->createShader(kVideoPsSpirv, kVideoPsSpirv_count * 4, "main",
+                                      plume::RenderShaderFormat::SPIRV);
+    REXLOG_INFO("plume: video shaders {}", video_vs_ && video_ps_ ? "created" : "FAILED");
+  }
+  return ScreenPipelineFor(video_vs_.get(), video_ps_.get(), video_pipelines_, "video", topology,
+                           blend_control, color_mask, depth_control);
+}
+
+uint32_t PlumeDrawContext::VideoPlaneSlot(uint64_t key) const {
+  auto it = guest_textures_.find(PackedPlaneKey(key));
+  if (it == guest_textures_.end() || !it->second || !it->second->view ||
+      it->second->format != plume::RenderFormat::R8G8B8A8_UNORM) {
+    return 0;
+  }
+  return it->second->bindless;
+}
+
+bool PlumeDrawContext::UsesVideoPipeline(const GuestDrawSnapshot& snap) const {
+  if (VideoGpuStage() < 3 || snap.video_y.empty()) {
+    return false;
+  }
+  return VideoPlaneSlot(snap.video_key) != 0 && VideoPlaneSlot(snap.video_u_key) != 0 &&
+         (snap.video_packed_uv || VideoPlaneSlot(snap.video_v_key) != 0);
+}
+
+plume::RenderPipeline* PlumeDrawContext::ScreenPipelineFor(
+    plume::RenderShader* vs, plume::RenderShader* ps,
+    std::unordered_map<uint64_t, std::unique_ptr<plume::RenderPipeline>>& cache, const char* what,
+    plume::RenderPrimitiveTopology topology, uint32_t blend_control, uint32_t color_mask,
+    uint32_t depth_control) {
+  if (!device_ || !vs || !ps) {
     return nullptr;
   }
   const uint8_t write_mask = WriteMaskForRt0(color_mask);
@@ -2283,14 +2381,14 @@ plume::RenderPipeline* PlumeDrawContext::PassthroughFor(plume::RenderPrimitiveTo
                              (uint64_t(uint32_t(depth.function)) << 2);
   const uint64_t key = (depth_key << 48) | (uint64_t(uint32_t(topology)) << 40) |
                        (uint64_t(write_mask) << 32) | blend_control;
-  if (auto it = passthrough_pipelines_.find(key); it != passthrough_pipelines_.end()) {
+  if (auto it = cache.find(key); it != cache.end()) {
     return it->second.get();
   }
 
   plume::RenderGraphicsPipelineDesc desc;
   desc.pipelineLayout = pipeline_layout_.get();
-  desc.vertexShader = passthrough_vs_.get();
-  desc.pixelShader = passthrough_ps_.get();
+  desc.vertexShader = vs;
+  desc.pixelShader = ps;
   desc.primitiveTopology = topology;
   desc.cullMode = plume::RenderCullMode::NONE;
   desc.fillMode = plume::RenderFillMode::SOLID;
@@ -2321,7 +2419,7 @@ plume::RenderPipeline* PlumeDrawContext::PassthroughFor(plume::RenderPrimitiveTo
     static uint32_t fail_logs = 0;
     if (fail_logs < 8) {
       ++fail_logs;
-      REXLOG_ERROR("plume: passthrough pipeline failed topo={} blend={:08X} mask={:X}",
+      REXLOG_ERROR("plume: {} pipeline failed topo={} blend={:08X} mask={:X}", what,
                    uint32_t(topology), blend_control, write_mask);
     }
     return nullptr;
@@ -2329,11 +2427,11 @@ plume::RenderPipeline* PlumeDrawContext::PassthroughFor(plume::RenderPrimitiveTo
   static uint32_t blend_logs = 0;
   if (blend_logs < 16) {
     ++blend_logs;
-    REXLOG_INFO("plume: passthrough pipeline topo={} blend={:08X} mask={:X}", uint32_t(topology),
+    REXLOG_INFO("plume: {} pipeline topo={} blend={:08X} mask={:X}", what, uint32_t(topology),
                 blend_control, write_mask);
   }
   plume::RenderPipeline* raw = pipeline.get();
-  passthrough_pipelines_.emplace(key, std::move(pipeline));
+  cache.emplace(key, std::move(pipeline));
   return raw;
 }
 
@@ -3670,12 +3768,23 @@ uint32_t PlumeDrawContext::FillVertices(const GuestDrawSnapshot& snap, memory::M
       }
       break;
     }
+    // XERENGE_VIDEO_GPU 3: a video frame drawn by the video pipeline carries its
+    // planes' slots in this lane instead (video.vert): luma, Cb or packed
+    // Cb,Cr, Cr, and 3 when packed.
+    float lane[4] = {texid, 0.0f, 0.0f, 1.0f};
+    if (UsesVideoPipeline(snap)) {
+      const uint32_t u = VideoPlaneSlot(snap.video_u_key);
+      lane[0] = float(VideoPlaneSlot(snap.video_key));
+      lane[1] = float(u);
+      lane[2] = float(snap.video_packed_uv ? u : VideoPlaneSlot(snap.video_v_key));
+      lane[3] = snap.video_packed_uv ? 3.0f : 2.0f;
+    }
     for (uint32_t vi = 0; vi < draw_count; ++vi) {
       float* dst = vert(vi);
-      dst[4] = texid;
-      dst[5] = 0.0f;
-      dst[6] = 0.0f;
-      dst[7] = 1.0f;
+      dst[4] = lane[0];
+      dst[5] = lane[1];
+      dst[6] = lane[2];
+      dst[7] = lane[3];
       // 5B42 UI VS has no COLOR0 vfetch: guest writes oD0 from a VS constant.
       if (!has_color_attr) {
         if (have_tint) {
@@ -4108,7 +4217,7 @@ uint32_t PlumeDrawContext::ShaderSamplerSlots(uint64_t hash) const {
 uint32_t PlumeDrawContext::UsedTextureSlots(const GuestDrawSnapshot& snap) const {
   // Only a Direct3D draw with the title's own shaders: the passthrough path
   // and the video take whichever slot is bound.
-  if (snap.d3d_vertex_buffer == 0 || !snap.video_rgba.empty() || snap.ps_hash == 0) {
+  if (snap.d3d_vertex_buffer == 0 || snap.has_video_frame() || snap.ps_hash == 0) {
     return ~0u;
   }
   const uint32_t ps_slots = ShaderSamplerSlots(snap.ps_hash);
@@ -4524,7 +4633,7 @@ void PlumeDrawContext::BindGuestTextures(plume::RenderCommandList* list,
   ++frame_serial_;
   size_t last_video = draws.size();
   for (size_t i = 0; i < draws.size(); ++i) {
-    if (!draws[i].video_rgba.empty()) {
+    if (draws[i].has_video_frame()) {
       last_video = i;
     }
   }
@@ -4555,7 +4664,7 @@ void PlumeDrawContext::BindGuestTextures(plume::RenderCommandList* list,
     std::vector<HashJob> jobs;
     std::unordered_set<uint64_t> queued;
     for (const GuestDrawSnapshot& snap : draws) {
-      if (!snap.valid || !snap.video_rgba.empty()) {
+      if (!snap.valid || snap.has_video_frame()) {
         continue;
       }
       const uint32_t used_slots = UsedTextureSlots(snap);
@@ -4660,11 +4769,39 @@ void PlumeDrawContext::BindGuestTextures(plume::RenderCommandList* list,
     }
     // Every copy of the decoded frame shares one texture, uploaded once from
     // the last; the earlier ones must not bind the raw planes instead.
-    const bool captured = !snap.video_rgba.empty() &&
-                          (snap_index != last_video ||
-                           UploadHostTexture(list, snap.video_key, snap.video_width, snap.video_height,
-                                            plume::RenderFormat::R8G8B8A8_UNORM, snap.video_rgba,
-                                            snap.video_row_texels));
+    // From stage 2 the planes go up too, each packed into RGBA8 under a key
+    // of its own; from stage 3 they are all there is.
+    const auto upload_planes = [&] {
+      const auto upload = [&](uint64_t key, uint32_t width, uint32_t height, uint32_t row_texels,
+                              uint32_t bytes_per_sample, const std::vector<uint8_t>& bytes) {
+        return UploadHostTexture(list, PackedPlaneKey(key),
+                                 PackedPlaneWidth(width, bytes_per_sample), height,
+                                 plume::RenderFormat::R8G8B8A8_UNORM, bytes,
+                                 row_texels * bytes_per_sample / 4);
+      };
+      return upload(snap.video_key, snap.video_width, snap.video_height, snap.video_y_row_texels, 1,
+                    snap.video_y) &&
+             upload(snap.video_u_key, snap.video_u_width, snap.video_u_height,
+                    snap.video_u_row_texels, snap.video_packed_uv ? 2 : 1, snap.video_u) &&
+             (snap.video_packed_uv ||
+              upload(snap.video_v_key, snap.video_v_width, snap.video_v_height,
+                     snap.video_v_row_texels, 1, snap.video_v));
+    };
+    const auto upload_frame = [&] {
+      bool ok = true;
+      if (VideoGpuStage() < 3) {
+        ok = UploadHostTexture(list, snap.video_key, snap.video_width, snap.video_height,
+                               plume::RenderFormat::R8G8B8A8_UNORM, snap.video_rgba,
+                               snap.video_row_texels);
+      }
+      if (VideoGpuStage() >= 2 && !snap.video_y.empty()) {
+        const bool planes = upload_planes();
+        ok = VideoGpuStage() >= 3 ? planes : ok;
+      }
+      return ok;
+    };
+    const bool captured =
+        snap.has_video_frame() && (snap_index != last_video || upload_frame());
     const uint32_t used_slots = UsedTextureSlots(snap);
     for (uint32_t slot = 0; slot < rex::graphics::xenos::kTextureFetchConstantCount; ++slot) {
       if (captured && slot < 3) {
@@ -5222,7 +5359,7 @@ void PlumeDrawContext::EncodeDraws(plume::RenderCommandList* list,
     candidates.reserve(draws.size());
     for (const GuestDrawSnapshot& snap : draws) {
       if (snap.valid && !snap.is_clear && !snap.is_resolve && snap.d3d_vertex_buffer != 0 &&
-          snap.video_rgba.empty()) {
+          !snap.has_video_frame()) {
         candidates.push_back(&snap);
       }
     }
@@ -5267,7 +5404,7 @@ void PlumeDrawContext::EncodeDraws(plume::RenderCommandList* list,
     size_t total = 0;
     for (const GuestDrawSnapshot& snap : draws) {
       if (!snap.valid || snap.is_clear || snap.is_resolve || snap.d3d_vertex_buffer == 0 ||
-          snap.d3d_vertex_stride == 0 || !snap.video_rgba.empty() || snap.num_indices == 0 ||
+          snap.d3d_vertex_stride == 0 || snap.has_video_frame() || snap.num_indices == 0 ||
           snap.num_indices > kDummyVertexCount) {
         continue;
       }
@@ -5321,7 +5458,7 @@ void PlumeDrawContext::EncodeDraws(plume::RenderCommandList* list,
   using rex::graphics::xenos::PrimitiveType;
   size_t last_video = draws.size();
   for (size_t i = 0; i < draws.size(); ++i) {
-    if (!draws[i].video_rgba.empty()) {
+    if (draws[i].has_video_frame()) {
       last_video = i;
     }
   }
@@ -5497,7 +5634,7 @@ void PlumeDrawContext::EncodeDraws(plume::RenderCommandList* list,
     // out, is opaque: the menu then draws that copy blended by its alpha. With
     // the register state the snapshot happened to carry, alpha stayed at the
     // clear's zero and the menu drew the video invisible - black.
-    const bool opaque_video = targets_followed && !snap.video_rgba.empty();
+    const bool opaque_video = targets_followed && snap.has_video_frame();
     const uint32_t blend_control =
         opaque_video ? 0x00010001u
                      : (snap.blend_control ? snap.blend_control : kDefaultBlendControl);
@@ -5535,7 +5672,7 @@ void PlumeDrawContext::EncodeDraws(plume::RenderCommandList* list,
     // it carries depth state too, yet its quad is already in screen space and
     // the passthrough path is what places it correctly.
     const GuestDepthState draw_depth = DepthStateFromGuest(snap.depth_control);
-    const bool is_video = !snap.video_rgba.empty() || IsGuestVideoBlit(snap);
+    const bool is_video = snap.has_video_frame() || IsGuestVideoBlit(snap);
     // A draw that arrived through the Direct3D calls is scene geometry by
     // construction and wants the title's own shaders whatever the depth
     // registers say. Those registers are filled by the command ring, which
@@ -5649,6 +5786,15 @@ void PlumeDrawContext::EncodeDraws(plume::RenderCommandList* list,
         REXLOG_INFO("plume: Direct3D draws: {} with the title's shaders, {} passthrough",
                     real_d3d.load(std::memory_order_relaxed),
                     passthrough_d3d.load(std::memory_order_relaxed));
+      }
+    }
+    // XERENGE_VIDEO_GPU: from stage 1 the video pipeline is built for a video
+    // frame's state, and from stage 3 it draws the frame.
+    if (!pipeline && snap.has_video_frame() && VideoGpuStage() >= 1) {
+      plume::RenderPipeline* video =
+          VideoPipelineFor(topology, blend_control, draw_color_mask, snap.depth_control);
+      if (UsesVideoPipeline(snap)) {
+        pipeline = video;
       }
     }
     if (!pipeline) {
@@ -5897,7 +6043,7 @@ void PlumeDrawContext::EncodeDraws(plume::RenderCommandList* list,
                              uint32_t(t0.base_address) << 12, uint32_t(t0.format),
                              uint32_t(t0.size_2d.width) + 1, uint32_t(t0.size_2d.height) + 1,
                              uint32_t(t0.swizzle), uint32_t(t0.clamp_x), uint32_t(t0.clamp_y),
-                             d.video_rgba.empty() ? "" : " video");
+                             !d.has_video_frame() ? "" : " video");
           // A small interface draw's vertices, raw: where its quads meet and
           // which texels they reach is what a seam between them comes down to.
           const uint32_t vb = d.d3d_vertex_buffer;
@@ -6062,14 +6208,14 @@ void PlumeDrawContext::EncodeDraws(plume::RenderCommandList* list,
       // frame's clears - or the next frame's video frame belongs to the frame
       // after; counted, the target (already cleared) was shown instead of the
       // copy, and a black frame flashed up now and then.
-      if (snap.d3d_vertex_buffer != 0 && snap.video_rgba.empty()) {
+      if (snap.d3d_vertex_buffer != 0 && !snap.has_video_frame()) {
         drawn_since_copy = true;
         if (last_resolve_dest_ != 0) {
           ++frame_draws_after_resolve_;
           frame_indices_after_resolve_ += snap.num_indices;
         }
       }
-      if (!snap.video_rgba.empty()) {
+      if (snap.has_video_frame()) {
         video_since_clear = true;
       }
     }
@@ -6098,7 +6244,7 @@ void PlumeDrawContext::EncodeDraws(plume::RenderCommandList* list,
         clears += d.is_clear ? 1 : 0;
         copies += d.is_resolve ? 1 : 0;
         d3d += (!d.is_clear && !d.is_resolve && d.d3d_vertex_buffer != 0) ? 1 : 0;
-        video += d.video_rgba.empty() ? 0 : 1;
+        video += !d.has_video_frame() ? 0 : 1;
       }
       size_t last_copy = draws.size();
       for (size_t i = draws.size(); i-- > 0;) {
@@ -6113,7 +6259,7 @@ void PlumeDrawContext::EncodeDraws(plume::RenderCommandList* list,
         tail += d.is_clear ? " clear"
                            : fmt::format(" draw(vs={:016X} vb={:08X} n={}{})", d.vs_hash,
                                          d.d3d_vertex_buffer, d.num_indices,
-                                         d.video_rgba.empty() ? "" : " video");
+                                         !d.has_video_frame() ? "" : " video");
       }
       g_plume_frame_summary = fmt::format(
           "frame {}: {} entries, {} encoded ({} Direct3D, {} video), {} clears, {} copies, shown "
@@ -6135,7 +6281,7 @@ void PlumeDrawContext::EncodeDraws(plume::RenderCommandList* list,
         clears += d.is_clear ? 1 : 0;
         copies += d.is_resolve ? 1 : 0;
         d3d += (!d.is_clear && !d.is_resolve && d.d3d_vertex_buffer != 0) ? 1 : 0;
-        videos += d.video_rgba.empty() ? 0 : 1;
+        videos += !d.has_video_frame() ? 0 : 1;
       }
       REXLOG_WARN("plume: thin frame {}: encoded {} (average {:.0f}) of {} entries - {} clears, "
                   "{} copies, {} Direct3D draws, {} video; shown from {} {:08X}",

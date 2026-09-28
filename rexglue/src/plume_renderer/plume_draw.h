@@ -186,6 +186,31 @@ struct GuestDrawSnapshot {
   uint64_t video_key = 0;
   uint32_t video_luma_mean = 0;
   uint32_t video_luma_range = 0;
+  // XERENGE_VIDEO_GPU 2 and 3: the frame's planes as decoded, for the video
+  // pipeline to turn into RGB on the GPU (video.frag). Luma, then chroma - one
+  // plane of Cb,Cr pairs when packed, else Cb and Cr.
+  std::vector<uint8_t> video_y;
+  std::vector<uint8_t> video_u;
+  std::vector<uint8_t> video_v;
+  bool video_packed_uv = false;
+  uint32_t video_y_row_texels = 0;
+  uint32_t video_u_width = 0;
+  uint32_t video_u_height = 0;
+  uint32_t video_u_row_texels = 0;
+  uint32_t video_v_width = 0;
+  uint32_t video_v_height = 0;
+  uint32_t video_v_row_texels = 0;
+  uint64_t video_u_key = 0;
+  uint64_t video_v_key = 0;
+
+  // A decoded frame, in either form.
+  bool has_video_frame() const { return !video_rgba.empty() || !video_y.empty(); }
+  void clear_video_frame() {
+    video_rgba.clear();
+    video_y.clear();
+    video_u.clear();
+    video_v.clear();
+  }
 };
 
 bool CaptureGuestVideoFrame(GuestDrawSnapshot* snap, memory::Memory* memory);
@@ -308,6 +333,21 @@ class PlumeDrawContext {
   plume::RenderPipeline* PassthroughFor(plume::RenderPrimitiveTopology topology,
                                         uint32_t blend_control, uint32_t color_mask,
                                         uint32_t depth_control);
+  // The same for the video frame's own pipeline (video.vert/video.frag).
+  plume::RenderPipeline* VideoPipelineFor(plume::RenderPrimitiveTopology topology,
+                                          uint32_t blend_control, uint32_t color_mask,
+                                          uint32_t depth_control);
+  // The slot of a video plane uploaded for the frame, 0 if it is not there.
+  uint32_t VideoPlaneSlot(uint64_t key) const;
+  // Whether this draw is a video frame the video pipeline draws: stage 3,
+  // and all of its planes uploaded.
+  bool UsesVideoPipeline(const GuestDrawSnapshot& snap) const;
+  // Both of the above: a screen-space pipeline from a shader pair, cached.
+  plume::RenderPipeline* ScreenPipelineFor(
+      plume::RenderShader* vs, plume::RenderShader* ps,
+      std::unordered_map<uint64_t, std::unique_ptr<plume::RenderPipeline>>& cache,
+      const char* what, plume::RenderPrimitiveTopology topology, uint32_t blend_control,
+      uint32_t color_mask, uint32_t depth_control);
 
   struct GuestHostTexture {
     uint64_t key = 0;
@@ -455,6 +495,10 @@ class PlumeDrawContext {
   // first use. The guest switches blend mode between UI passes, so a single
   // pipeline per topology cannot serve them all.
   std::unordered_map<uint64_t, std::unique_ptr<plume::RenderPipeline>> passthrough_pipelines_;
+  // The video frame's own pipelines (XERENGE_VIDEO_GPU): YUV planes to RGB.
+  std::unique_ptr<plume::RenderShader> video_vs_;
+  std::unique_ptr<plume::RenderShader> video_ps_;
+  std::unordered_map<uint64_t, std::unique_ptr<plume::RenderPipeline>> video_pipelines_;
 
   // Shader coverage. A draw can only leave the passthrough shader when both
   // of its guest shaders exist in the translated cache, so this predicate is

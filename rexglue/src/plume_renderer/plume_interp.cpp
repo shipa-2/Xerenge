@@ -219,7 +219,7 @@ void InterpolateFrame(std::vector<GuestDrawSnapshot>& draws) {
   std::unordered_map<uint64_t, std::vector<GuestDrawSnapshot*>> frame_groups;
   frame_groups.reserve(draws.size());
   for (GuestDrawSnapshot& d : draws) {
-    if (d.is_clear || d.is_resolve || d.d3d_vertex_buffer == 0 || !d.video_rgba.empty()) {
+    if (d.is_clear || d.is_resolve || d.d3d_vertex_buffer == 0 || d.has_video_frame()) {
       continue;
     }
     frame_groups[BaseKey(d)].push_back(&d);
