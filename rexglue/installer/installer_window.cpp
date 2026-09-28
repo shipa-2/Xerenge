@@ -16,6 +16,7 @@
 #include <QKeyEvent>
 #include <QLabel>
 #include <QLineEdit>
+#include <QMap>
 #include <QMessageBox>
 #include <QProcess>
 #include <QProcessEnvironment>
@@ -102,6 +103,17 @@ if [ "$(value keyboard)" = true ]; then
     done
 fi
 
+# Debug mode: the debug_* settings decide what is logged.
+level=info
+if [ "$(value debug)" = true ]; then
+    level=$(value debug_log_level)
+    [ -n "$level" ] || level=debug
+    [ "$(value debug_gpu_trace)" = true ] && export XERENGE_GPU_TRACE=1
+    [ "$(value debug_movie_trace)" = true ] && export XERENGE_MOVIE_TRACE=1
+    [ "$(value debug_pipeline_log)" = true ] && export XERENGE_PIPELINE_LOG=1
+    [ "$(value debug_noisy)" = true ] && extra="$extra --log_noisy=true"
+fi
+
 export SDL_VIDEODRIVER=x11
 export LD_LIBRARY_PATH="$dir/bin${LD_LIBRARY_PATH:+:$LD_LIBRARY_PATH}"
 logs="${XDG_STATE_HOME:-$HOME/.local/state}/xerenge-burnout"
@@ -113,7 +125,7 @@ exec "$dir/bin/burnout" \
     --gpu_plugin "$renderer" \
     --gpu_backend "$renderer" \
     --no-vulkan_async_skip_incomplete_frames \
-    --log_level info \
+    --log_level "$level" \
     --log_file "$logs/burnout.log" \
     --log_max_file_size_mb 32 \
     --log_max_files 3 \
@@ -162,6 +174,17 @@ for /f "usebackq eol=# tokens=1,2 delims== " %%a in ("%dir%xerenge.conf") do (
 )
 :keys_done
 
+rem Debug mode: the debug_* settings decide what is logged.
+set "level=info"
+if /i not "%debug%"=="true" goto :debug_done
+set "level=debug"
+if defined debug_log_level set "level=%debug_log_level%"
+if /i "%debug_gpu_trace%"=="true" set "XERENGE_GPU_TRACE=1"
+if /i "%debug_movie_trace%"=="true" set "XERENGE_MOVIE_TRACE=1"
+if /i "%debug_pipeline_log%"=="true" set "XERENGE_PIPELINE_LOG=1"
+if /i "%debug_noisy%"=="true" set "extra=%extra% --log_noisy=true"
+:debug_done
+
 set "logs=%LOCALAPPDATA%\xerenge-burnout"
 if not exist "%logs%" mkdir "%logs%"
 
@@ -171,7 +194,7 @@ start "" "%dir%bin\burnout.exe" ^
     --gpu_plugin %renderer% ^
     --gpu_backend %renderer% ^
     --no-vulkan_async_skip_incomplete_frames ^
-    --log_level info ^
+    --log_level %level% ^
     --log_file "%logs%\burnout.log" ^
     --log_max_file_size_mb 32 ^
     --log_max_files 3 ^
@@ -367,6 +390,10 @@ InstallerWindow::InstallerWindow(QWidget* parent) : QWidget(parent) {
   windowed_box_ = new QCheckBox(tr("Windowed"));
   windowed_box_->setToolTip(tr("Run in a window. Fullscreen otherwise."));
   layout->addWidget(windowed_box_);
+  debug_box_ = new QCheckBox(tr("Debug mode"));
+  debug_box_->setToolTip(tr("Detailed logs, for reporting a problem. What is logged is set by the "
+                            "debug_* lines in xerenge.conf."));
+  layout->addWidget(debug_box_);
 
   // The game asks for its language at every start unless one is set here.
   auto* language_row = new QHBoxLayout;
@@ -485,6 +512,8 @@ InstallerWindow::InstallerWindow(QWidget* parent) : QWidget(parent) {
   install_button_ = new QPushButton(tr("Install"));
   layout->addWidget(install_button_);
   connect(install_button_, &QPushButton::clicked, this, &InstallerWindow::StartInstall);
+  connect(path_edit_, &QLineEdit::textChanged, this, &InstallerWindow::RefreshInstallState);
+  RefreshInstallState();
 }
 
 InstallerWindow::~InstallerWindow() {
@@ -520,6 +549,78 @@ void InstallerWindow::BrowseInstallPath() {
                                                          path_edit_->text());
   if (!path.isEmpty()) {
     path_edit_->setText(path);
+  }
+}
+
+void InstallerWindow::RefreshInstallState() {
+  const QDir install(QDir(path_edit_->text().trimmed()).absolutePath());
+  const bool installed = QFileInfo::exists(install.filePath("game/default.xex")) &&
+                         QFileInfo::exists(install.filePath("xerenge.conf"));
+  static QString loaded_from;
+  if (installed && loaded_from != install.path()) {
+    loaded_from = install.path();
+    LoadSettings(install.filePath("xerenge.conf"));
+  } else if (!installed) {
+    loaded_from.clear();
+  }
+  install_button_->setText(installed ? tr("Update") : tr("Install"));
+  image_edit_->setEnabled(!installed);
+  SetStatus(installed ? tr("The game is installed here: Update replaces the program and keeps "
+                           "the game files and these settings. No disc image is needed.")
+                      : tr("Ready."));
+}
+
+// The settings of an installed copy, back into the controls, so an update
+// writes them out again as they were unless changed here.
+void InstallerWindow::LoadSettings(const QString& path) {
+  QFile file(path);
+  if (!file.open(QIODevice::ReadOnly | QIODevice::Text)) {
+    return;
+  }
+  preserved_debug_settings_.clear();
+  QMap<QString, QString> values;
+  while (!file.atEnd()) {
+    const QString line = QString::fromUtf8(file.readLine()).trimmed();
+    if (line.isEmpty() || line.startsWith('#')) {
+      continue;
+    }
+    const int equals = line.indexOf('=');
+    if (equals > 0) {
+      values.insert(line.left(equals).trimmed(), line.mid(equals + 1).trimmed());
+      if (line.startsWith("debug_")) {
+        preserved_debug_settings_ += line + "\n";
+      }
+    }
+  }
+  const auto flag = [&](const char* key, QCheckBox* box) {
+    if (values.contains(key)) {
+      box->setChecked(values.value(key) == "true");
+    }
+  };
+  const auto choice = [&](const char* key, QComboBox* combo) {
+    if (values.contains(key)) {
+      const int index = combo->findData(values.value(key));
+      if (index >= 0) {
+        combo->setCurrentIndex(index);
+      }
+    }
+  };
+  flag("bloom", bloom_box_);
+  flag("motion_blur", blur_box_);
+  if (values.contains("renderer")) {
+    xenia_box_->setChecked(values.value("renderer") == "xenos");
+  }
+  flag("windowed", windowed_box_);
+  flag("debug", debug_box_);
+  choice("language", language_combo_);
+  flag("async_present", async_box_);
+  choice("render_resolution", resolution_combo_);
+  flag("fps_counter", fps_box_);
+  flag("keyboard", keyboard_box_);
+  for (const auto& [setting, edit] : key_edits_) {
+    if (values.contains(setting)) {
+      edit->setText(values.value(setting));
+    }
   }
 }
 
@@ -591,6 +692,24 @@ void InstallerWindow::StartInstall() {
         << "keyboard = " << (keyboard_box_->isChecked() ? "true" : "false") << "\n";
     for (const auto& [setting, edit] : key_edits_) {
       out << setting << " = " << edit->text().trimmed() << "\n";
+    }
+    out << "# Debug mode: detailed logs for reporting a problem. They go to\n"
+        << "# ~/.local/state/xerenge-burnout (Linux) or %LOCALAPPDATA%\\xerenge-burnout (Windows).\n"
+        << "debug = " << (debug_box_->isChecked() ? "true" : "false") << "\n"
+        << "# What debug mode logs. Edited here only; an update keeps these lines.\n"
+        << "#   debug_log_level: trace, debug, info, warn, error\n"
+        << "#   debug_gpu_trace: the renderer's per-draw and per-frame diagnostics (large)\n"
+        << "#   debug_movie_trace: the video player's states\n"
+        << "#   debug_pipeline_log: every render pipeline built\n"
+        << "#   debug_noisy: the per-frame log lines as well (very large)\n";
+    if (!preserved_debug_settings_.isEmpty()) {
+      out << preserved_debug_settings_;
+    } else {
+      out << "debug_log_level = debug\n"
+          << "debug_gpu_trace = true\n"
+          << "debug_movie_trace = false\n"
+          << "debug_pipeline_log = false\n"
+          << "debug_noisy = false\n";
     }
     out.flush();
     extra_settings_ = extra;

@@ -42,6 +42,10 @@ class InstallerWindow : public QWidget {
 
   void BrowseImage();
   void BrowseInstallPath();
+  // An installed copy at the install path turns Install into Update: the disc
+  // image is not needed, and its xerenge.conf settings are shown to keep.
+  void RefreshInstallState();
+  void LoadSettings(const QString& path);
   void StartInstall();
   void Refuse(const QString& message);
   void RunNextStep();
@@ -70,6 +74,10 @@ class InstallerWindow : public QWidget {
   // The language set ahead of time (XERENGE_LANGUAGE), windowed, the hacks.
   QComboBox* language_combo_ = nullptr;
   QCheckBox* windowed_box_ = nullptr;
+  // Debug mode: the launcher logs what the debug_* lines of xerenge.conf ask.
+  QCheckBox* debug_box_ = nullptr;
+  // Those lines as an installed copy had them, kept through an update.
+  QString preserved_debug_settings_;
   QCheckBox* async_box_ = nullptr;
   QComboBox* resolution_combo_ = nullptr;
   QCheckBox* fps_box_ = nullptr;
