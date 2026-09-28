@@ -190,10 +190,12 @@ jobs:
       # temporary folder and runs the installer from it.
       - name: Installer .exe
         run: |
-          choco install innosetup -y --no-progress
-          iscc=$(ls "/c/Program Files (x86)/Inno Setup 6/ISCC.exe" "/c/Program Files/Inno Setup 6/ISCC.exe" 2>/dev/null | head -n 1)
-          "$iscc" "/DPackage=$(cygpath -w "$RUNNER_TEMP/package")" "/DVersion=$(cat VERSION)" \
-            "/O$(cygpath -w "$RUNNER_TEMP/setup")" rexglue/installer/windows-setup.iss
+          # The runner image has Inno Setup; installed only if it ever goes.
+          iscc="/c/Program Files (x86)/Inno Setup 6/ISCC.exe"
+          [ -f "$iscc" ] || choco install innosetup -y --no-progress
+          # -D/-O rather than /D and /O, which Git's bash would take for paths.
+          "$iscc" "-DPackage=$(cygpath -w "$RUNNER_TEMP/package")" "-DVersion=$(tr -d '[:space:]' < VERSION)" \
+            "-O$(cygpath -w "$RUNNER_TEMP/setup")" rexglue/installer/windows-setup.iss
           ls -la "$RUNNER_TEMP/setup"
 
       - uses: actions/upload-artifact@v6
