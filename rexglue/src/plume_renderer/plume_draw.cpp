@@ -3679,12 +3679,6 @@ uint32_t PlumeDrawContext::FillVertices(const GuestDrawSnapshot& snap, memory::M
   //
   // Room for the expansions below, which turn rectangles and quads into more
   // vertices than they started with.
-  const size_t staged_floats = size_t(vertex_count) * 2 * kFloatsPerVert;
-  if (stage_.size() < staged_floats) {
-    stage_.resize(staged_floats);
-  }
-  float* const staged = stage_.data();
-  auto vert = [&](uint32_t i) { return staged + i * kFloatsPerVert; };
   // Unpacked already, on a worker thread, before the frame was encoded?
   const PreUnpacked* pre = nullptr;
   if (!passthrough) {
@@ -3693,8 +3687,43 @@ uint32_t PlumeDrawContext::FillVertices(const GuestDrawSnapshot& snap, memory::M
       pre = &found->second;
     }
   }
+  // Those are worked on where they lie, rather than copied into the staging
+  // buffer first - 320 bytes a vertex, a race frame's largest single cost -
+  // unless the draw is expanded below, which needs the staging buffer's
+  // extra room.
+  const auto prim = static_cast<rex::graphics::xenos::PrimitiveType>(snap.prim_type);
+  const bool expands = prim == rex::graphics::xenos::PrimitiveType::kRectangleList ||
+                       prim == rex::graphics::xenos::PrimitiveType::kQuadList;
+  const bool in_place = pre != nullptr && !expands;
+  if (!in_place) {
+    const size_t staged_floats = size_t(vertex_count) * 2 * kFloatsPerVert;
+    if (stage_.size() < staged_floats) {
+      stage_.resize(staged_floats);
+    }
+  }
+  float* const staged = in_place ? pre_arena_.data() + pre->offset : stage_.data();
+  auto vert = [&](uint32_t i) { return staged + i * kFloatsPerVert; };
   if (!pre) {
-    std::memset(staged, 0, size_t(vertex_count) * kVertexStrideBytes);
+    // Only what goes to the GPU needs a defined value: the locations of the
+    // layout the vertices are copied out in (CopyVerticesOut). Clearing all
+    // twenty of a packed draw's was most of the work.
+    if (fill_layout_mask_ == kFullLayoutMask) {
+      std::memset(staged, 0, size_t(vertex_count) * kVertexStrideBytes);
+    } else {
+      uint32_t cleared[kInputLocationCount];
+      uint32_t n = 0;
+      for (uint32_t loc = 0; loc < kInputLocationCount; ++loc) {
+        if ((fill_layout_mask_ >> loc) & 1u) {
+          cleared[n++] = loc * 4;
+        }
+      }
+      for (uint32_t v = 0; v < vertex_count; ++v) {
+        float* const at = staged + size_t(v) * kFloatsPerVert;
+        for (uint32_t k = 0; k < n; ++k) {
+          std::memset(at + cleared[k], 0, 16);
+        }
+      }
+    }
   }
   FillPhase(0, fill_mark);
 
@@ -3772,7 +3801,10 @@ uint32_t PlumeDrawContext::FillVertices(const GuestDrawSnapshot& snap, memory::M
   }
 
   if (pre) {
-    std::memcpy(staged, pre_arena_.data() + pre->offset, size_t(vertex_count) * kVertexStrideBytes);
+    if (!in_place) {
+      std::memcpy(staged, pre_arena_.data() + pre->offset,
+                  size_t(vertex_count) * kVertexStrideBytes);
+    }
     if (cache_eligible) {
       read_lo = pre->read_lo;
       read_hi = pre->read_hi;
