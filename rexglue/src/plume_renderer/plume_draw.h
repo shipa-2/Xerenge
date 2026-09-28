@@ -194,6 +194,10 @@ struct GuestDrawSnapshot {
   // PA_SU_POLY_OFFSET_FRONT_SCALE at + 0x2E90 (1/16 subpixel units) and
   // _FRONT_OFFSET at + 0x2E94 (depth range units), as SetRenderState_DepthBias
   // and _SlopeScaleDepthBias store them. Decals on the road need it.
+  // PA_SU_SC_MODE_CNTL bits 0-2: cull front, cull back, and which winding is
+  // the front (set: clockwise). Honoured under XERENGE_CULL (see
+  // GetOrCreatePipeline).
+  uint32_t cull = 0;
   bool poly_offset = false;
   float poly_offset_scale = 0.0f;
   float poly_offset_offset = 0.0f;
@@ -220,6 +224,10 @@ struct GuestDrawSnapshot {
   float clear_depth = 1.0f;
   float clear_color[4] = {0.0f, 0.0f, 0.0f, 0.0f};
   bool clear_whole = false;
+  // A smaller target's whole-target clear: its size, cleared in the corner it is
+  // drawn in (0 for the frame's own target).
+  uint32_t clear_width = 0;
+  uint32_t clear_height = 0;
   uint32_t resolve_dest = 0;
   // Which target the copy reads: Direct3D's low three flag bits - 0 and 1 are
   // colour targets 0 and 1, 4 is depth.
@@ -371,7 +379,8 @@ class PlumeDrawContext {
                                              plume::RenderPrimitiveTopology topology,
                                              uint32_t blend_control, uint32_t color_mask,
                                              uint32_t depth_control, bool alpha_test = false,
-                                             bool depth_bias = false);
+                                             bool depth_bias = false,
+                                             uint32_t cull = 0);
   uint32_t FillVertices(const GuestDrawSnapshot& snap, memory::Memory* memory,
                         uint32_t base_vertex, bool passthrough);
   void UploadNullTexture(plume::RenderCommandList* list);
@@ -720,6 +729,15 @@ class PlumeDrawContext {
 
   std::unordered_map<PipelineKey, std::unique_ptr<plume::RenderPipeline>, PipelineKeyHash>
       pipelines_;
+  // The vertex layout each of the title's pipelines reads: the input
+  // locations its vertex shader declares (bit n = location n), packed in
+  // order. A pipeline not in here reads the full 20-location layout.
+  std::unordered_map<const plume::RenderPipeline*, uint32_t> pipeline_layouts_;
+  // The layout the vertices being filled are written in, for FillVertices.
+  uint32_t fill_layout_mask_ = 0;
+  // Copies `count` vertices from the full layout into `dst` in the layout
+  // fill_layout_mask_ names.
+  void CopyVerticesOut(float* dst, const float* staged, uint32_t count) const;
   std::unordered_map<uint64_t, std::unique_ptr<GuestHostTexture>> guest_textures_;
   uint32_t next_bindless_ = 1;
 };

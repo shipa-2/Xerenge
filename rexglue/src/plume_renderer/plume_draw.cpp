@@ -323,6 +323,28 @@ constexpr uint32_t kVertsPerFrame = kDummyVertexCount / 2;
 constexpr uint32_t kCacheVertexCount = 1048576;
 constexpr uint32_t kInputLocationCount = 20;
 constexpr uint32_t kVertexStrideBytes = kInputLocationCount * 16;
+// Every location: the layout the staging buffer, the passthrough pipelines and
+// the video pipeline use.
+constexpr uint32_t kFullLayoutMask = (1u << kInputLocationCount) - 1;
+// Packed (XERENGE_PACK_VERTICES), the GPU is handed only what the draw's vertex
+// shader reads. The full layout reserves all twenty locations for every vertex while a draw
+// uses four or five of them, so a race frame - some 240 thousand vertices -
+// wrote 75 MB into memory the GPU then read back, most of it padding. On a
+// laptop whose processor and graphics share one memory, both sides pay for
+// it. Each vertex still has a full layout's room in the buffer, so nothing
+// about where a draw goes changes; only the front of that room is written,
+// packed.
+
+// The vertex layout the title's own pipeline for this vertex shader reads (see
+// kFullLayoutMask). Packed only under XERENGE_PACK_VERTICES=1: packed, every eighth
+// vertex of some meshes came out far off (black spikes across the sky in a
+// replay), and on the 4500U it bought no measurable time.
+uint32_t TitleVertexLayout(uint64_t vs_hash) {
+  static const bool packed = std::getenv("XERENGE_PACK_VERTICES") != nullptr;
+  return packed ? (PlumeShaderCache::Instance().InputLocationMask(vs_hash) & kFullLayoutMask)
+                : kFullLayoutMask;
+}
+
 // One slot per encoded draw. Kept in step with the overlay ring that feeds
 // this, so a frame the ring managed to hold is not then truncated here.
 constexpr uint32_t kCbSlots = 16384;
@@ -2048,6 +2070,7 @@ void PlumeDrawContext::Shutdown() {
   ready_ = false;
   null_texture_uploaded_ = false;
   pipelines_.clear();
+  pipeline_layouts_.clear();
   {
     std::lock_guard lock(vfetch_mutex_);
     vfetch_by_shader_.clear();
@@ -2749,7 +2772,14 @@ void PlumeDrawContext::RecordShaderCoverage(uint64_t vs_hash, uint64_t ps_hash) 
 plume::RenderPipeline* PlumeDrawContext::GetOrCreatePipeline(
     uint64_t vs_hash, uint64_t ps_hash, plume::RenderPrimitiveTopology topology,
     uint32_t blend_control, uint32_t color_mask, uint32_t depth_control, bool alpha_test,
-    bool depth_bias) {
+    bool depth_bias, uint32_t cull) {
+  // XERENGE_CULL=1: the title's back-face culling, which is otherwise off - see
+  // the cull mode below.
+  static const bool culling = std::getenv("XERENGE_CULL") != nullptr;
+  cull = culling ? (cull & 7u) : 0u;
+  if ((cull & 3u) == 0) {
+    cull = 0;
+  }
   const GuestDepthState key_depth = DepthStateFromGuest(depth_control);
   const uint32_t state = (blend_control & 0xFFFFu) | (WriteMaskForRt0(color_mask) << 16) |
                          ((key_depth.enabled ? 1u : 0u) << 20) |
@@ -2757,7 +2787,7 @@ plume::RenderPipeline* PlumeDrawContext::GetOrCreatePipeline(
                          (uint32_t(key_depth.function) << 22) |
                          (uint32_t(WriteMaskForRt0(color_mask >> 4)) << 26) |
                          ((alpha_test ? 1u : 0u) << 30) | ((depth_bias ? 1u : 0u) << 31);
-  PipelineKey key{vs_hash, ps_hash, uint32_t(topology), state, blend_control >> 16};
+  PipelineKey key{vs_hash, ps_hash, uint32_t(topology), state, (blend_control >> 16) | (cull << 16)};
   // XERENGE_PIPELINE_LOG=1: every pipeline's full guest blend state.
   static const bool pipeline_log = std::getenv("XERENGE_PIPELINE_LOG") != nullptr;
   if (auto it = pipelines_.find(key); it != pipelines_.end()) {
@@ -2796,6 +2826,26 @@ plume::RenderPipeline* PlumeDrawContext::GetOrCreatePipeline(
   desc.cullMode = plume::RenderCullMode::NONE;
   desc.fillMode = plume::RenderFillMode::SOLID;
   desc.frontFace = plume::RenderFrontFace::CLOCKWISE;
+  // The title's culling (PA_SU_SC_MODE_CNTL): bit 0 culls front faces, bit 1
+  // back faces, bit 2 makes clockwise the front. Suspected source of the blue
+  // bits on an overturned car's underside: the car body, drawn over it with
+  // nothing culled. XERENGE_CULL_FLIP=1 swaps which winding is the front, in
+  // case the host's viewport reverses it.
+  if (cull != 0) {
+    static const bool flip = std::getenv("XERENGE_CULL_FLIP") != nullptr;
+    const bool front_cw = (((cull >> 2) & 1u) != 0) != flip;
+    desc.cullMode = (cull & 1u) ? plume::RenderCullMode::FRONT : plume::RenderCullMode::BACK;
+    desc.frontFace = front_cw ? plume::RenderFrontFace::CLOCKWISE
+                              : plume::RenderFrontFace::COUNTER_CLOCKWISE;
+    static std::mutex seen_mutex;
+    static std::set<uint32_t> seen;
+    std::lock_guard lock(seen_mutex);
+    if (seen.insert(cull).second) {
+      REXLOG_INFO("plume: culling {} faces, front {} (PA_SU_SC_MODE_CNTL bits {})",
+                  (cull & 1u) ? "front" : "back", front_cw ? "clockwise" : "counter-clockwise",
+                  cull);
+    }
+  }
   const GuestDepthState depth = DepthStateFromGuest(depth_control);
   desc.depthEnabled = depth.enabled;
   desc.depthWriteEnabled = depth.write;
@@ -2819,10 +2869,23 @@ plume::RenderPipeline* PlumeDrawContext::GetOrCreatePipeline(
     desc.renderTargetBlend[1] = BlendDescFromGuest(
         0x00010001u, PixelShaderWritesOc1(ps_hash) ? WriteMaskForRt0(color_mask >> 4) : 0);
   }
-  desc.inputSlots = &input_slots_[0];
+  // Only the locations this vertex shader declares, packed in order.
+  const uint32_t layout = TitleVertexLayout(vs_hash);
+  std::array<plume::RenderInputElement, kInputLocationCount> elements{};
+  uint32_t element_count = 0;
+  for (uint32_t loc = 0; loc < kInputLocationCount; ++loc) {
+    if ((layout >> loc) & 1u) {
+      elements[element_count] = plume::RenderInputElement(
+          "TEXCOORD", loc, loc, plume::RenderFormat::R32G32B32A32_FLOAT, 0, element_count * 16);
+      ++element_count;
+    }
+  }
+  const plume::RenderInputSlot slot(
+      0, std::max(element_count, 1u) * 16, plume::RenderInputSlotClassification::PER_VERTEX_DATA);
+  desc.inputSlots = &slot;
   desc.inputSlotsCount = 1;
-  desc.inputElements = input_elements_.data();
-  desc.inputElementsCount = kInputLocationCount;
+  desc.inputElements = elements.data();
+  desc.inputElementsCount = element_count;
   // SPEC_CONSTANT_ALPHA_TEST (shader_common.h): the shader clips below
   // g_AlphaThreshold. Without it the tyres' hubs, which are cut out by alpha,
   // were drawn solid in front of the wheel rims.
@@ -2844,6 +2907,7 @@ plume::RenderPipeline* PlumeDrawContext::GetOrCreatePipeline(
 
   plume::RenderPipeline* raw = pipeline.get();
   pipelines_.emplace(key, std::move(pipeline));
+  pipeline_layouts_[raw] = layout;
   static uint32_t ok_logs = 0;
   if (ok_logs < 8) {
     ++ok_logs;
@@ -3402,6 +3466,33 @@ void PlumeDrawContext::UnpackVertices(const GuestDrawSnapshot& snap,
 
 }
 
+void PlumeDrawContext::CopyVerticesOut(float* dst, const float* staged, uint32_t count) const {
+  const uint32_t layout = fill_layout_mask_;
+  if (layout == kFullLayoutMask) {
+    std::memcpy(dst, staged, size_t(count) * kVertexStrideBytes);
+    return;
+  }
+  uint32_t locations[kInputLocationCount];
+  uint32_t n = 0;
+  for (uint32_t loc = 0; loc < kInputLocationCount; ++loc) {
+    if ((layout >> loc) & 1u) {
+      locations[n++] = loc * 4;
+    }
+  }
+  if (n == 0) {
+    return;
+  }
+  // Written front to back, so the write-combined heap still sees one
+  // sequential stream.
+  for (uint32_t v = 0; v < count; ++v) {
+    const float* from = staged + size_t(v) * kFloatsPerVert;
+    for (uint32_t k = 0; k < n; ++k) {
+      std::memcpy(dst, from + locations[k], 16);
+      dst += 4;
+    }
+  }
+}
+
 uint32_t PlumeDrawContext::FillVertices(const GuestDrawSnapshot& snap, memory::Memory* memory,
                                         uint32_t base_vertex, bool passthrough) {
   auto fill_mark = PlumeTiming() ? std::chrono::steady_clock::now()
@@ -3460,7 +3551,9 @@ uint32_t PlumeDrawContext::FillVertices(const GuestDrawSnapshot& snap, memory::M
   bool cache_eligible = false;
   uint64_t cache_key = 0;
   uint64_t index_hash = 0;
-  if (!passthrough && memory) {
+  // Cached vertices are kept in the layout of the title's own pipeline for the
+  // shader; a draw falling back to another pipeline neither stores nor uses them.
+  if (!passthrough && memory && fill_layout_mask_ == TitleVertexLayout(snap.vs_hash)) {
     MeshCheck check;
     if (auto found = mesh_checks_.find(&snap); found != mesh_checks_.end()) {
       check = found->second;
@@ -3571,8 +3664,7 @@ uint32_t PlumeDrawContext::FillVertices(const GuestDrawSnapshot& snap, memory::M
     // Built in the staging buffer like everything else, so it has to be copied
     // out like everything else - returning straight away drew whatever an
     // earlier frame had left at this place in the real buffer.
-    std::memcpy(vb_mapped_ + size_t(base_vertex) * kFloatsPerVert, staged,
-                size_t(vertex_count) * kVertexStrideBytes);
+    CopyVerticesOut(vb_mapped_ + size_t(base_vertex) * kFloatsPerVert, staged, vertex_count);
     last_fill_passthrough_ = true;
     return vertex_count;
   }
@@ -4020,8 +4112,7 @@ uint32_t PlumeDrawContext::FillVertices(const GuestDrawSnapshot& snap, memory::M
       entry.last_used = frame_serial_;
       entry.ranges = std::move(merged);
       cache_by_offset_[cache_offset] = cache_key;
-      std::memcpy(cache_mapped_ + size_t(cache_offset) * kFloatsPerVert, staged,
-                  size_t(draw_count) * kVertexStrideBytes);
+      CopyVerticesOut(cache_mapped_ + size_t(cache_offset) * kFloatsPerVert, staged, draw_count);
       last_fill_cache_offset_ = cache_offset;
       FillPhase(3, fill_mark);
       return draw_count;
@@ -4029,8 +4120,7 @@ uint32_t PlumeDrawContext::FillVertices(const GuestDrawSnapshot& snap, memory::M
   }
   // The one touch of the upload heap: a single sequential copy, which write
   // combined memory handles at full speed.
-  std::memcpy(vb_mapped_ + size_t(base_vertex) * kFloatsPerVert, staged,
-              size_t(draw_count) * kVertexStrideBytes);
+  CopyVerticesOut(vb_mapped_ + size_t(base_vertex) * kFloatsPerVert, staged, draw_count);
   FillPhase(3, fill_mark);
   return draw_count;
 }
@@ -5834,7 +5924,7 @@ void PlumeDrawContext::EncodeDraws(plume::RenderCommandList* list,
       pipeline = GetOrCreatePipeline(snap.vs_hash, snap.ps_hash, topology, blend_control,
                                      snap.rt1_bound ? snap.color_mask
                                                     : (snap.color_mask & 0xFu),
-                                     snap.depth_control, snap.alpha_test, snap.poly_offset);
+                                     snap.depth_control, snap.alpha_test, snap.poly_offset, snap.cull);
       passthrough = pipeline == nullptr;
     }
     {
@@ -5890,6 +5980,13 @@ void PlumeDrawContext::EncodeDraws(plume::RenderCommandList* list,
       ++fate.no_pipeline;
       note_skip("no pipeline for topology/blend");
       return;
+    }
+    // The layout this pipeline reads its vertices in: packed for the title's own
+    // pipelines, the full one for every other.
+    if (auto layout = pipeline_layouts_.find(pipeline); layout != pipeline_layouts_.end()) {
+      fill_layout_mask_ = layout->second;
+    } else {
+      fill_layout_mask_ = kFullLayoutMask;
     }
     static uint32_t real_logs = 0;
     if (!passthrough && real_logs < 8) {
@@ -6035,7 +6132,23 @@ void PlumeDrawContext::EncodeDraws(plume::RenderCommandList* list,
         scissor_now[3] = sy1;
       }
     }
-    if (last_fill_cache_offset_ != ~0u) {
+    if (fill_layout_mask_ != kFullLayoutMask) {
+      // Packed: the draw's vertices start at the front of its room, and the
+      // stride is the pipeline's, so the buffer is bound at that room.
+      const bool cached = last_fill_cache_offset_ != ~0u;
+      const uint32_t first = cached ? last_fill_cache_offset_ : vb_used;
+      const plume::RenderVertexBufferView view(
+          plume::RenderBufferReference(cached ? cache_vb_.get() : dummy_vb_.get(),
+                                       uint64_t(first) * kVertexStrideBytes),
+          (cached ? kCacheVertexCount : kDummyVertexCount) * kVertexStrideBytes -
+              first * kVertexStrideBytes);
+      list->setVertexBuffers(0, &view, 1, &input_slots_[0]);
+      bound_vertex_buffer = 0;
+      list->drawInstanced(vertex_count, 1, 0, 0);
+      if (!cached) {
+        vb_used += vertex_count;
+      }
+    } else if (last_fill_cache_offset_ != ~0u) {
       if (bound_vertex_buffer != 2) {
         list->setVertexBuffers(0, &cache_view_, 1, &input_slots_[0]);
         bound_vertex_buffer = 2;
@@ -6176,6 +6289,31 @@ void PlumeDrawContext::EncodeDraws(plume::RenderCommandList* list,
             frame_cleared_after_resolve_ = true;
           }
         }
+      }
+      // A smaller target cleared whole: the corner it is drawn in, at the size
+      // it is drawn at (see native_extent and the ClearF hook).
+      if (snap.clear_width != 0) {
+        uint32_t cw = 0;
+        uint32_t ch = 0;
+        native_extent(snap.clear_width, snap.clear_height, cw, ch);
+        if (cw < width || ch < height) {
+          const plume::RenderRect corner(0, 0, int32_t(cw), int32_t(ch));
+          if ((snap.clear_flags & 0x10u) != 0) {
+            list->clearDepth(true, snap.clear_depth, &corner, 1);
+          }
+          if ((snap.clear_flags & 0x1u) != 0) {
+            list->clearColor(0, plume::RenderColor(snap.clear_color[0], snap.clear_color[1],
+                                                   snap.clear_color[2], snap.clear_color[3]),
+                             &corner, 1);
+          }
+          static std::atomic<uint32_t> shown{0};
+          if (shown.fetch_add(1, std::memory_order_relaxed) < 6) {
+            REXLOG_INFO("plume: clear of a {}x{} target (flags {:X}, depth {}) in its {}x{} corner",
+                        snap.clear_width, snap.clear_height, snap.clear_flags, snap.clear_depth,
+                        cw, ch);
+          }
+        }
+        continue;
       }
       // Where the title cleared depth, clear it here too, to its value. This
       // stays inside the pass: clearing an attachment does not need it closed.

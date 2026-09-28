@@ -970,6 +970,7 @@ void PlumeGraphicsSystem::PublishDrawSnapshot(uint32_t prim_type, uint32_t sourc
       if (RangeReadable(memory_, device + 0x2D88, 4) && RangeReadable(memory_, device + 0x2E90, 8)) {
         uint32_t sc_mode = 0;
         CopyBeDwords(memory_, &sc_mode, device + 0x2D88, 1);
+        snap.cull = sc_mode & 7u;
         if ((sc_mode >> 11) & 1u) {
           uint32_t offset_bits[2] = {};
           CopyBeDwords(memory_, offset_bits, device + 0x2E90, 2);
@@ -1280,6 +1281,12 @@ void PlumeGraphicsSystem::NoteGuestClearColor(uint32_t flags, const float color[
   }
   GuestDrawSnapshot marker;
   marker.is_clear = true;
+  // A smaller target's size, packed into the high bits by the ClearF hook.
+  if ((flags & 0x40000000u) != 0) {
+    marker.clear_width = ((flags >> 8) & 0x7FFu) + 1;
+    marker.clear_height = ((flags >> 19) & 0x7FFu) + 1;
+    flags &= 0xFFu;
+  }
   marker.clear_flags = flags;
   marker.clear_depth = depth;
   marker.clear_whole = whole_target;

@@ -18,6 +18,7 @@ struct SDL_Window;
 namespace plume {
 class RenderCommandFence;
 class RenderCommandList;
+class RenderQueryPool;
 class RenderCommandQueue;
 class RenderCommandSemaphore;
 class RenderDevice;
@@ -82,9 +83,30 @@ class PlumeSwapchain {
   // written while the GPU draws the one before, and what is waited for at a
   // frame's start is the frame before that, which used this set.
   std::unique_ptr<plume::RenderCommandList> spare_command_list_;
+  // The copy onto the swap chain image and the present, recorded once the
+  // image is acquired (see ClearAndPresent), one per set as well.
+  std::unique_ptr<plume::RenderCommandList> present_list_;
+  std::unique_ptr<plume::RenderCommandList> spare_present_list_;
+  // The scene's own submit is fenced too: the present's fence covers only its
+  // own batch.
+  std::unique_ptr<plume::RenderCommandFence> scene_fence_;
+  std::unique_ptr<plume::RenderCommandFence> spare_scene_fence_;
+  bool scene_pending_ = false;
+  bool spare_scene_pending_ = false;
   std::unique_ptr<plume::RenderCommandFence> spare_submit_fence_;
   std::unique_ptr<plume::RenderCommandSemaphore> spare_acquire_semaphore_;
   bool spare_submit_pending_ = false;
+  // Two timestamps per frame, around its command list, one pool per set of
+  // the above: how long the GPU spent on a frame, read once its fence is
+  // waited for (reported as "GPU" in the host frame line).
+  std::unique_ptr<plume::RenderQueryPool> query_pool_;
+  std::unique_ptr<plume::RenderQueryPool> spare_query_pool_;
+  bool query_written_ = false;
+  bool spare_query_written_ = false;
+  uint64_t gpu_busy_ns_ = 0;
+  uint64_t gpu_busy_frames_ = 0;
+  // Reads the finished frame's timestamps, if this set wrote any.
+  void ReadGpuTime();
   // Waits for every frame still on the GPU.
   void WaitForFrames();
   // A small square from the middle of each frame, read back after the frame

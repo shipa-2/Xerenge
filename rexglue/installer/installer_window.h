@@ -79,6 +79,7 @@ class InstallerWindow : public QWidget {
   // Those lines as an installed copy had them, kept through an update.
   QString preserved_debug_settings_;
   QCheckBox* async_box_ = nullptr;
+  QCheckBox* early_submit_box_ = nullptr;
   QComboBox* resolution_combo_ = nullptr;
   QCheckBox* fps_box_ = nullptr;
   // The keyboard as a pad: on or off, and a key per pad control (keybind_*).

@@ -382,6 +382,49 @@ plume::RenderShader* PlumeShaderCache::GetOrCreateShader(uint64_t hash) {
   return raw;
 }
 
+uint32_t PlumeShaderCache::InputLocationMask(uint64_t hash) {
+  std::lock_guard lock(mutex_);
+  if (auto it = input_masks_.find(hash); it != input_masks_.end()) {
+    return it->second;
+  }
+  uint32_t mask = 0;
+  const ShaderCacheEntry* entry = Find(hash);
+  size_t word_count = 0;
+  const uint32_t* words = entry ? GetSpirvWords(*entry, word_count) : nullptr;
+  if (words && word_count > 5) {
+    // OpDecorate Location / BuiltIn, then the Input variables they name.
+    constexpr uint32_t kOpDecorate = 71;
+    constexpr uint32_t kOpVariable = 59;
+    constexpr uint32_t kDecorationBuiltIn = 11;
+    constexpr uint32_t kDecorationLocation = 30;
+    constexpr uint32_t kStorageClassInput = 1;
+    std::unordered_map<uint32_t, uint32_t> locations;
+    std::vector<uint32_t> inputs;
+    for (size_t i = 5; i < word_count;) {
+      const uint32_t count = words[i] >> 16;
+      const uint32_t op = words[i] & 0xFFFFu;
+      if (count == 0 || i + count > word_count) {
+        break;
+      }
+      if (op == kOpDecorate && count >= 4 && words[i + 2] == kDecorationLocation) {
+        locations.emplace(words[i + 1], words[i + 3]);
+      } else if (op == kOpDecorate && count >= 3 && words[i + 2] == kDecorationBuiltIn) {
+        locations[words[i + 1]] = ~0u;  // never a location of its own
+      } else if (op == kOpVariable && count >= 4 && words[i + 3] == kStorageClassInput) {
+        inputs.push_back(words[i + 2]);
+      }
+      i += count;
+    }
+    for (const uint32_t id : inputs) {
+      if (auto at = locations.find(id); at != locations.end() && at->second < 32) {
+        mask |= 1u << at->second;
+      }
+    }
+  }
+  input_masks_.emplace(hash, mask);
+  return mask;
+}
+
 void PlumeShaderCache::WarmAll() {
   size_t ok = 0;
   size_t fail = 0;

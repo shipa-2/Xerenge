@@ -184,6 +184,12 @@ bool PlumeSwapchain::Initialize(plume::RenderDevice* device, SDL_Window* window,
   spare_command_list_ = command_queue_->createCommandList();
   spare_submit_fence_ = device_->createCommandFence();
   spare_acquire_semaphore_ = device_->createCommandSemaphore();
+  present_list_ = command_queue_->createCommandList();
+  spare_present_list_ = command_queue_->createCommandList();
+  scene_fence_ = device_->createCommandFence();
+  spare_scene_fence_ = device_->createCommandFence();
+  query_pool_ = device_->createQueryPool(2);
+  spare_query_pool_ = device_->createQueryPool(2);
   if (!command_list_ || !submit_fence_ || !acquire_semaphore_ || !spare_command_list_ ||
       !spare_submit_fence_ || !spare_acquire_semaphore_) {
     REXLOG_ERROR("plume: failed to create swapchain sync objects");
@@ -207,6 +213,19 @@ bool PlumeSwapchain::Initialize(plume::RenderDevice* device, SDL_Window* window,
   return ready_;
 }
 
+void PlumeSwapchain::ReadGpuTime() {
+  if (!query_pool_ || !query_written_) {
+    return;
+  }
+  query_written_ = false;
+  query_pool_->queryResults();
+  const uint64_t* results = query_pool_->getResults();
+  if (results && results[1] > results[0]) {
+    gpu_busy_ns_ += results[1] - results[0];
+    ++gpu_busy_frames_;
+  }
+}
+
 void PlumeSwapchain::WaitForFrames() {
   if (submit_pending_ && command_queue_ && submit_fence_) {
     command_queue_->waitForCommandFence(submit_fence_.get());
@@ -216,6 +235,14 @@ void PlumeSwapchain::WaitForFrames() {
     command_queue_->waitForCommandFence(spare_submit_fence_.get());
   }
   spare_submit_pending_ = false;
+  if (scene_pending_ && command_queue_ && scene_fence_) {
+    command_queue_->waitForCommandFence(scene_fence_.get());
+  }
+  scene_pending_ = false;
+  if (spare_scene_pending_ && command_queue_ && spare_scene_fence_) {
+    command_queue_->waitForCommandFence(spare_scene_fence_.get());
+  }
+  spare_scene_pending_ = false;
 }
 
 void PlumeSwapchain::Shutdown() {
@@ -234,6 +261,13 @@ void PlumeSwapchain::Shutdown() {
   spare_acquire_semaphore_.reset();
   spare_submit_fence_.reset();
   spare_command_list_.reset();
+  present_list_.reset();
+  spare_present_list_.reset();
+  scene_fence_.reset();
+  spare_scene_fence_.reset();
+  query_pool_.reset();
+  spare_query_pool_.reset();
+  query_written_ = spare_query_written_ = false;
   swap_chain_.reset();
   command_queue_.reset();
   device_ = nullptr;
@@ -433,13 +467,23 @@ void PlumeSwapchain::ClearAndPresent(float r, float g, float b, float a, DrawEnc
     std::swap(submit_fence_, spare_submit_fence_);
     std::swap(acquire_semaphore_, spare_acquire_semaphore_);
     std::swap(submit_pending_, spare_submit_pending_);
+    std::swap(query_pool_, spare_query_pool_);
+    std::swap(present_list_, spare_present_list_);
+    std::swap(scene_fence_, spare_scene_fence_);
+    std::swap(scene_pending_, spare_scene_pending_);
+    std::swap(query_written_, spare_query_written_);
   }
   // The frame that used this set first: this frame reuses its command list,
   // its acquire semaphore and the upload buffers it read from.
   const auto previous_wait_started = std::chrono::steady_clock::now();
+  if (scene_pending_) {
+    command_queue_->waitForCommandFence(scene_fence_.get());
+    scene_pending_ = false;
+  }
   if (submit_pending_) {
     command_queue_->waitForCommandFence(submit_fence_.get());
     submit_pending_ = false;
+    ReadGpuTime();
   }
   const auto previous_wait_done = std::chrono::steady_clock::now();
   CheckProbe();
@@ -449,20 +493,38 @@ void PlumeSwapchain::ClearAndPresent(float r, float g, float b, float a, DrawEnc
     return;
   }
 
+  // With a scene target the frame is recorded and handed to the GPU before a
+  // swap chain image is asked for, and only the copy onto that image waits
+  // for it. Asked for first, the wait for the display (7-9 ms a race frame
+  // on the laptop, under vsync) came on top of recording (8-11 ms) instead of
+  // alongside it, and the frame rate sat at 50 with the GPU busy 13 ms of 16.
+  // XERENGE_ACQUIRE_FIRST=1 keeps the old order.
+  static const bool acquire_first = std::getenv("XERENGE_ACQUIRE_FIRST") != nullptr;
+  const bool split = scene_texture_ != nullptr && present_list_ != nullptr && scene_fence_ &&
+                     !acquire_first;
   uint32_t image_index = 0;
-  const auto acquire_started = std::chrono::steady_clock::now();
-  if (!swap_chain_->acquireTexture(acquire_semaphore_.get(), &image_index)) {
+  plume::RenderTexture* swapchain_texture = nullptr;
+  const plume::RenderFramebuffer* framebuffer = nullptr;
+  plume::RenderCommandSemaphore* release_semaphore = nullptr;
+  auto acquire_started = std::chrono::steady_clock::now();
+  auto acquire_done = acquire_started;
+  auto acquire = [&]() {
+    acquire_started = std::chrono::steady_clock::now();
+    if (!swap_chain_->acquireTexture(acquire_semaphore_.get(), &image_index)) {
+      return false;
+    }
+    acquire_done = std::chrono::steady_clock::now();
+    if (image_index >= framebuffers_.size() || image_index >= release_semaphores_.size()) {
+      return false;
+    }
+    swapchain_texture = swap_chain_->getTexture(image_index);
+    framebuffer = framebuffers_[image_index].get();
+    release_semaphore = release_semaphores_[image_index].get();
+    return true;
+  };
+  if (!split && !acquire()) {
     return;
   }
-  const auto acquire_done = std::chrono::steady_clock::now();
-
-  if (image_index >= framebuffers_.size() || image_index >= release_semaphores_.size()) {
-    return;
-  }
-
-  plume::RenderTexture* swapchain_texture = swap_chain_->getTexture(image_index);
-  const plume::RenderFramebuffer* framebuffer = framebuffers_[image_index].get();
-  plume::RenderCommandSemaphore* release_semaphore = release_semaphores_[image_index].get();
 
   const uint32_t window_width = swap_chain_->getWidth();
   const uint32_t window_height = swap_chain_->getHeight();
@@ -480,7 +542,12 @@ void PlumeSwapchain::ClearAndPresent(float r, float g, float b, float a, DrawEnc
   const plume::RenderFramebuffer* const draw_framebuffer =
       scene_framebuffer_ ? scene_framebuffer_.get() : framebuffer;
 
+  const auto record_started = std::chrono::steady_clock::now();
   command_list_->begin();
+  if (query_pool_) {
+    command_list_->resetQueryPool(query_pool_.get(), 0, 2);
+    command_list_->writeTimestamp(query_pool_.get(), 0);
+  }
   // Both attachments, not just the colour one. A depth buffer that is never
   // transitioned stays in an undefined layout, and drawing against an
   // undefined attachment is undefined behaviour - which shows up as a
@@ -549,15 +616,34 @@ void PlumeSwapchain::ClearAndPresent(float r, float g, float b, float a, DrawEnc
     resolve(encode_context, command_list_.get(), width, height, draw_target, RenderPassBreak{});
   }
 
+  // Where the copy onto the swap chain image is recorded: the frame's own
+  // list, or - split - the small list submitted after the image is acquired.
+  plume::RenderCommandList* out = command_list_.get();
+  if (split) {
+    command_list_->barriers(
+        plume::RenderBarrierStage::COPY,
+        plume::RenderTextureBarrier(draw_target, plume::RenderTextureLayout::COPY_SOURCE));
+    command_list_->end();
+    const plume::RenderCommandList* scene_list = command_list_.get();
+    command_queue_->executeCommandLists(&scene_list, 1, nullptr, 0, nullptr, 0, scene_fence_.get());
+    scene_pending_ = true;
+    if (!acquire()) {
+      return;
+    }
+    out = present_list_.get();
+    out->begin();
+  }
+  const auto record_done = std::chrono::steady_clock::now();
+
   if (scene_texture_) {
     const plume::RenderTextureBarrier to_copy[2] = {
         plume::RenderTextureBarrier(draw_target, plume::RenderTextureLayout::COPY_SOURCE),
         plume::RenderTextureBarrier(swapchain_texture, plume::RenderTextureLayout::COPY_DEST)};
-    command_list_->barriers(plume::RenderBarrierStage::COPY, nullptr, 0, to_copy, 2);
+    out->barriers(plume::RenderBarrierStage::COPY, nullptr, 0, to_copy, 2);
     if (probe_mapped_ && width >= 64 && height >= 64) {
       const plume::RenderBox box(int32_t(width / 2 - 32), int32_t(height / 2 - 32),
                                  int32_t(width / 2 + 32), int32_t(height / 2 + 32));
-      command_list_->copyTextureRegion(
+      out->copyTextureRegion(
           plume::RenderTextureCopyLocation::PlacedFootprint(probe_buffer_.get(),
                                                             plume::RenderFormat::B8G8R8A8_UNORM,
                                                             64, 64, 1, 64, 0),
@@ -568,7 +654,7 @@ void PlumeSwapchain::ClearAndPresent(float r, float g, float b, float a, DrawEnc
     // At another size (XERENGE_RENDER_RESOLUTION) the frame is scaled onto
     // the window, filtered; at the window's own size it is a straight copy.
     if (width != window_width || height != window_height) {
-      if (!command_list_->blitTexture(swapchain_texture, draw_target, true)) {
+      if (!out->blitTexture(swapchain_texture, draw_target, true)) {
         static bool warned = false;
         if (!warned) {
           warned = true;
@@ -576,26 +662,30 @@ void PlumeSwapchain::ClearAndPresent(float r, float g, float b, float a, DrawEnc
         }
       }
     } else {
-      command_list_->copyTexture(swapchain_texture, draw_target);
+      out->copyTexture(swapchain_texture, draw_target);
     }
     // On the image shown, after the copy: drawn into the target, the counter
     // would go wherever the title copies that target to.
     if (FpsShown()) {
-      command_list_->barriers(plume::RenderBarrierStage::GRAPHICS,
-                              plume::RenderTextureBarrier(swapchain_texture,
-                                                          plume::RenderTextureLayout::COLOR_WRITE));
-      command_list_->setFramebuffer(framebuffer);
-      DrawFpsCounter(command_list_.get(), window_height, fps);
-      command_list_->setFramebuffer(nullptr);
+      out->barriers(plume::RenderBarrierStage::GRAPHICS,
+                    plume::RenderTextureBarrier(swapchain_texture,
+                                                plume::RenderTextureLayout::COLOR_WRITE));
+      out->setFramebuffer(framebuffer);
+      DrawFpsCounter(out, window_height, fps);
+      out->setFramebuffer(nullptr);
     }
   }
 
-  command_list_->barriers(plume::RenderBarrierStage::NONE,
-                          plume::RenderTextureBarrier(swapchain_texture,
-                                                      plume::RenderTextureLayout::PRESENT));
-  command_list_->end();
+  out->barriers(plume::RenderBarrierStage::NONE,
+                plume::RenderTextureBarrier(swapchain_texture,
+                                            plume::RenderTextureLayout::PRESENT));
+  if (query_pool_) {
+    out->writeTimestamp(query_pool_.get(), 1);
+    query_written_ = true;
+  }
+  out->end();
 
-  const plume::RenderCommandList* cmd_list = command_list_.get();
+  const plume::RenderCommandList* cmd_list = out;
   plume::RenderCommandSemaphore* wait_semaphore = acquire_semaphore_.get();
   command_queue_->executeCommandLists(&cmd_list, 1, &wait_semaphore, 1, &release_semaphore, 1,
                                       submit_fence_.get());
@@ -611,6 +701,11 @@ void PlumeSwapchain::ClearAndPresent(float r, float g, float b, float a, DrawEnc
   if (!async_present) {
     command_queue_->waitForCommandFence(submit_fence_.get());
     submit_pending_ = false;
+    if (scene_pending_) {
+      command_queue_->waitForCommandFence(scene_fence_.get());
+      scene_pending_ = false;
+    }
+    ReadGpuTime();
     CheckProbe();
   }
   const auto fence_done = std::chrono::steady_clock::now();
@@ -625,7 +720,7 @@ void PlumeSwapchain::ClearAndPresent(float r, float g, float b, float a, DrawEnc
       return uint64_t(std::chrono::duration_cast<std::chrono::microseconds>(b - a).count());
     };
     acquire_us += us(acquire_started, acquire_done);
-    record_us += us(acquire_done, submit_started);
+    record_us += us(record_started, record_done);
     present_us += us(submit_started, present_done);
     gpu_us += us(previous_wait_started, previous_wait_done);
     // The wait for this frame's own GPU work, done right after presenting it
@@ -634,9 +729,11 @@ void PlumeSwapchain::ClearAndPresent(float r, float g, float b, float a, DrawEnc
     ++frames;
     if (fence_done - last_report >= std::chrono::seconds(2)) {
       REXLOG_INFO("plume: host frame (avg over {}): acquire {} us, record {} us, present {} us, "
-                  "previous frame {} us, this frame's GPU {} us",
+                  "previous frame {} us, this frame's GPU {} us; GPU busy {} us a frame",
                   frames, acquire_us / frames, record_us / frames, present_us / frames,
-                  gpu_us / frames, fence_us / frames);
+                  gpu_us / frames, fence_us / frames,
+                  gpu_busy_frames_ ? gpu_busy_ns_ / gpu_busy_frames_ / 1000 : 0);
+      gpu_busy_ns_ = gpu_busy_frames_ = 0;
       acquire_us = record_us = present_us = gpu_us = fence_us = frames = 0;
       last_report = fence_done;
     }

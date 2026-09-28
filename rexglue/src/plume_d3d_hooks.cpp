@@ -1057,8 +1057,26 @@ REX_HOOK_RAW(D3DDevice_ClearF) {
       }
     }
     const bool whole_target = (ctx.r5.u32 == 0) && is_main_target;
-    // An offscreen sub-target must not wipe the frame's depth buffer either.
-    const uint32_t flags = is_main_target ? ctx.r4.u32 : (ctx.r4.u32 & ~0x10u);
+    // A smaller target - a face of the cars' reflection cube, a glow buffer -
+    // is drawn in the corner of the one buffer at its own size, so its clear
+    // is that corner, colour and depth. Dropped, as it used to be, the faces
+    // were drawn against the frame's uncleared depth and all failed the test,
+    // and the reflection the cars sample was the frame's clear colour alone,
+    // which their shader scales up into bright blue patches. The size rides
+    // in the flags' unused high bits (see NoteGuestClearColor): bit 30 set,
+    // width - 1 in bits 8-18, height - 1 in bits 19-29. Rectangle clears of
+    // such a target stay dropped.
+    uint32_t flags = ctx.r4.u32 & 0xFFu;
+    if (!is_main_target) {
+      uint32_t width = 0;
+      uint32_t height = 0;
+      SurfaceSize(target, width, height);
+      if (ctx.r5.u32 == 0 && width != 0 && height != 0 && width <= 2048 && height <= 2048) {
+        flags |= 0x40000000u | ((width - 1) << 8) | ((height - 1) << 19);
+      } else {
+        flags &= ~0x10u;
+      }
+    }
     graphics->NoteGuestClearColor(flags, color, whole_target,
                                   static_cast<float>(ctx.f1.f64));
   } else if (graphics) {

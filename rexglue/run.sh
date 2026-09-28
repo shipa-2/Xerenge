@@ -60,6 +60,11 @@
 #                       plume hands a frame to the GPU and lets the title go on
 #                       at once, instead of waiting for the GPU to finish it.
 #                       A hack: it once showed black frames now and then.
+#   ./run.sh --no-early-submit
+#                       plume waits for a swap chain image before recording the
+#                       frame, as it used to, instead of handing the frame to
+#                       the GPU first (the default, a hack that overlaps the
+#                       two).
 #   ./run.sh --plume    loads librexgpu-plume.so instead of xenos, with the
 #                       switches it is meant to run with (as the installed
 #                       launcher sets them). Saved burnout.toml has
@@ -161,6 +166,7 @@ for arg in "$@"; do
         --online-address=*) ONLINE_ADDRESS=${arg#*=} ;;
         --render-resolution=*) RENDER_RESOLUTION=${arg#*=} ;;
         --async-present) ASYNC_PRESENT=1 ;;
+        --no-early-submit) ACQUIRE_FIRST=1 ;;
         --fps) FPS_SHOW=1 ;;
         --windowed) WINDOWED=1 ;;
         --fullscreen) WINDOWED= ;;
@@ -231,6 +237,7 @@ else
 fi
 [ -n "$RENDER_RESOLUTION" ] && XERENGE_RENDER_RESOLUTION=$RENDER_RESOLUTION && export XERENGE_RENDER_RESOLUTION
 [ -n "$ASYNC_PRESENT" ] && XERENGE_ASYNC_PRESENT=1 && export XERENGE_ASYNC_PRESENT
+[ -n "$ACQUIRE_FIRST" ] && XERENGE_ACQUIRE_FIRST=1 && export XERENGE_ACQUIRE_FIRST
 [ -n "$FPS_SHOW" ] && XERENGE_FPS_SHOW=1 && export XERENGE_FPS_SHOW
 # shellcheck disable=SC2086 # a list of options, split on purpose
 [ -n "$GAME_ARGS" ] && set -- "$@" $GAME_ARGS

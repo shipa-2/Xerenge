@@ -213,15 +213,23 @@ game's own settings can be given on the same line (`--window_width=1280`).
 <summary><b>Hacks</b> - for slow machines, at some cost</summary>
 
 These trade something for speed on weaker hardware - the Ryzen 5 4500U with its
-integrated Radeon is the machine they were measured on. They apply to plume and
-are off unless asked for.
+integrated Radeon is the machine they were measured on. They apply to plume.
+Early submit is on unless turned off; the others are off unless asked for.
 
 ```
 ./run.sh --render-resolution=1280x720   draw the frame at this size and scale it
                                         onto the window
 ./run.sh --async-present                let the title start its next frame while
                                         the GPU is still drawing this one
+./run.sh --no-early-submit              turn early submit (below) off
 ```
+
+* Early submit (on by default) - the frame is recorded and handed to the GPU
+  first, and only then does plume wait for a swap chain image to copy it onto.
+  The wait for the display (under vsync) then overlaps the GPU's work instead
+  of adding to the time spent recording. On the 4500U at 1080p it took a race
+  from about 50 fps to about 60, the GPU being busy 13 ms of each 16.
+  `XERENGE_ACQUIRE_FIRST=1` (what `--no-early-submit` sets) is the old order.
 
 * `--render-resolution=WIDTHxHEIGHT` - plume draws the whole frame at this size
   and scales it onto the window, filtered, as it is presented. `1280x720` is

@@ -37,6 +37,10 @@ class PlumeShaderCache {
   // bytes never reads past a shader into guesswork.
   const std::vector<uint32_t>& MicrocodeSizes(uint32_t stage);
   plume::RenderShader* GetOrCreateShader(uint64_t hash);
+  // The input locations (bit n = location n) a vertex shader declares, read
+  // from its SPIR-V; 0 when the shader is unknown. See the vertex layout in
+  // PlumeDrawContext::GetOrCreatePipeline.
+  uint32_t InputLocationMask(uint64_t hash);
   uint64_t HashShaderContainer(const void* shader_container) const;
   void LogSummary() const;
   void WarmAll();
@@ -61,6 +65,7 @@ class PlumeShaderCache {
   bool bootstrap_decompressed_valid_ = false;
   std::unordered_map<uint64_t, std::vector<uint32_t>> spirv_modules_;
   std::unordered_map<uint64_t, std::unique_ptr<plume::RenderShader>> shaders_;
+  std::unordered_map<uint64_t, uint32_t> input_masks_;
 };
 
 }  // namespace rex::plume_renderer
