@@ -7,7 +7,7 @@ layout(location = 2) flat in uint v_texid;
 
 layout(location = 0) out vec4 o_color;
 
-layout(set = 0, binding = 0) uniform texture2D g_textures[1024];
+layout(set = 0, binding = 0) uniform texture2D g_textures[4096];
 layout(set = 3, binding = 0) uniform sampler g_samplers[16];
 
 void main() {

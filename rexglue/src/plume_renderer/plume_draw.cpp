@@ -326,8 +326,8 @@ constexpr uint32_t kVertexStrideBytes = kInputLocationCount * 16;
 // Every location: the layout the staging buffer, the passthrough pipelines and
 // the video pipeline use.
 constexpr uint32_t kFullLayoutMask = (1u << kInputLocationCount) - 1;
-// Packed (XERENGE_PACK_VERTICES), the GPU is handed only what the draw's vertex
-// shader reads. The full layout reserves all twenty locations for every vertex while a draw
+// What the GPU is handed, though, is only what the draw's vertex shader reads.
+// The full layout reserves all twenty locations for every vertex while a draw
 // uses four or five of them, so a race frame - some 240 thousand vertices -
 // wrote 75 MB into memory the GPU then read back, most of it padding. On a
 // laptop whose processor and graphics share one memory, both sides pay for
@@ -336,11 +336,9 @@ constexpr uint32_t kFullLayoutMask = (1u << kInputLocationCount) - 1;
 // packed.
 
 // The vertex layout the title's own pipeline for this vertex shader reads (see
-// kFullLayoutMask). Packed only under XERENGE_PACK_VERTICES=1: packed, every eighth
-// vertex of some meshes came out far off (black spikes across the sky in a
-// replay), and on the 4500U it bought no measurable time.
+// kFullLayoutMask). XERENGE_FULL_VERTICES=1 keeps the full layout everywhere.
 uint32_t TitleVertexLayout(uint64_t vs_hash) {
-  static const bool packed = std::getenv("XERENGE_PACK_VERTICES") != nullptr;
+  static const bool packed = std::getenv("XERENGE_FULL_VERTICES") == nullptr;
   return packed ? (PlumeShaderCache::Instance().InputLocationMask(vs_hash) & kFullLayoutMask)
                 : kFullLayoutMask;
 }
@@ -2101,6 +2099,7 @@ void PlumeDrawContext::Shutdown() {
   cache_vb_.reset();
   mesh_cache_.clear();
   cache_by_offset_.clear();
+  retired_cache_regions_.clear();
   cache_used_ = 0;
   vs_constants_mapped_ = nullptr;
   ps_constants_mapped_ = nullptr;
@@ -2987,6 +2986,10 @@ bool PlumeDrawContext::AllocateCacheRegion(uint32_t count, uint32_t* offset) {
   if (count == 0 || count > kCacheVertexCount) {
     return false;
   }
+  // Retired places no frame still on the GPU can read are free again.
+  std::erase_if(retired_cache_regions_, [&](const RetiredRegion& r) {
+    return r.last_used + 1 < frame_serial_;
+  });
   uint32_t head = cache_used_;
   bool wrapped = false;
   for (int attempt = 0; attempt < 16; ++attempt) {
@@ -3013,6 +3016,11 @@ bool PlumeDrawContext::AllocateCacheRegion(uint32_t count, uint32_t* offset) {
       // Drawn this frame or the last, which may still be on the GPU.
       if (e != mesh_cache_.end() && e->second.last_used + 1 >= frame_serial_) {
         blocked_until = std::max(blocked_until, it->first + e->second.count);
+      }
+    }
+    for (const RetiredRegion& r : retired_cache_regions_) {
+      if (r.offset < end && r.offset + r.count > head) {
+        blocked_until = std::max(blocked_until, r.offset + r.count);
       }
     }
     if (blocked_until != 0) {
@@ -3484,6 +3492,7 @@ void PlumeDrawContext::CopyVerticesOut(float* dst, const float* staged, uint32_t
   }
   // Written front to back, so the write-combined heap still sees one
   // sequential stream.
+  float* const start = dst;
   for (uint32_t v = 0; v < count; ++v) {
     const float* from = staged + size_t(v) * kFloatsPerVert;
     for (uint32_t k = 0; k < n; ++k) {
@@ -3491,6 +3500,62 @@ void PlumeDrawContext::CopyVerticesOut(float* dst, const float* staged, uint32_t
       dst += 4;
     }
   }
+  static const bool check = std::getenv("XERENGE_PACK_CHECK") != nullptr;
+  if (check) {
+    last_packed_dst_ = start;
+    // Read back from the upload heap: slow, which is why it is a check only.
+    uint32_t bad = 0;
+    uint32_t first_bad = 0;
+    for (uint32_t v = 0; v < count; ++v) {
+      for (uint32_t k = 0; k < n; ++k) {
+        if (std::memcmp(start + (size_t(v) * n + k) * 4,
+                        staged + size_t(v) * kFloatsPerVert + locations[k], 16) != 0) {
+          if (bad++ == 0) {
+            first_bad = v;
+          }
+        }
+      }
+    }
+    if (bad != 0) {
+      static std::atomic<uint32_t> shown{0};
+      if (shown.fetch_add(1, std::memory_order_relaxed) < 16) {
+        REXLOG_WARN("plume: pack check: copy wrong at once - vs={:016X} {} vertices x {} "
+                    "locations, {} wrong, first vertex {}",
+                    fill_vs_hash_, count, n, bad, first_bad);
+      }
+    }
+    const size_t bytes = size_t(count) * n * 16;
+    packed_writes_.push_back({start, bytes, XXH3_64bits(start, bytes), fill_vs_hash_, count});
+  }
+}
+
+void PlumeDrawContext::CheckPackedWrites() {
+  uint32_t changed = 0;
+  for (const PackedWrite& w : packed_writes_) {
+    if (XXH3_64bits(w.dst, w.bytes) != w.hash) {
+      static std::atomic<uint32_t> shown{0};
+      if (shown.fetch_add(1, std::memory_order_relaxed) < 16) {
+        const auto* base = reinterpret_cast<const uint8_t*>(w.dst);
+        const bool in_cache = cache_mapped_ && w.dst >= cache_mapped_ &&
+                              w.dst < cache_mapped_ + size_t(kCacheVertexCount) * kFloatsPerVert;
+        const auto* origin = reinterpret_cast<const uint8_t*>(in_cache ? cache_mapped_
+                                                                         : vb_mapped_);
+        REXLOG_WARN("plume: pack check: vertices overwritten during the frame - vs={:016X} {} "
+                    "vertices, {} bytes at {} +{}",
+                    w.vs, w.count, w.bytes, in_cache ? "cache" : "frame buffer",
+                    size_t(base - origin));
+      }
+      ++changed;
+    }
+  }
+  static std::atomic<uint64_t> frames{0};
+  static std::atomic<uint64_t> total{0};
+  total.fetch_add(packed_writes_.size(), std::memory_order_relaxed);
+  if (frames.fetch_add(1, std::memory_order_relaxed) % 300 == 0) {
+    REXLOG_INFO("plume: pack check: {} packed copies checked so far, {} changed this frame",
+                total.load(), changed);
+  }
+  packed_writes_.clear();
 }
 
 uint32_t PlumeDrawContext::FillVertices(const GuestDrawSnapshot& snap, memory::Memory* memory,
@@ -4077,6 +4142,8 @@ uint32_t PlumeDrawContext::FillVertices(const GuestDrawSnapshot& snap, memory::M
       if (auto at = cache_by_offset_.find(old_entry->second.offset);
           at != cache_by_offset_.end() && at->second == cache_key) {
         cache_by_offset_.erase(at);
+        retired_cache_regions_.push_back(
+            {old_entry->second.offset, old_entry->second.count, old_entry->second.last_used});
       }
     }
     if (!AllocateCacheRegion(draw_count, &cache_offset)) {
@@ -4971,6 +5038,36 @@ void PlumeDrawContext::BindGuestTextures(plume::RenderCommandList* list,
     };
     const bool captured =
         snap.has_video_frame() && (snap_index != last_video || upload_frame());
+    // Every two seconds while a video is on screen: whether its frames change
+    // (distinct luma hashes), what the planes look like and where they are
+    // bound - enough to tell a decoder handing over the same frame from an
+    // upload that does not land or a draw bound to the wrong texture.
+    if (snap_index == last_video && !snap.video_y.empty()) {
+      static uint64_t uploads = 0;
+      static uint64_t last_hash = 0;
+      static uint64_t distinct = 0;
+      static uint64_t last_ms = 0;
+      ++uploads;
+      const uint64_t hash = XXH3_64bits(snap.video_y.data(), snap.video_y.size());
+      if (hash != last_hash) {
+        ++distinct;
+        last_hash = hash;
+      }
+      const uint64_t now = CoarseMs();
+      if (now - last_ms >= 2000) {
+        last_ms = now;
+        REXLOG_INFO("plume: video: {} uploads, {} distinct frames; Y {}x{} row {} key {:016X} "
+                    "slot {}, U {}x{} row {} key {:016X} slot {}{}, captured {}, video pipeline {}",
+                    uploads, distinct, snap.video_width, snap.video_height,
+                    snap.video_y_row_texels, snap.video_key, VideoPlaneSlot(snap.video_key),
+                    snap.video_u_width, snap.video_u_height, snap.video_u_row_texels,
+                    snap.video_u_key, VideoPlaneSlot(snap.video_u_key),
+                    snap.video_packed_uv ? " (Cb,Cr packed)" : "", captured,
+                    UsesVideoPipeline(snap));
+        uploads = 0;
+        distinct = 0;
+      }
+    }
     const uint32_t used_slots = UsedTextureSlots(snap);
     for (uint32_t slot = 0; slot < rex::graphics::xenos::kTextureFetchConstantCount; ++slot) {
       if (captured && slot < 3) {
@@ -5988,6 +6085,8 @@ void PlumeDrawContext::EncodeDraws(plume::RenderCommandList* list,
     } else {
       fill_layout_mask_ = kFullLayoutMask;
     }
+    fill_vs_hash_ = snap.vs_hash;
+    last_packed_dst_ = nullptr;
     static uint32_t real_logs = 0;
     if (!passthrough && real_logs < 8) {
       ++real_logs;
@@ -6144,6 +6243,21 @@ void PlumeDrawContext::EncodeDraws(plume::RenderCommandList* list,
               first * kVertexStrideBytes);
       list->setVertexBuffers(0, &view, 1, &input_slots_[0]);
       bound_vertex_buffer = 0;
+      static const bool pack_check = std::getenv("XERENGE_PACK_CHECK") != nullptr;
+      if (pack_check && last_packed_dst_) {
+        const float* bound = (cached ? cache_mapped_ : vb_mapped_) + size_t(first) * kFloatsPerVert;
+        if (bound != last_packed_dst_) {
+          static std::atomic<uint32_t> shown{0};
+          if (shown.fetch_add(1, std::memory_order_relaxed) < 16) {
+            REXLOG_WARN("plume: pack check: draw bound at {} +{} but its vertices went to +{} "
+                        "(vs={:016X})",
+                        cached ? "cache" : "frame buffer",
+                        size_t(bound - (cached ? cache_mapped_ : vb_mapped_)),
+                        size_t(last_packed_dst_ - (cached ? cache_mapped_ : vb_mapped_)),
+                        snap.vs_hash);
+          }
+        }
+      }
       list->drawInstanced(vertex_count, 1, 0, 0);
       if (!cached) {
         vb_used += vertex_count;
@@ -6541,6 +6655,9 @@ void PlumeDrawContext::EncodeDraws(plume::RenderCommandList* list,
     last_from_copy = from_copy;
   }
 
+  if (!packed_writes_.empty()) {
+    CheckPackedWrites();
+  }
   EncodeStage("idle");
   // Eight lines only ever described the opening seconds, and this is the one
   // place that says whether a draw that survived every filter actually reached

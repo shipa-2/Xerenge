@@ -623,6 +623,15 @@ class PlumeDrawContext {
   // cache when it filled - every half minute or so in a race, as the track
   // streams in - cost a frame long enough to see.
   std::map<uint32_t, uint64_t> cache_by_offset_;  // offset -> key
+  // The places of meshes stored again elsewhere (their vertices changed): still
+  // read by the frame that drew them, and by the one before it on the GPU, so
+  // nothing may be stored over them until those frames are done.
+  struct RetiredRegion {
+    uint32_t offset = 0;
+    uint32_t count = 0;
+    uint64_t last_used = 0;
+  };
+  std::vector<RetiredRegion> retired_cache_regions_;
   bool AllocateCacheRegion(uint32_t count, uint32_t* offset);
   // Keys seen once and not cached yet (a draw is cached from its second
   // sighting). Kept apart so that the one-off draws piling up here - a buffer
@@ -738,6 +747,22 @@ class PlumeDrawContext {
   // Copies `count` vertices from the full layout into `dst` in the layout
   // fill_layout_mask_ names.
   void CopyVerticesOut(float* dst, const float* staged, uint32_t count) const;
+  // XERENGE_PACK_CHECK=1: every packed copy checked against the staging buffer
+  // as it is made, its bytes hashed, and the hashes checked again when the
+  // frame is done - a packed draw whose vertices changed in between was
+  // overwritten by another. And the place each draw is bound at is checked
+  // against the place its vertices were written to.
+  struct PackedWrite {
+    const float* dst = nullptr;
+    size_t bytes = 0;
+    uint64_t hash = 0;
+    uint64_t vs = 0;
+    uint32_t count = 0;
+  };
+  mutable std::vector<PackedWrite> packed_writes_;
+  mutable const float* last_packed_dst_ = nullptr;
+  uint64_t fill_vs_hash_ = 0;
+  void CheckPackedWrites();
   std::unordered_map<uint64_t, std::unique_ptr<GuestHostTexture>> guest_textures_;
   uint32_t next_bindless_ = 1;
 };

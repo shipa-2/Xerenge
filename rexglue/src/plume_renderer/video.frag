@@ -16,7 +16,7 @@ layout(location = 2) flat in uvec4 v_planes;
 
 layout(location = 0) out vec4 o_color;
 
-layout(set = 0, binding = 0) uniform texture2D g_textures[1024];
+layout(set = 0, binding = 0) uniform texture2D g_textures[4096];
 layout(set = 3, binding = 0) uniform sampler g_samplers[16];
 
 // One byte of a plane: `stride` bytes per sample (1, or 2 for packed Cb,Cr),
