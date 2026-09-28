@@ -3,6 +3,7 @@
 #include <QApplication>
 #include <QCheckBox>
 #include <QCloseEvent>
+#include <QComboBox>
 #include <QCoreApplication>
 #include <QDir>
 #include <QDirIterator>
@@ -10,7 +11,9 @@
 #include <QFileDialog>
 #include <QFileInfo>
 #include <QFutureWatcher>
+#include <QGridLayout>
 #include <QHBoxLayout>
+#include <QKeyEvent>
 #include <QLabel>
 #include <QLineEdit>
 #include <QMessageBox>
@@ -20,6 +23,7 @@
 #include <QPushButton>
 #include <QRegularExpression>
 #include <QStandardPaths>
+#include <QTabWidget>
 #include <QTextStream>
 #include <QToolButton>
 #include <QVBoxLayout>
@@ -81,6 +85,23 @@ if [ "$renderer" != xenos ]; then
            XERENGE_REAL_SHADERS=1 XERENGE_D3D_DRAWS=1 XERENGE_SECONDARY_TICKS=1
 fi
 
+lang=$(value language)
+[ -n "$lang" ] && export XERENGE_LANGUAGE="$lang"
+[ "$(value async_present)" = true ] && export XERENGE_ASYNC_PRESENT=1
+res=$(value render_resolution)
+[ -n "$res" ] && export XERENGE_RENDER_RESOLUTION="$res"
+[ "$(value fps_counter)" = true ] && export XERENGE_FPS_SHOW=1
+
+# Fullscreen unless windowed; the keyboard as a pad with its keybind_* lines.
+extra=--fullscreen
+[ "$(value windowed)" = true ] && extra=--no-fullscreen
+if [ "$(value keyboard)" = true ]; then
+    extra="$extra --mnk_mode=true"
+    for key in $(sed -n "s/^[[:space:]]*\(keybind_[a-z_]*\)[[:space:]]*=.*/\1/p" "$conf"); do
+        extra="$extra --$key=$(value "$key")"
+    done
+fi
+
 export SDL_VIDEODRIVER=x11
 export LD_LIBRARY_PATH="$dir/bin${LD_LIBRARY_PATH:+:$LD_LIBRARY_PATH}"
 logs="${XDG_STATE_HOME:-$HOME/.local/state}/xerenge-burnout"
@@ -96,6 +117,7 @@ exec "$dir/bin/burnout" \
     --log_file "$logs/burnout.log" \
     --log_max_file_size_mb 32 \
     --log_max_files 3 \
+    $extra \
     "$@"
 )SH";
 
@@ -125,6 +147,21 @@ if "%renderer%"=="plume" (
     set "XERENGE_SECONDARY_TICKS=1"
 )
 
+if defined language set "XERENGE_LANGUAGE=%language%"
+if /i "%async_present%"=="true" set "XERENGE_ASYNC_PRESENT=1"
+if defined render_resolution set "XERENGE_RENDER_RESOLUTION=%render_resolution%"
+if /i "%fps_counter%"=="true" set "XERENGE_FPS_SHOW=1"
+
+rem Fullscreen unless windowed; the keyboard as a pad with its keybind_* lines.
+set "extra=--fullscreen"
+if /i "%windowed%"=="true" set "extra=--no-fullscreen"
+if /i not "%keyboard%"=="true" goto :keys_done
+set "extra=%extra% --mnk_mode=true"
+for /f "usebackq eol=# tokens=1,2 delims== " %%a in ("%dir%xerenge.conf") do (
+    echo %%a| findstr /b "keybind_" >nul && call set "extra=%%extra%% --%%a=%%b"
+)
+:keys_done
+
 set "logs=%LOCALAPPDATA%\xerenge-burnout"
 if not exist "%logs%" mkdir "%logs%"
 
@@ -138,8 +175,116 @@ start "" "%dir%bin\burnout.exe" ^
     --log_file "%logs%\burnout.log" ^
     --log_max_file_size_mb 32 ^
     --log_max_files 3 ^
+    %extra% ^
     %*
 )CMD";
+
+// The pad controls the keyboard can stand in for: the game's keybind_* setting,
+// the label shown, and the key given to it by default.
+struct PadControl {
+  const char* setting;
+  const char* label;
+  const char* key;
+};
+constexpr PadControl kPadControls[] = {
+    {"keybind_a", "A", "Space"},
+    {"keybind_b", "B", "Backspace"},
+    {"keybind_x", "X", "E"},
+    {"keybind_y", "Y", "R"},
+    {"keybind_left_shoulder", "Left bumper (LB)", "Q"},
+    {"keybind_right_shoulder", "Right bumper (RB)", "F"},
+    {"keybind_left_trigger", "Left trigger (LT) - brake", "S"},
+    {"keybind_right_trigger", "Right trigger (RT) - accelerate", "W"},
+    {"keybind_lstick_up", "Left stick up", ""},
+    {"keybind_lstick_down", "Left stick down", ""},
+    {"keybind_lstick_left", "Left stick left - steer", "A"},
+    {"keybind_lstick_right", "Left stick right - steer", "D"},
+    {"keybind_lstick_press", "Left stick press", "C"},
+    {"keybind_rstick_up", "Right stick up", "I"},
+    {"keybind_rstick_down", "Right stick down", "K"},
+    {"keybind_rstick_left", "Right stick left", "J"},
+    {"keybind_rstick_right", "Right stick right", "L"},
+    {"keybind_rstick_press", "Right stick press", "V"},
+    {"keybind_dpad_up", "D-pad up", "Up"},
+    {"keybind_dpad_down", "D-pad down", "Down"},
+    {"keybind_dpad_left", "D-pad left", "Left"},
+    {"keybind_dpad_right", "D-pad right", "Right"},
+    {"keybind_start", "Start", "Enter"},
+    {"keybind_back", "Back", "Escape"},
+    {"keybind_guide", "Guide", ""},
+};
+
+// A key as the game's keybind settings name it, or empty for a key they do
+// not know. A bare Shift, Ctrl or Alt is never a key there - the game matches
+// modifiers exactly, so one alone could never fire - but held with another key
+// it is written as a prefix: "Shift+W".
+QString GameKeyName(const QKeyEvent* event) {
+  const int key = event->key();
+  const bool keypad = event->modifiers() & Qt::KeypadModifier;
+  QString name;
+  if (key >= Qt::Key_A && key <= Qt::Key_Z) {
+    name = QChar('A' + (key - Qt::Key_A));
+  } else if (key >= Qt::Key_0 && key <= Qt::Key_9) {
+    name = (keypad ? QString("Numpad") : QString()) + QChar('0' + (key - Qt::Key_0));
+  } else if (key >= Qt::Key_F1 && key <= Qt::Key_F24) {
+    name = QString("F%1").arg(key - Qt::Key_F1 + 1);
+  } else {
+    switch (key) {
+      case Qt::Key_Space: name = "Space"; break;
+      case Qt::Key_Return: name = "Enter"; break;
+      case Qt::Key_Enter: name = keypad ? "NumpadEnter" : "Enter"; break;
+      case Qt::Key_Tab: name = "Tab"; break;
+      case Qt::Key_Backspace: name = "Backspace"; break;
+      case Qt::Key_Escape: name = "Escape"; break;
+      case Qt::Key_Delete: name = "Delete"; break;
+      case Qt::Key_Insert: name = "Insert"; break;
+      case Qt::Key_Home: name = "Home"; break;
+      case Qt::Key_End: name = "End"; break;
+      case Qt::Key_PageUp: name = "PageUp"; break;
+      case Qt::Key_PageDown: name = "PageDown"; break;
+      case Qt::Key_Left: name = "Left"; break;
+      case Qt::Key_Right: name = "Right"; break;
+      case Qt::Key_Up: name = "Up"; break;
+      case Qt::Key_Down: name = "Down"; break;
+      case Qt::Key_Minus: name = keypad ? "NumpadMinus" : "Minus"; break;
+      case Qt::Key_Plus: name = keypad ? "NumpadPlus" : "Plus"; break;
+      case Qt::Key_Equal: name = "Plus"; break;
+      case Qt::Key_Asterisk: name = "NumpadStar"; break;
+      case Qt::Key_Slash: name = keypad ? "NumpadSlash" : "Slash"; break;
+      case Qt::Key_Comma: name = "Comma"; break;
+      case Qt::Key_Period: name = "Period"; break;
+      case Qt::Key_Semicolon: name = "Semicolon"; break;
+      case Qt::Key_Backslash: name = "Backslash"; break;
+      case Qt::Key_BracketLeft: name = "LBracket"; break;
+      case Qt::Key_BracketRight: name = "RBracket"; break;
+      case Qt::Key_Apostrophe: name = "Quote"; break;
+      case Qt::Key_QuoteLeft: name = "Backtick"; break;
+      case Qt::Key_CapsLock: name = "CapsLock"; break;
+      default: return {};
+    }
+  }
+  QString prefix;
+  if (event->modifiers() & Qt::ControlModifier) prefix += "Ctrl+";
+  if (event->modifiers() & Qt::AltModifier) prefix += "Alt+";
+  if (event->modifiers() & Qt::ShiftModifier) prefix += "Shift+";
+  return prefix + name;
+}
+
+// A field that takes the key pressed in it rather than text. Several keys for
+// one control can still be typed into xerenge.conf by hand ("A,Left").
+class KeyEdit : public QLineEdit {
+ public:
+  using QLineEdit::QLineEdit;
+
+ protected:
+  void keyPressEvent(QKeyEvent* event) override {
+    const QString name = GameKeyName(event);
+    if (!name.isEmpty()) {
+      setText(name);
+    }
+    event->accept();
+  }
+};
 
 QString DefaultInstallDir() {
   return QDir::home().filePath("Games/Burnout Revenge");
@@ -183,9 +328,16 @@ bool WriteText(const QString& path, const QString& text, bool executable) {
 
 InstallerWindow::InstallerWindow(QWidget* parent) : QWidget(parent) {
   setWindowTitle(tr("Burnout Revenge - Xerenge installer"));
-  setMinimumWidth(520);
+  setMinimumWidth(720);
 
-  auto* layout = new QVBoxLayout(this);
+  // Two tabs over the progress and the button: the install itself, and the
+  // keyboard controls.
+  auto* outer = new QVBoxLayout(this);
+  auto* tabs = new QTabWidget;
+  outer->addWidget(tabs);
+  auto* setup_page = new QWidget;
+  auto* layout = new QVBoxLayout(setup_page);
+  tabs->addTab(setup_page, tr("Install"));
 
   // The disc image.
   layout->addWidget(new QLabel(tr("Select game ISO")));
@@ -212,6 +364,60 @@ InstallerWindow::InstallerWindow(QWidget* parent) : QWidget(parent) {
   layout->addWidget(blur_box_);
   layout->addWidget(xenia_box_);
 
+  windowed_box_ = new QCheckBox(tr("Windowed"));
+  windowed_box_->setToolTip(tr("Run in a window. Fullscreen otherwise."));
+  layout->addWidget(windowed_box_);
+
+  // The game asks for its language at every start unless one is set here.
+  auto* language_row = new QHBoxLayout;
+  language_row->addWidget(new QLabel(tr("Language")));
+  language_combo_ = new QComboBox;
+  language_combo_->addItem(tr("Ask at every start"), QString());
+  language_combo_->addItem("English", "0");
+  language_combo_->addItem("English (US)", "1");
+  language_combo_->addItem("Espa\u00f1ol", "5");
+  language_combo_->addItem("Nederlands", "10");
+  language_combo_->addItem("Svenska", "11");
+  language_combo_->addItem("Suomi", "12");
+  language_combo_->setCurrentIndex(1);
+  language_row->addWidget(language_combo_, 1);
+  layout->addLayout(language_row);
+
+  // Hacks: folded away, each trading something for speed on a slow machine.
+  auto* hacks_toggle = new QToolButton;
+  hacks_toggle->setText(tr("Hacks"));
+  hacks_toggle->setCheckable(true);
+  hacks_toggle->setToolButtonStyle(Qt::ToolButtonTextBesideIcon);
+  hacks_toggle->setArrowType(Qt::RightArrow);
+  hacks_toggle->setAutoRaise(true);
+  layout->addWidget(hacks_toggle);
+  auto* hacks = new QWidget;
+  auto* hacks_layout = new QVBoxLayout(hacks);
+  hacks_layout->setContentsMargins(18, 0, 0, 0);
+  async_box_ = new QCheckBox(tr("Asynchronous presentation"));
+  async_box_->setToolTip(tr("The game starts its next frame while the GPU still draws this one. "
+                            "Faster; once showed a black frame now and then."));
+  hacks_layout->addWidget(async_box_);
+  auto* resolution_row = new QHBoxLayout;
+  resolution_row->addWidget(new QLabel(tr("Render resolution")));
+  resolution_combo_ = new QComboBox;
+  resolution_combo_->addItem(tr("The window's"), QString());
+  resolution_combo_->addItem("1280x720", "1280x720");
+  resolution_combo_->addItem("1600x900", "1600x900");
+  resolution_combo_->setToolTip(tr("Draw the frame at this size and scale it onto the window. "
+                                   "1280x720 is the size the game renders at on the console."));
+  resolution_row->addWidget(resolution_combo_, 1);
+  hacks_layout->addLayout(resolution_row);
+  fps_box_ = new QCheckBox(tr("Frame counter"));
+  fps_box_->setToolTip(tr("Frames per second in the top left corner."));
+  hacks_layout->addWidget(fps_box_);
+  hacks->setVisible(false);
+  layout->addWidget(hacks);
+  connect(hacks_toggle, &QToolButton::toggled, this, [hacks, hacks_toggle](bool open) {
+    hacks->setVisible(open);
+    hacks_toggle->setArrowType(open ? Qt::DownArrow : Qt::RightArrow);
+  });
+
   layout->addSpacing(12);
 
   // Where it goes.
@@ -225,6 +431,44 @@ InstallerWindow::InstallerWindow(QWidget* parent) : QWidget(parent) {
   layout->addLayout(path_row);
   connect(path_browse, &QToolButton::clicked, this, &InstallerWindow::BrowseInstallPath);
 
+  layout->addStretch(1);
+
+  // The keyboard as a pad.
+  auto* keys_page = new QWidget;
+  auto* keys_layout = new QVBoxLayout(keys_page);
+  keyboard_box_ = new QCheckBox(tr("Play with the keyboard"));
+  keyboard_box_->setToolTip(tr("The keyboard stands in for a pad. A connected pad still works."));
+  keys_layout->addWidget(keyboard_box_);
+  auto* hint = new QLabel(tr("Click a field and press a key. Several keys for one control can "
+                             "be written into xerenge.conf by hand, comma separated."));
+  hint->setWordWrap(true);
+  keys_layout->addWidget(hint);
+  auto* grid = new QGridLayout;
+  int row = 0;
+  for (const PadControl& control : kPadControls) {
+    auto* edit = new KeyEdit(QString::fromLatin1(control.key));
+    edit->setClearButtonEnabled(true);
+    // Two columns of controls, so the tab is not taller than the install one.
+    constexpr int kRows = (int(std::size(kPadControls)) + 1) / 2;
+    const int column = (row / kRows) * 2;
+    grid->addWidget(new QLabel(tr(control.label)), row % kRows, column);
+    grid->addWidget(edit, row % kRows, column + 1);
+    key_edits_.append({QString::fromLatin1(control.setting), edit});
+    ++row;
+  }
+  keys_layout->addLayout(grid);
+  keys_layout->addStretch(1);
+  for (const auto& [setting, edit] : key_edits_) {
+    edit->setEnabled(false);
+  }
+  connect(keyboard_box_, &QCheckBox::toggled, this, [this](bool on) {
+    for (const auto& [setting, edit] : key_edits_) {
+      edit->setEnabled(on);
+    }
+  });
+  tabs->addTab(keys_page, tr("Controls"));
+
+  layout = outer;
   layout->addSpacing(12);
 
   progress_ = new QProgressBar;
@@ -332,6 +576,25 @@ void InstallerWindow::StartInstall() {
   bloom_ = bloom_box_->isChecked();
   blur_ = blur_box_->isChecked();
   xenia_ = xenia_box_->isChecked();
+  {
+    QString extra;
+    QTextStream out(&extra);
+    out << "# Fullscreen unless true\n"
+        << "windowed = " << (windowed_box_->isChecked() ? "true" : "false") << "\n"
+        << "# The language set ahead of time (empty: the game asks at every start)\n"
+        << "language = " << language_combo_->currentData().toString() << "\n"
+        << "# Hacks\n"
+        << "async_present = " << (async_box_->isChecked() ? "true" : "false") << "\n"
+        << "render_resolution = " << resolution_combo_->currentData().toString() << "\n"
+        << "fps_counter = " << (fps_box_->isChecked() ? "true" : "false") << "\n"
+        << "# The keyboard as a pad, and a key (or several, comma separated) per control\n"
+        << "keyboard = " << (keyboard_box_->isChecked() ? "true" : "false") << "\n";
+    for (const auto& [setting, edit] : key_edits_) {
+      out << setting << " = " << edit->text().trimmed() << "\n";
+    }
+    out.flush();
+    extra_settings_ = extra;
+  }
 
   QString error;
   if (!LocatePayload(&error)) {
@@ -547,7 +810,8 @@ QString InstallerWindow::WriteSettings() const {
               "motion_blur = %2\n"
               "# plume (this project's renderer) or xenos (Xenia's)\n"
               "renderer = %3\n")
-          .arg(bloom_ ? "true" : "false", blur_ ? "true" : "false", xenia_ ? "xenos" : "plume");
+          .arg(bloom_ ? "true" : "false", blur_ ? "true" : "false", xenia_ ? "xenos" : "plume") +
+      extra_settings_;
   if (!WriteText(install.filePath("xerenge.conf"), settings, false)) {
     return tr("cannot write %1").arg(install.filePath("xerenge.conf"));
   }

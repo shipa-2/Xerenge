@@ -1,6 +1,7 @@
 #pragma once
 
 #include <QList>
+#include <QPair>
 #include <QString>
 #include <QStringList>
 #include <QWidget>
@@ -8,6 +9,7 @@
 #include <functional>
 
 class QCheckBox;
+class QComboBox;
 class QLabel;
 class QLineEdit;
 class QProcess;
@@ -65,6 +67,15 @@ class InstallerWindow : public QWidget {
   QCheckBox* bloom_box_ = nullptr;
   QCheckBox* blur_box_ = nullptr;
   QCheckBox* xenia_box_ = nullptr;
+  // The language set ahead of time (XERENGE_LANGUAGE), windowed, the hacks.
+  QComboBox* language_combo_ = nullptr;
+  QCheckBox* windowed_box_ = nullptr;
+  QCheckBox* async_box_ = nullptr;
+  QComboBox* resolution_combo_ = nullptr;
+  QCheckBox* fps_box_ = nullptr;
+  // The keyboard as a pad: on or off, and a key per pad control (keybind_*).
+  QCheckBox* keyboard_box_ = nullptr;
+  QList<QPair<QString, QLineEdit*>> key_edits_;
   QLineEdit* path_edit_ = nullptr;
   QProgressBar* progress_ = nullptr;
   QLabel* status_ = nullptr;
@@ -85,6 +96,8 @@ class InstallerWindow : public QWidget {
   bool bloom_ = false;
   bool blur_ = false;
   bool xenia_ = false;
+  // The xerenge.conf lines for everything above but bloom, blur and renderer.
+  QString extra_settings_;
   bool shortcuts_ = true;
   QString log_path_;
   bool unattended_ = false;

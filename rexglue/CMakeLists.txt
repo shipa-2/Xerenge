@@ -17,6 +17,7 @@ set(BURNOUT_SOURCES
     src/movie_frames.cpp
     src/tint_trace.cpp
     src/render_patches.cpp
+    src/language_preset.cpp
     src/online_stub.cpp
     src/online_lobby.cpp
     src/game_timing.cpp
