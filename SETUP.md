@@ -222,7 +222,17 @@ Early submit is on unless turned off; the others are off unless asked for.
 ./run.sh --async-present                let the title start its next frame while
                                         the GPU is still drawing this one
 ./run.sh --no-early-submit              turn early submit (below) off
+./run.sh --full-vertices                turn packed vertices (below) off
+./run.sh --cull                         cull the faces the game culls
 ```
+
+* Packed vertices (on by default) - each draw's vertices go to the GPU with
+  only the inputs its vertex shader reads, four or five of the twenty a vertex
+  has room for. Less memory traffic on a machine whose processor and graphics
+  share one memory. `XERENGE_FULL_VERTICES=1` (what `--full-vertices` sets)
+  sends the whole layout, as before.
+* `--cull` - the faces the game asks the GPU to cull are culled, as on the
+  console; otherwise every face is drawn. Experimental, off by default.
 
 * Early submit (on by default) - the frame is recorded and handed to the GPU
   first, and only then does plume wait for a swap chain image to copy it onto.

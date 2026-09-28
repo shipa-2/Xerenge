@@ -65,6 +65,11 @@
 #                       frame, as it used to, instead of handing the frame to
 #                       the GPU first (the default, a hack that overlaps the
 #                       two).
+#   ./run.sh --full-vertices
+#                       plume sends every vertex in the layout wide enough for
+#                       any shader, as it used to, instead of only what the
+#                       draw's shader reads (the default, a hack).
+#   ./run.sh --cull    plume culls the faces the title culls (experimental).
 #   ./run.sh --plume    loads librexgpu-plume.so instead of xenos, with the
 #                       switches it is meant to run with (as the installed
 #                       launcher sets them). Saved burnout.toml has
@@ -167,6 +172,8 @@ for arg in "$@"; do
         --render-resolution=*) RENDER_RESOLUTION=${arg#*=} ;;
         --async-present) ASYNC_PRESENT=1 ;;
         --no-early-submit) ACQUIRE_FIRST=1 ;;
+        --full-vertices) FULL_VERTICES=1 ;;
+        --cull) CULL=1 ;;
         --fps) FPS_SHOW=1 ;;
         --windowed) WINDOWED=1 ;;
         --fullscreen) WINDOWED= ;;
@@ -238,6 +245,8 @@ fi
 [ -n "$RENDER_RESOLUTION" ] && XERENGE_RENDER_RESOLUTION=$RENDER_RESOLUTION && export XERENGE_RENDER_RESOLUTION
 [ -n "$ASYNC_PRESENT" ] && XERENGE_ASYNC_PRESENT=1 && export XERENGE_ASYNC_PRESENT
 [ -n "$ACQUIRE_FIRST" ] && XERENGE_ACQUIRE_FIRST=1 && export XERENGE_ACQUIRE_FIRST
+[ -n "$FULL_VERTICES" ] && XERENGE_FULL_VERTICES=1 && export XERENGE_FULL_VERTICES
+[ -n "$CULL" ] && XERENGE_CULL=1 && export XERENGE_CULL
 [ -n "$FPS_SHOW" ] && XERENGE_FPS_SHOW=1 && export XERENGE_FPS_SHOW
 # shellcheck disable=SC2086 # a list of options, split on purpose
 [ -n "$GAME_ARGS" ] && set -- "$@" $GAME_ARGS

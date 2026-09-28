@@ -80,6 +80,8 @@ class InstallerWindow : public QWidget {
   QString preserved_debug_settings_;
   QCheckBox* async_box_ = nullptr;
   QCheckBox* early_submit_box_ = nullptr;
+  QCheckBox* packed_vertices_box_ = nullptr;
+  QCheckBox* culling_box_ = nullptr;
   QComboBox* resolution_combo_ = nullptr;
   QCheckBox* fps_box_ = nullptr;
   // The keyboard as a pad: on or off, and a key per pad control (keybind_*).
