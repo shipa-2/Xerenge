@@ -50,6 +50,16 @@
 #   ./run.sh --online-address=IP
 #                       the address this copy gives its peers and binds to:
 #                       127.0.0.2 and 127.0.0.3 run two copies on one machine.
+#   ./run.sh --windowed runs in a window; --fullscreen (the default) does not.
+#   ./run.sh --fps      frames per second in the top left corner (plume).
+#   ./run.sh --render-resolution=WIDTHxHEIGHT
+#                       plume draws the frame at this size and scales it onto
+#                       the window, e.g. 1280x720, the size the title renders
+#                       at itself. A hack for slow GPUs.
+#   ./run.sh --async-present
+#                       plume hands a frame to the GPU and lets the title go on
+#                       at once, instead of waiting for the GPU to finish it.
+#                       A hack: it once showed black frames now and then.
 #   ./run.sh --plume    loads librexgpu-plume.so instead of xenos, with the
 #                       switches it is meant to run with (as the installed
 #                       launcher sets them). Saved burnout.toml has
@@ -149,6 +159,14 @@ for arg in "$@"; do
         --real-lobby) ONLINE=1; REAL_LOBBY=1 ;;
         --lobby-server=*) ONLINE=1; REAL_LOBBY=1; LOBBY_SERVER=${arg#*=} ;;
         --online-address=*) ONLINE_ADDRESS=${arg#*=} ;;
+        --render-resolution=*) RENDER_RESOLUTION=${arg#*=} ;;
+        --async-present) ASYNC_PRESENT=1 ;;
+        --fps) FPS_SHOW=1 ;;
+        --windowed) WINDOWED=1 ;;
+        --fullscreen) WINDOWED= ;;
+        # Any other option goes to the game as it is: its own settings, e.g.
+        # --no-fullscreen --window_width=1280 --window_height=720.
+        --*) GAME_ARGS="$GAME_ARGS $arg" ;;
     esac
 done
 
@@ -204,6 +222,18 @@ fi
 [ -n "$ONLINE_ADDRESS" ] && set -- "$@" --online_address="$ONLINE_ADDRESS"
 
 [ -n "$NOISY" ] && set -- "$@" --log_noisy=true
+# Fullscreen unless --windowed: said outright both ways, so a burnout.toml
+# saved with the other does not decide it.
+if [ -n "$WINDOWED" ]; then
+    set -- "$@" --no-fullscreen
+else
+    set -- "$@" --fullscreen
+fi
+[ -n "$RENDER_RESOLUTION" ] && XERENGE_RENDER_RESOLUTION=$RENDER_RESOLUTION && export XERENGE_RENDER_RESOLUTION
+[ -n "$ASYNC_PRESENT" ] && XERENGE_ASYNC_PRESENT=1 && export XERENGE_ASYNC_PRESENT
+[ -n "$FPS_SHOW" ] && XERENGE_FPS_SHOW=1 && export XERENGE_FPS_SHOW
+# shellcheck disable=SC2086 # a list of options, split on purpose
+[ -n "$GAME_ARGS" ] && set -- "$@" $GAME_ARGS
 
 set -- "$@" --game_data_root "$GAME" \
        --gpu_plugin "$GPU_BACKEND" \

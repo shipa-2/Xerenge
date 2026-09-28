@@ -202,7 +202,43 @@ Useful modes:
 ./run.sh --no-motion-blur turn off motion blur and radial blur
 ./run.sh --capture        run under RenderDoc; F12 captures the frame on screen
 ./run.sh --gdb            run under a debugger
+./run.sh --windowed       run in a window; fullscreen (--fullscreen) is the default
+./run.sh --fps            frames per second in the top left corner (plume)
 ```
+
+Any other option `run.sh` does not know goes to the game as it is, so the
+game's own settings can be given on the same line (`--window_width=1280`).
+
+<details>
+<summary><b>Hacks</b> - for slow machines, at some cost</summary>
+
+These trade something for speed on weaker hardware - the Ryzen 5 4500U with its
+integrated Radeon is the machine they were measured on. They apply to plume and
+are off unless asked for.
+
+```
+./run.sh --render-resolution=1280x720   draw the frame at this size and scale it
+                                        onto the window
+./run.sh --async-present                let the title start its next frame while
+                                        the GPU is still drawing this one
+```
+
+* `--render-resolution=WIDTHxHEIGHT` - plume draws the whole frame at this size
+  and scales it onto the window, filtered, as it is presented. `1280x720` is
+  the size the title renders at on the console, so nothing is lost that the
+  title drew; above it the frame is drawn at the window's size. Fewer pixels
+  for a GPU that is short of them.
+* `--async-present` - normally the frame is handed to the GPU and the title
+  waits for the GPU to finish it before it goes on. With this it goes on at
+  once and the wait moves to the start of the next frame, so the title's own
+  work for that frame overlaps the GPU's for this one. Off by default because
+  it once showed a black frame now and then, on Linux; not seen on Windows.
+
+One more, the other way round: `XERENGE_VIDEO_GPU=0` turns the menu videos back
+into RGB on the CPU, as before. The GPU does it by default; the switch is for a
+driver that objects to it.
+
+</details>
 
 `--no-bloom` and `--no-motion-blur` mirror boma's Xenia patches for this title.
 Here they are implemented as hooks in `src/render_patches.cpp`, because the guest
