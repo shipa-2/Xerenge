@@ -742,6 +742,32 @@ void Server::HandleLobby(Connection& connection, const Message& message) {
   // SYSFLAGS 0x1000 is set by LockGame at the start of a race: such a game is not found and cannot be joined.
   const auto number = [](const std::string& text) { return std::strtoul(text.c_str(), nullptr, 10); };
   const auto locked = [&](const Game& g) { return (number(g.sysflags) & 0x1000) != 0; };
+  // Joins a game another server hosts: that server takes the player (xjoi), running the client's own request
+  // (a gjoi, or a gqwk) as if the client were connected to it, and answers to it through this one.
+  const auto join_remote = [&](uint32_t remote_id, const RemoteGame& remote) {
+    Connection* link = LinkTo(remote.server);
+    if (!link) {
+      Log("lobby: cannot reach the server " + remote.server + " of game " + std::to_string(remote_id));
+      return false;
+    }
+    DropRemote(connection, true);
+    LeaveGame(connection);
+    connection.remote_link = link->fd;
+    connection.remote_game = remote_id;
+    connection.user_params = field("USERPARAMS", connection.user_params);
+    Fields join;
+    join["U"] = std::to_string(connection.id);
+    join["NAME"] = connection.user;
+    join["ADDR"] = PeerAddress(connection);
+    join["MADDR"] = connection.maddr;
+    join["XUID"] = connection.xuid;
+    join["PEER"] = connection.peer;
+    join["USERPARAMS"] = connection.user_params;
+    join["D"] = Hex(Encode(message.command, message.body, message.code));
+    Log("lobby: " + connection.user + " joins game " + std::to_string(remote_id) + " on the server " + remote.server);
+    Send(*link, Encode("xjoi", join));
+    return true;
+  };
   if (message.command == "gjoi") {
     // By IDENT, or by the host's name (NAME/USER).
     Game* game = nullptr;
@@ -765,28 +791,10 @@ void Server::HandleLobby(Connection& connection, const Message& message) {
         if (!((!ident.empty() && std::to_string(remote_id) == ident) || named)) {
           continue;
         }
-        Connection* link = LinkTo(remote.server);
-        if (!link) {
-          Log("lobby: gjoi - cannot reach the server " + remote.server + " of game " + std::to_string(remote_id));
-          break;
+        if (join_remote(remote_id, remote)) {
+          return;
         }
-        DropRemote(connection, true);
-        LeaveGame(connection);
-        connection.remote_link = link->fd;
-        connection.remote_game = remote_id;
-        connection.user_params = field("USERPARAMS", connection.user_params);
-        Fields join;
-        join["U"] = std::to_string(connection.id);
-        join["NAME"] = connection.user;
-        join["ADDR"] = PeerAddress(connection);
-        join["MADDR"] = connection.maddr;
-        join["XUID"] = connection.xuid;
-        join["PEER"] = connection.peer;
-        join["USERPARAMS"] = connection.user_params;
-        join["D"] = Hex(Encode(message.command, message.body, message.code));
-        Log("lobby: " + connection.user + " joins game " + std::to_string(remote_id) + " on the server " + remote.server);
-        Send(*link, Encode("xjoi", join));
-        return;
+        break;
       }
     }
     if (!game) {
@@ -818,6 +826,23 @@ void Server::HandleLobby(Connection& connection, const Message& message) {
                                        static_cast<int>(g.players.size())) {
         game = &g;
         break;
+      }
+    }
+    if (!game) {
+      // None here: one that another server announced, open and with room.
+      const auto now = std::chrono::steady_clock::now();
+      for (const auto& [remote_id, remote] : remote_games_) {
+        if (now - remote.seen > kRemoteGameLifetime) {
+          continue;
+        }
+        const auto field_of = [&](const char* key) {
+          const auto it = remote.record.find(key);
+          return it != remote.record.end() ? it->second : std::string();
+        };
+        if ((number(field_of("SYSFLAGS")) & 0x1000) == 0 &&
+            number(field_of("COUNT")) < number(field_of("MAXSIZE")) && join_remote(remote_id, remote)) {
+          return;
+        }
       }
     }
     if (!game) {

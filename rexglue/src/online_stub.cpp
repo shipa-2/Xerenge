@@ -89,6 +89,7 @@ extern "C" void __imp__sub_8221C478(PPCContext& __restrict, uint8_t*);
 extern "C" void __imp__sub_82219488(PPCContext& __restrict, uint8_t*);
 extern "C" void __imp__sub_82224E78(PPCContext& __restrict, uint8_t*);
 extern "C" void __imp__sub_82404EF8(PPCContext& __restrict, uint8_t*);
+extern "C" void __imp__sub_822302E8(PPCContext& __restrict, uint8_t*);
 extern "C" void __imp__sub_82588030(PPCContext& __restrict, uint8_t*);
 extern "C" void __imp__sub_821F3390(PPCContext& __restrict, uint8_t*);
 extern "C" void __imp__sub_821EEA68(PPCContext& __restrict, uint8_t*);
@@ -1316,4 +1317,20 @@ REX_HOOK_RAW(sub_82588030) {
                 xerenge::LoadGuestU32(base, user + 0x680), xerenge::LoadGuestU32(base, user + 0x684));
   }
   __imp__sub_82588030(ctx, base);
+}
+
+// CB4PostNetworkRaceManager::Update: state 5 of the custom game (returning from a race) waits for it to return 2.
+REX_HOOK_RAW(sub_822302E8) {
+  static uint32_t last_state = 0xFFFF, last_ret = 0xFFFF;
+  const uint32_t self = ctx.r3.u32;
+  const uint32_t before = xerenge::LoadGuestU32(base, self);
+  __imp__sub_822302E8(ctx, base);
+  if (Online()) {
+    const uint32_t after = xerenge::LoadGuestU32(base, self), ret = ctx.r3.u32;
+    if (after != last_state || ret != last_ret || before != after) {
+      last_state = after;
+      last_ret = ret;
+      REXLOG_INFO("--online: PostNetworkRace update: state {} -> {}, returned {}", before, after, ret);
+    }
+  }
 }
