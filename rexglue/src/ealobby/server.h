@@ -34,6 +34,11 @@ struct Options {
   uint16_t lobby_port = 31861;
   // Where @dir sends clients. Empty: the address they reached the directory at.
   std::string advertise;
+  // Seamless multiplayer: the address this server is reached at by the other servers on the LAN. Non-empty
+  // turns it on - the games it hosts are announced on UDP beacon_port, and it can join its clients to games
+  // hosted by the others. Empty (the standalone server): off.
+  std::string self_address;
+  uint16_t beacon_port = 31859;
 };
 
 class Server {
@@ -49,7 +54,9 @@ class Server {
   void Stop();
 
  private:
-  enum class Role { kDirectory, kLobby };
+  // kPeer: a link between two servers (messages xhlo, xjoi, xfwd, xlea). kRemote: a player of another server,
+  // joined to a game hosted here; what is sent to it goes through its link.
+  enum class Role { kDirectory, kLobby, kPeer, kRemote };
 
   struct Connection {
     SocketHandle fd = -1;
@@ -63,6 +70,13 @@ class Server {
     std::string xuid;           // its XUID ("$" and hex), as it sent it
     std::string user_params;    // its player parameters (USERPARAMS) in its game
     uint32_t game = 0;          // the game it is in (IDENT), 0 for none
+    // A client of this server that joined a game hosted by another server: the link to it and the game.
+    SocketHandle remote_link = -1;
+    uint32_t remote_game = 0;
+    // kRemote: the link its messages come through and its id at the server it comes from.
+    SocketHandle link = -1;
+    uint32_t remote_id = 0;
+    std::string node;  // kPeer: the other server's address
     // When it was last sent anything: a quiet lobby connection is pinged.
     std::chrono::steady_clock::time_point last_sent = std::chrono::steady_clock::now();
     std::vector<uint8_t> in;
@@ -79,6 +93,28 @@ class Server {
   void HandleLobby(Connection& connection, const Message& message);
   void Send(Connection& connection, const std::vector<uint8_t>& bytes);
   void Log(const std::string& line) const;
+
+  // Seamless multiplayer (see Options::self_address).
+  struct RemoteGame {
+    std::string server;  // the address of the server that hosts it
+    Fields record;       // its +gam record: the host as its only player
+    std::chrono::steady_clock::time_point seen;
+  };
+  bool OpenBeacon();
+  void Announce();
+  void ReceiveBeacon();
+  void HandlePeer(Connection& link, const Message& message);
+  Connection* LinkTo(const std::string& server);
+  void ForwardToHost(Connection& client, const Message& message);
+  void DropRemote(Connection& client, bool tell_host);
+  void OnLinkClosed(SocketHandle link);
+  Connection* RemotePlayer(SocketHandle link, uint32_t id) const;
+  std::map<uint32_t, RemoteGame> remote_games_;
+  std::map<std::string, SocketHandle> links_;  // by the host server's address
+  SocketHandle beacon_ = -1;
+  SocketHandle next_virtual_ = -2;
+  uint32_t game_tag_ = 0;  // the server's part of a game id, so ids differ between servers
+  std::chrono::steady_clock::time_point next_announce_ = std::chrono::steady_clock::now();
 
   Options options_;
   LogFunction log_;

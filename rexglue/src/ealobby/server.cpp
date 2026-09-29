@@ -190,6 +190,41 @@ std::string RandomHex(size_t bytes) {
   return out;
 }
 
+std::string Hex(const uint8_t* data, size_t size) {
+  static const char digits[] = "0123456789abcdef";
+  std::string out;
+  out.reserve(size * 2);
+  for (size_t i = 0; i < size; ++i) {
+    out += digits[data[i] >> 4];
+    out += digits[data[i] & 0xF];
+  }
+  return out;
+}
+
+std::string Hex(const std::vector<uint8_t>& bytes) {
+  return Hex(bytes.data(), bytes.size());
+}
+
+std::string Hex(const std::string& text) {
+  return Hex(reinterpret_cast<const uint8_t*>(text.data()), text.size());
+}
+
+std::vector<uint8_t> Unhex(const std::string& text) {
+  const auto value = [](char c) { return c >= 'a' ? c - 'a' + 10 : c >= 'A' ? c - 'A' + 10 : c - '0'; };
+  std::vector<uint8_t> out;
+  for (size_t i = 0; i + 1 < text.size(); i += 2) {
+    out.push_back(uint8_t(value(text[i]) << 4 | value(text[i + 1])));
+  }
+  return out;
+}
+
+// Seamless multiplayer: a server announces the games it hosts as "XERENGE-GAME 1 <server> <game id> <hex of
+// its +gam record>" on UDP, to the broadcast address and to a multicast group (which also reaches the other
+// copies on the same machine).
+constexpr char kGameBeacon[] = "XERENGE-GAME 1 ";
+constexpr uint32_t kBeaconGroup = 0xEFFF4D4Du;  // 239.255.77.77
+constexpr auto kRemoteGameLifetime = std::chrono::seconds(4);
+
 }  // namespace
 
 Server::Server(Options options, LogFunction log) : options_(std::move(options)), log_(std::move(log)) {}
@@ -251,6 +286,15 @@ bool Server::Start() {
     Stop();
     return false;
   }
+  if (!options_.self_address.empty()) {
+    unsigned a = 0, b = 0, c = 0, d = 0;
+    if (std::sscanf(options_.self_address.c_str(), "%u.%u.%u.%u", &a, &b, &c, &d) == 4) {
+      game_tag_ = (d & 0xFFu) << 16;
+    }
+    if (!OpenBeacon()) {
+      Log("ealobby: no beacon socket; games on other servers will not be found");
+    }
+  }
   SetNonBlocking(ToNative(wake_[0]));
   running_ = true;
   thread_ = std::thread([this] { Run(); });
@@ -272,10 +316,12 @@ void Server::Stop() {
     thread_.join();
   }
   for (auto& [fd, connection] : connections_) {
-    CloseNative(ToNative(fd));
+    if (fd >= 0) {
+      CloseNative(ToNative(fd));
+    }
   }
   connections_.clear();
-  for (SocketHandle* fd : {&directory_listener_, &lobby_listener_, &wake_[0], &wake_[1]}) {
+  for (SocketHandle* fd : {&directory_listener_, &lobby_listener_, &beacon_, &wake_[0], &wake_[1]}) {
     if (*fd >= 0) {
       CloseNative(ToNative(*fd));
       *fd = -1;
@@ -289,7 +335,11 @@ void Server::Run() {
     fds.push_back(MakePollFd(wake_[0], POLLIN));
     fds.push_back(MakePollFd(directory_listener_, POLLIN));
     fds.push_back(MakePollFd(lobby_listener_, POLLIN));
+    fds.push_back(MakePollFd(beacon_, POLLIN));
     for (auto& [fd, connection] : connections_) {
+      if (connection->role == Role::kRemote) {
+        continue;
+      }
       fds.push_back(MakePollFd(fd, short(POLLIN | (connection->out.empty() ? 0 : POLLOUT))));
     }
     if (PollWait(fds, 1000) < 0) {
@@ -306,8 +356,11 @@ void Server::Run() {
     if (fds[2].revents & POLLIN) {
       Accept(lobby_listener_, Role::kLobby);
     }
+    if (beacon_ >= 0 && (fds[3].revents & POLLIN)) {
+      ReceiveBeacon();
+    }
     std::vector<SocketHandle> closed;
-    for (size_t i = 3; i < fds.size(); ++i) {
+    for (size_t i = 4; i < fds.size(); ++i) {
       auto found = connections_.find(static_cast<SocketHandle>(fds[i].fd));
       if (found == connections_.end()) {
         continue;
@@ -326,10 +379,21 @@ void Server::Run() {
     for (SocketHandle fd : closed) {
       if (Connection* gone = ConnectionFor(fd)) {
         gone->fd = fd;  // Receive() cleared it; LeaveGame removes the player by fd
-        LeaveGame(*gone);
+        if (gone->role == Role::kPeer) {
+          OnLinkClosed(fd);
+        } else {
+          if (gone->remote_link >= 0) {
+            DropRemote(*gone, true);
+          }
+          LeaveGame(*gone);
+        }
         gone->fd = -1;
       }
       connections_.erase(fd);
+    }
+    if (std::chrono::steady_clock::now() >= next_announce_) {
+      next_announce_ = std::chrono::steady_clock::now() + std::chrono::seconds(1);
+      Announce();
     }
     // DirtySock drops a lobby connection it has heard nothing on for 60 s
     // (LobbyApi ref+0x34, renewed by every message). EA's server kept it
@@ -418,12 +482,28 @@ void Server::Flush(Connection& connection) {
 }
 
 void Server::Send(Connection& connection, const std::vector<uint8_t>& bytes) {
+  if (connection.role == Role::kRemote) {
+    if (Connection* link = ConnectionFor(connection.link)) {
+      Fields forwarded;
+      forwarded["U"] = std::to_string(connection.remote_id);
+      forwarded["D"] = Hex(bytes);
+      Send(*link, Encode("xfwd", forwarded));
+    }
+    return;
+  }
   connection.last_sent = std::chrono::steady_clock::now();
   connection.out.insert(connection.out.end(), bytes.begin(), bytes.end());
   Flush(connection);
 }
 
 void Server::Handle(Connection& connection, const Message& message) {
+  if (connection.role == Role::kLobby && message.command == "xhlo") {
+    connection.role = Role::kPeer;
+  }
+  if (connection.role == Role::kPeer) {
+    HandlePeer(connection, message);
+    return;
+  }
   if (message.command == "~png") {
     // The answer to our keepalive (or the client's own): nothing to say back,
     // and every 20 s is too often to log.
@@ -465,6 +545,23 @@ void Server::HandleLobby(Connection& connection, const Message& message) {
   const auto PeerAddress = [](const Connection& c) {
     return !c.address.empty() ? c.address : c.peer.substr(0, c.peer.find(':'));
   };
+  // A client joined to a game another server hosts: what belongs to the game goes to that server, which
+  // answers as if the client were its own; anything else is this server's business as before.
+  if (connection.remote_link >= 0) {
+    if (message.command == "gset" || message.command == "gsta" || message.command == "mesg") {
+      ForwardToHost(connection, message);
+      return;
+    }
+    if (message.command == "glea" || message.command == "gdel") {
+      ForwardToHost(connection, message);
+      connection.remote_link = -1;
+      connection.remote_game = 0;
+      return;
+    }
+    if (message.command == "gjoi" || message.command == "gcre" || message.command == "gqwk") {
+      DropRemote(connection, true);
+    }
+  }
   if (message.command == "addr") {
     // The client's own address and port, as it sees them. Kept: it is the
     // address its peers reach it at, which the connection's own source (on
@@ -623,7 +720,7 @@ void Server::HandleLobby(Connection& connection, const Message& message) {
   if (message.command == "gcre") {
     LeaveGame(connection);
     Game game;
-    game.id = next_game_++;
+    game.id = game_tag_ | next_game_++;
     game.host = connection.user.empty() ? "Player" : connection.user;
     game.name = field("NAME", game.host);
     game.params = field("PARAMS", "");
@@ -655,6 +752,41 @@ void Server::HandleLobby(Connection& connection, const Message& message) {
           (ident.empty() && !by_name.empty() && (g.name == by_name || g.host == by_name))) {
         game = &g;
         break;
+      }
+    }
+    if (!game) {
+      // Not one of ours: a game another server announced.
+      for (const auto& [remote_id, remote] : remote_games_) {
+        const auto name = remote.record.find("NAME");
+        const auto host = remote.record.find("HOST");
+        const bool named = ident.empty() && !by_name.empty() &&
+                           ((name != remote.record.end() && name->second == by_name) ||
+                            (host != remote.record.end() && host->second == by_name));
+        if (!((!ident.empty() && std::to_string(remote_id) == ident) || named)) {
+          continue;
+        }
+        Connection* link = LinkTo(remote.server);
+        if (!link) {
+          Log("lobby: gjoi - cannot reach the server " + remote.server + " of game " + std::to_string(remote_id));
+          break;
+        }
+        DropRemote(connection, true);
+        LeaveGame(connection);
+        connection.remote_link = link->fd;
+        connection.remote_game = remote_id;
+        connection.user_params = field("USERPARAMS", connection.user_params);
+        Fields join;
+        join["U"] = std::to_string(connection.id);
+        join["NAME"] = connection.user;
+        join["ADDR"] = PeerAddress(connection);
+        join["MADDR"] = connection.maddr;
+        join["XUID"] = connection.xuid;
+        join["PEER"] = connection.peer;
+        join["USERPARAMS"] = connection.user_params;
+        join["D"] = Hex(Encode(message.command, message.body, message.code));
+        Log("lobby: " + connection.user + " joins game " + std::to_string(remote_id) + " on the server " + remote.server);
+        Send(*link, Encode("xjoi", join));
+        return;
       }
     }
     if (!game) {
@@ -775,18 +907,36 @@ void Server::HandleLobby(Connection& connection, const Message& message) {
     // Every game that fits the search masks, one '+gam' each, after the reply says how many.
     const unsigned long sys_mask = number(field("SYSMASK", "0")), sys_want = number(field("SYSFLAGS", "0"));
     const unsigned long cust_mask = number(field("CUSTMASK", "0")), cust_want = number(field("CUSTFLAGS", "0"));
-    std::vector<const Game*> found;
+    const auto fits = [&](unsigned long sys, unsigned long cust) {
+      return (sys & sys_mask) == (sys_want & sys_mask) && (cust & cust_mask) == (cust_want & cust_mask);
+    };
+    std::vector<Fields> found;
     for (const auto& [id, game] : games_) {
-      if ((number(game.sysflags) & sys_mask) == (sys_want & sys_mask) && (number(game.custflags) & cust_mask) == (cust_want & cust_mask)) {
-        found.push_back(&game);
+      if (fits(number(game.sysflags), number(game.custflags))) {
+        found.push_back(GameRecord(game, connection));
+      }
+    }
+    // The games other servers announced (a server not heard from lately is gone with its games).
+    const auto now = std::chrono::steady_clock::now();
+    for (const auto& [id, remote] : remote_games_) {
+      if (now - remote.seen > kRemoteGameLifetime) {
+        continue;
+      }
+      const auto field_of = [&](const char* key) {
+        const auto it = remote.record.find(key);
+        return it != remote.record.end() ? it->second : std::string();
+      };
+      const unsigned long players = number(field_of("COUNT")), room = number(field_of("MAXSIZE"));
+      if (fits(number(field_of("SYSFLAGS")), number(field_of("CUSTFLAGS"))) && players < room) {
+        Fields record = remote.record;
+        record["SELF"] = connection.user;
+        found.push_back(std::move(record));
       }
     }
     Fields reply;
     reply["COUNT"] = std::to_string(found.size());
     reply_with(reply);
-    for (const Game* found_game : found) {
-      const Game& game = *found_game;
-      const Fields record = GameRecord(game, connection);
+    for (const Fields& record : found) {
       Log("lobby -> +gam " + Printable(FormatFields(record)));
       Send(connection, Encode("+gam", record));
     }
@@ -940,6 +1090,313 @@ void Server::SendWho(Connection& connection) {
   who["RP"] = "0";
   Log("lobby -> +who " + Printable(FormatFields(who)));
   Send(connection, Encode("+who", who));
+}
+
+// ---- Seamless multiplayer -------------------------------------------------------------------------------
+//
+// Every server hosts the games of its own clients and announces them on the LAN. A client that joins a game
+// of another server stays connected to its own: this server opens a link to the host's ('xhlo'), asks it to
+// take the client as one of its players ('xjoi') and from then on carries what the client sends for the game
+// ('xfwd') to it and what it answers back. The host sees the player as a kRemote connection.
+
+bool Server::OpenBeacon() {
+  const NativeSocket s = socket(AF_INET, SOCK_DGRAM, 0);
+  if (s == kInvalidNativeSocket) {
+    return false;
+  }
+  const int yes = 1;
+  setsockopt(s, SOL_SOCKET, SO_REUSEADDR, reinterpret_cast<const char*>(&yes), sizeof(yes));
+#ifdef SO_REUSEPORT
+  // Every copy on one machine listens on the same port.
+  setsockopt(s, SOL_SOCKET, SO_REUSEPORT, reinterpret_cast<const char*>(&yes), sizeof(yes));
+#endif
+  setsockopt(s, SOL_SOCKET, SO_BROADCAST, reinterpret_cast<const char*>(&yes), sizeof(yes));
+  sockaddr_in at = {};
+  at.sin_family = AF_INET;
+  at.sin_port = htons(options_.beacon_port);
+  at.sin_addr.s_addr = htonl(INADDR_ANY);
+  if (bind(s, reinterpret_cast<sockaddr*>(&at), sizeof(at)) != 0) {
+    CloseNative(s);
+    return false;
+  }
+  ip_mreq group = {};
+  group.imr_multiaddr.s_addr = htonl(kBeaconGroup);
+  group.imr_interface.s_addr = htonl(INADDR_ANY);
+  setsockopt(s, IPPROTO_IP, IP_ADD_MEMBERSHIP, reinterpret_cast<const char*>(&group), sizeof(group));
+  const int loop = 1;
+  setsockopt(s, IPPROTO_IP, IP_MULTICAST_LOOP, reinterpret_cast<const char*>(&loop), sizeof(loop));
+  SetNonBlocking(s);
+  beacon_ = FromNative(s);
+  return true;
+}
+
+void Server::Announce() {
+  const auto now = std::chrono::steady_clock::now();
+  for (auto it = remote_games_.begin(); it != remote_games_.end();) {
+    it = now - it->second.seen > kRemoteGameLifetime ? remote_games_.erase(it) : std::next(it);
+  }
+  if (beacon_ < 0) {
+    return;
+  }
+  for (const auto& [id, game] : games_) {
+    if (game.players.empty()) {
+      continue;
+    }
+    // Only the games a client of this server hosts; one that has moved to a remote player is not announced.
+    const Connection* host = ConnectionFor(game.players.front());
+    if (!host || host->role != Role::kLobby) {
+      continue;
+    }
+    Game shown = game;
+    shown.players = {game.players.front()};
+    Fields record = GameRecord(shown, *host);
+    record["COUNT"] = std::to_string(game.players.size());
+    record["NUMPART"] = std::to_string(game.players.size());
+    record.erase("SELF");
+    const std::string datagram = std::string(kGameBeacon) + options_.self_address + " " +
+                                 std::to_string(id) + " " + Hex(FormatFields(record));
+    for (const uint32_t to_address : {htonl(INADDR_BROADCAST), htonl(kBeaconGroup)}) {
+      sockaddr_in to = {};
+      to.sin_family = AF_INET;
+      to.sin_port = htons(options_.beacon_port);
+      to.sin_addr.s_addr = to_address;
+      sendto(ToNative(beacon_), datagram.data(), static_cast<int>(datagram.size()), 0,
+             reinterpret_cast<sockaddr*>(&to), sizeof(to));
+    }
+  }
+}
+
+void Server::ReceiveBeacon() {
+  for (;;) {
+    char in[2048];
+    sockaddr_in from = {};
+    SockLen from_length = sizeof(from);
+    const auto got = recvfrom(ToNative(beacon_), in, sizeof(in) - 1, 0,
+                              reinterpret_cast<sockaddr*>(&from), &from_length);
+    if (got <= 0) {
+      return;
+    }
+    in[got] = '\0';
+    const size_t prefix = sizeof(kGameBeacon) - 1;
+    if (static_cast<size_t>(got) <= prefix || std::memcmp(in, kGameBeacon, prefix) != 0) {
+      continue;
+    }
+    char server[64] = {};
+    unsigned long id = 0;
+    char blob[2000] = {};
+    if (std::sscanf(in + prefix, "%63s %lu %1999s", server, &id, blob) != 3) {
+      continue;
+    }
+    if (options_.self_address == server) {
+      continue;
+    }
+    const std::vector<uint8_t> bytes = Unhex(blob);
+    RemoteGame remote;
+    remote.server = server;
+    remote.record = ParseFields(std::string(bytes.begin(), bytes.end()));
+    remote.seen = std::chrono::steady_clock::now();
+    const bool fresh = remote_games_.find(static_cast<uint32_t>(id)) == remote_games_.end();
+    remote_games_[static_cast<uint32_t>(id)] = std::move(remote);
+    if (fresh) {
+      Log("federation: game " + std::to_string(id) + " on the server " + server);
+    }
+  }
+}
+
+Server::Connection* Server::LinkTo(const std::string& server) {
+  if (auto found = links_.find(server); found != links_.end()) {
+    if (Connection* link = ConnectionFor(found->second); link && link->fd >= 0) {
+      return link;
+    }
+    links_.erase(found);
+  }
+  const NativeSocket s = socket(AF_INET, SOCK_STREAM, 0);
+  if (s == kInvalidNativeSocket) {
+    return nullptr;
+  }
+  sockaddr_in to = {};
+  to.sin_family = AF_INET;
+  to.sin_port = htons(options_.lobby_port);
+  if (inet_pton(AF_INET, server.c_str(), &to.sin_addr) != 1) {
+    CloseNative(s);
+    return nullptr;
+  }
+  SetNonBlocking(s);
+  if (connect(s, reinterpret_cast<sockaddr*>(&to), sizeof(to)) != 0) {
+    const int code = LastSocketError();
+#ifdef _WIN32
+    const bool in_progress = WouldBlock(code);
+#else
+    const bool in_progress = code == EINPROGRESS || WouldBlock(code);
+#endif
+    if (!in_progress) {
+      CloseNative(s);
+      return nullptr;
+    }
+    // A LAN connect is over in a moment; an unreachable server holds the lobby up for a second at most.
+    std::vector<PollFd> wait{MakePollFd(FromNative(s), POLLOUT)};
+    int error = 0;
+    SockLen error_length = sizeof(error);
+    if (PollWait(wait, 1000) <= 0 ||
+        getsockopt(s, SOL_SOCKET, SO_ERROR, reinterpret_cast<char*>(&error), &error_length) != 0 ||
+        error != 0) {
+      CloseNative(s);
+      return nullptr;
+    }
+  }
+  const int yes = 1;
+  setsockopt(s, IPPROTO_TCP, TCP_NODELAY, reinterpret_cast<const char*>(&yes), sizeof(yes));
+  auto link = std::make_unique<Connection>();
+  link->fd = FromNative(s);
+  link->role = Role::kPeer;
+  link->node = server;
+  link->peer = server + ":" + std::to_string(options_.lobby_port);
+  link->local_address = options_.self_address;
+  Connection& stored = *link;
+  connections_[stored.fd] = std::move(link);
+  links_[server] = stored.fd;
+  Log("federation: link to the server " + server);
+  Send(stored, Encode("xhlo", Fields{{"NODE", options_.self_address}}));
+  return &stored;
+}
+
+Server::Connection* Server::RemotePlayer(SocketHandle link, uint32_t id) const {
+  for (const auto& [fd, connection] : connections_) {
+    if (connection->role == Role::kRemote && connection->link == link && connection->remote_id == id) {
+      return connection.get();
+    }
+  }
+  return nullptr;
+}
+
+void Server::ForwardToHost(Connection& client, const Message& message) {
+  Connection* link = ConnectionFor(client.remote_link);
+  if (!link) {
+    DropRemote(client, false);
+    return;
+  }
+  Fields forwarded;
+  forwarded["U"] = std::to_string(client.id);
+  forwarded["D"] = Hex(Encode(message.command, message.body, message.code));
+  Send(*link, Encode("xfwd", forwarded));
+}
+
+void Server::DropRemote(Connection& client, bool tell_host) {
+  if (tell_host) {
+    if (Connection* link = ConnectionFor(client.remote_link)) {
+      Send(*link, Encode("xlea", Fields{{"U", std::to_string(client.id)}}));
+    }
+  }
+  client.remote_link = -1;
+  client.remote_game = 0;
+}
+
+void Server::OnLinkClosed(SocketHandle link) {
+  for (auto it = links_.begin(); it != links_.end();) {
+    it = it->second == link ? links_.erase(it) : std::next(it);
+  }
+  // Players that came through this link are gone from the games hosted here.
+  std::vector<SocketHandle> gone;
+  for (const auto& [fd, connection] : connections_) {
+    if (connection->role == Role::kRemote && connection->link == link) {
+      gone.push_back(fd);
+    }
+  }
+  for (SocketHandle fd : gone) {
+    if (Connection* player = ConnectionFor(fd)) {
+      player->link = -1;
+      LeaveGame(*player);
+    }
+    connections_.erase(fd);
+  }
+  // Clients of this server whose game was hosted at the other end: the game is gone.
+  for (const auto& [fd, connection] : connections_) {
+    if (connection->role == Role::kLobby && connection->remote_link == link) {
+      Log("federation: the server of " + connection->user + "'s game is gone");
+      connection->remote_link = -1;
+      connection->remote_game = 0;
+      connection->game = 0;
+      Send(*connection, Encode("+mgm", Fields{{"IDENT", "0"}, {"NAME", ""}, {"HOST", ""}, {"COUNT", "0"}}));
+      SendWho(*connection);
+    }
+  }
+}
+
+void Server::HandlePeer(Connection& link, const Message& message) {
+  const Fields fields = ParseFields(message.body);
+  const auto field = [&](const char* key) {
+    const auto it = fields.find(key);
+    return it != fields.end() ? it->second : std::string();
+  };
+  if (message.command == "xhlo") {
+    link.node = field("NODE");
+    Log("federation: link from the server " + link.node);
+    return;
+  }
+  const uint32_t id = static_cast<uint32_t>(std::strtoul(field("U").c_str(), nullptr, 10));
+  const std::vector<uint8_t> bytes = Unhex(field("D"));
+
+  // The host end: the client's own messages, run as if it were connected here.
+  const auto run = [&](Connection& player) {
+    std::vector<uint8_t> buffer = bytes;
+    Message inner;
+    while (TakeMessage(&buffer, &inner)) {
+      Log("lobby <- (" + player.user + " via " + link.node + ") " + Printable(inner.command) + " " +
+          Printable(inner.body));
+      HandleLobby(player, inner);
+      if (inner.command == "glea" || inner.command == "gdel") {
+        const SocketHandle left = player.fd;
+        connections_.erase(left);
+        return;
+      }
+    }
+  };
+  if (message.command == "xjoi") {
+    if (const Connection* old = RemotePlayer(link.fd, id)) {
+      const SocketHandle old_fd = old->fd;
+      LeaveGame(*connections_[old_fd]);
+      connections_.erase(old_fd);
+    }
+    auto player = std::make_unique<Connection>();
+    player->fd = next_virtual_--;
+    player->role = Role::kRemote;
+    player->link = link.fd;
+    player->remote_id = id;
+    player->id = id;
+    player->user = field("NAME");
+    player->address = field("ADDR");
+    player->maddr = field("MADDR");
+    player->xuid = field("XUID");
+    player->peer = field("PEER");
+    player->user_params = field("USERPARAMS");
+    player->local_address = link.local_address;
+    Connection& stored = *player;
+    connections_[stored.fd] = std::move(player);
+    Log("federation: " + stored.user + " of the server " + link.node + " joins");
+    run(stored);
+    return;
+  }
+  if (message.command == "xlea") {
+    if (Connection* player = RemotePlayer(link.fd, id)) {
+      const SocketHandle fd = player->fd;
+      LeaveGame(*player);
+      connections_.erase(fd);
+    }
+    return;
+  }
+  if (message.command == "xfwd") {
+    if (Connection* player = RemotePlayer(link.fd, id)) {
+      run(*player);
+      return;
+    }
+    // The client's end: what the host answers goes to the client as it is.
+    for (const auto& [fd, connection] : connections_) {
+      if (connection->role == Role::kLobby && connection->id == id) {
+        Send(*connection, bytes);
+        return;
+      }
+    }
+  }
 }
 
 }  // namespace ealobby
