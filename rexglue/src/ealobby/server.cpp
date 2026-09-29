@@ -16,6 +16,7 @@
 #endif
 
 #include <cerrno>
+#include <cstdlib>
 #include <cstdio>
 #include <cstring>
 #include <random>
@@ -324,7 +325,9 @@ void Server::Run() {
     }
     for (SocketHandle fd : closed) {
       if (Connection* gone = ConnectionFor(fd)) {
+        gone->fd = fd;  // Receive() cleared it; LeaveGame removes the player by fd
         LeaveGame(*gone);
+        gone->fd = -1;
       }
       connections_.erase(fd);
     }
@@ -639,6 +642,9 @@ void Server::HandleLobby(Connection& connection, const Message& message) {
     SendWho(connection);
     return;
   }
+  // SYSFLAGS 0x1000 is set by LockGame at the start of a race: such a game is not found and cannot be joined.
+  const auto number = [](const std::string& text) { return std::strtoul(text.c_str(), nullptr, 10); };
+  const auto locked = [&](const Game& g) { return (number(g.sysflags) & 0x1000) != 0; };
   if (message.command == "gjoi") {
     // By IDENT, or by the host's name (NAME/USER).
     Game* game = nullptr;
@@ -653,6 +659,11 @@ void Server::HandleLobby(Connection& connection, const Message& message) {
     }
     if (!game) {
       Log("lobby: gjoi - no such game");
+      Send(connection, Encode(message.command, Fields{}, "gjnf"));
+      return;
+    }
+    if (locked(*game) && connection.game != game->id) {
+      Log("lobby: gjoi - game " + std::to_string(game->id) + " is locked (race in progress)");
       Send(connection, Encode(message.command, Fields{}, "gjnf"));
       return;
     }
@@ -671,7 +682,7 @@ void Server::HandleLobby(Connection& connection, const Message& message) {
     // Quick match: the first open game with room, or none.
     Game* game = nullptr;
     for (auto& [id, g] : games_) {
-      if (id != connection.game && std::stoi(g.maxsize.empty() ? "0" : g.maxsize) >
+      if (id != connection.game && !locked(g) && std::stoi(g.maxsize.empty() ? "0" : g.maxsize) >
                                        static_cast<int>(g.players.size())) {
         game = &g;
         break;
@@ -705,6 +716,35 @@ void Server::HandleLobby(Connection& connection, const Message& message) {
       return;
     }
     Game& game = it->second;
+    // The host's "kick player": KICK names the player. The game finds it was kicked when its own name is
+    // missing from the game's player list (CGtLobbyDirtySock::CheckForPlayerKicked), and shows "kicked" instead
+    // of "removed" if a message with flag bit 29 ("2") came first.
+    const std::string kick = field("KICK", "");
+    if (!kick.empty()) {
+      Connection* target = nullptr;
+      for (SocketHandle fd : game.players) {
+        Connection* player = ConnectionFor(fd);
+        if (player && player != &connection && player->user == kick) {
+          target = player;
+          break;
+        }
+      }
+      if (target) {
+        Fields push;
+        push["N"] = connection.user;
+        push["T"] = target->user;
+        push["F"] = "2";
+        Log("lobby: kick " + target->user + " out of game " + std::to_string(game.id));
+        Send(*target, Encode("+msg", push));
+        LeaveGame(*target);
+        Send(*target, Encode("+mgm", Fields{{"IDENT", "0"}, {"NAME", ""}, {"HOST", ""}, {"COUNT", "0"}}));
+        SendWho(*target);
+      } else {
+        Log("lobby: kick " + kick + " - not in the game");
+      }
+      reply_with(GameRecord(game, connection));
+      return;
+    }
     game.name = field("NAME", game.name);
     game.params = field("PARAMS", game.params);
     game.custflags = field("CUSTFLAGS", game.custflags);
@@ -732,14 +772,44 @@ void Server::HandleLobby(Connection& connection, const Message& message) {
     return;
   }
   if (message.command == "gsea") {
-    // Every open game, one '+gam' each, after the reply says how many.
-    Fields reply;
-    reply["COUNT"] = std::to_string(games_.size());
-    reply_with(reply);
+    // Every game that fits the search masks, one '+gam' each, after the reply says how many.
+    const unsigned long sys_mask = number(field("SYSMASK", "0")), sys_want = number(field("SYSFLAGS", "0"));
+    const unsigned long cust_mask = number(field("CUSTMASK", "0")), cust_want = number(field("CUSTFLAGS", "0"));
+    std::vector<const Game*> found;
     for (const auto& [id, game] : games_) {
+      if ((number(game.sysflags) & sys_mask) == (sys_want & sys_mask) && (number(game.custflags) & cust_mask) == (cust_want & cust_mask)) {
+        found.push_back(&game);
+      }
+    }
+    Fields reply;
+    reply["COUNT"] = std::to_string(found.size());
+    reply_with(reply);
+    for (const Game* found_game : found) {
+      const Game& game = *found_game;
       const Fields record = GameRecord(game, connection);
       Log("lobby -> +gam " + Printable(FormatFields(record)));
       Send(connection, Encode("+gam", record));
+    }
+    return;
+  }
+  if (message.command == "mesg") {
+    // A message to the other players of the sender's game (the host's start-of-race launch goes this way).
+    reply_with(Fields{});
+    auto it = games_.find(connection.game);
+    if (it != games_.end()) {
+      Fields push;
+      // The client reads single-letter fields: N sender, T text, F flag letters ("0" = bit 27, a game message).
+      push["N"] = connection.user;
+      push["T"] = field("TEXT", "");
+      push["F"] = field("ATTR", "0");  // the sender's flag letters go through as they are ("GN0" game message, the kick letters)
+      const std::string private_to = field("PRIV", "");
+      for (SocketHandle fd : it->second.players) {
+        Connection* player = ConnectionFor(fd);
+        if (player && player != &connection && (private_to.empty() || player->user == private_to)) {
+          Log("lobby -> +msg to " + player->user + " " + Printable(FormatFields(push)));
+          Send(*player, Encode("+msg", push));
+        }
+      }
     }
     return;
   }
@@ -784,7 +854,14 @@ Fields Server::GameRecord(const Game& game, const Connection& to) const {
       continue;
     }
     const std::string n = std::to_string(count++);
-    record["OPID" + n] = std::to_string(player->id);
+    {
+      // The game finds a remote player in its manager by the id ConnApi gave it: the first four gamertag characters.
+      uint32_t opid = 0;
+      for (size_t i = 0; i < 4; ++i) {
+        opid = (opid << 8) | (i < player->user.size() ? uint8_t(player->user[i]) : 0);
+      }
+      record["OPID" + n] = std::to_string(opid);
+    }
     record["OPPO" + n] = player->user;
     record["ADDR" + n] = address(*player);
     record["LADDR" + n] = address(*player);

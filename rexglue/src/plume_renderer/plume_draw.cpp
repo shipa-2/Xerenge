@@ -1906,6 +1906,17 @@ bool CaptureGuestVideoFrame(GuestDrawSnapshot* snap, memory::Memory* memory) {
   const auto y_fetch = TextureFetchAt(*snap, 0);
   const auto u_fetch = TextureFetchAt(*snap, 1);
   const auto v_fetch = TextureFetchAt(*snap, 2);
+  {
+    static uint32_t last_dwords[12] = {};
+    const uint32_t now_dwords[12] = {y_fetch.dword_0, y_fetch.dword_1, y_fetch.dword_2, y_fetch.dword_3, y_fetch.dword_4, y_fetch.dword_5,
+                                     u_fetch.dword_0, u_fetch.dword_1, u_fetch.dword_2, u_fetch.dword_3, u_fetch.dword_4, u_fetch.dword_5};
+    if (std::memcmp(last_dwords, now_dwords, sizeof(now_dwords)) != 0) {
+      std::memcpy(last_dwords, now_dwords, sizeof(now_dwords));
+      REXLOG_INFO("plume: video fetch constants changed: Y {:08X} {:08X} {:08X} {:08X} {:08X} {:08X}  U {:08X} {:08X} {:08X} {:08X} {:08X} {:08X}",
+                  now_dwords[0], now_dwords[1], now_dwords[2], now_dwords[3], now_dwords[4], now_dwords[5],
+                  now_dwords[6], now_dwords[7], now_dwords[8], now_dwords[9], now_dwords[10], now_dwords[11]);
+    }
+  }
   if (y_fetch.type != FetchConstantType::kTexture || y_fetch.base_address == 0 ||
       !IsLumaFormat(y_fetch.format)) {
     return false;

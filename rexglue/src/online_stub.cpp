@@ -65,6 +65,61 @@ extern "C" void __imp__sub_8240D398(PPCContext& __restrict, uint8_t*);
 extern "C" void __imp__sub_8240C908(PPCContext& __restrict, uint8_t*);
 extern "C" void __imp__sub_82366CF8(PPCContext& __restrict, uint8_t*);
 extern "C" void __imp__sub_82587A88(PPCContext& __restrict, uint8_t*);
+extern "C" void __imp__sub_825BE2F0(PPCContext& __restrict, uint8_t*);
+extern "C" void __imp__sub_82415E48(PPCContext& __restrict, uint8_t*);
+extern "C" void __imp__sub_825BEB58(PPCContext& __restrict, uint8_t*);
+extern "C" void __imp__sub_82203D10(PPCContext& __restrict, uint8_t*);
+extern "C" void __imp__sub_82230C10(PPCContext& __restrict, uint8_t*);
+extern "C" void __imp__sub_822216C8(PPCContext& __restrict, uint8_t*);
+extern "C" void __imp__sub_82368400(PPCContext& __restrict, uint8_t*);
+extern "C" void __imp__sub_82365758(PPCContext& __restrict, uint8_t*);
+extern "C" void __imp__sub_823729E8(PPCContext& __restrict, uint8_t*);
+extern "C" void __imp__sub_823610F8(PPCContext& __restrict, uint8_t*);
+extern "C" void __imp__sub_82371478(PPCContext& __restrict, uint8_t*);
+extern "C" void __imp__sub_82371300(PPCContext& __restrict, uint8_t*);
+extern "C" void __imp__sub_82370F60(PPCContext& __restrict, uint8_t*);
+extern "C" void __imp__sub_8222A508(PPCContext& __restrict, uint8_t*);
+extern "C" void __imp__sub_82365C40(PPCContext& __restrict, uint8_t*);
+extern "C" void __imp__sub_82370EA0(PPCContext& __restrict, uint8_t*);
+extern "C" void __imp__sub_8221C6B8(PPCContext& __restrict, uint8_t*);
+extern "C" void __imp__sub_8221C670(PPCContext& __restrict, uint8_t*);
+extern "C" void __imp__sub_8236C060(PPCContext& __restrict, uint8_t*);
+extern "C" void __imp__sub_823648A8(PPCContext& __restrict, uint8_t*);
+extern "C" void __imp__sub_8221C478(PPCContext& __restrict, uint8_t*);
+extern "C" void __imp__sub_82219488(PPCContext& __restrict, uint8_t*);
+extern "C" void __imp__sub_82224E78(PPCContext& __restrict, uint8_t*);
+extern "C" void __imp__sub_82404EF8(PPCContext& __restrict, uint8_t*);
+extern "C" void __imp__sub_82588030(PPCContext& __restrict, uint8_t*);
+extern "C" void __imp__sub_821F3390(PPCContext& __restrict, uint8_t*);
+extern "C" void __imp__sub_821EEA68(PPCContext& __restrict, uint8_t*);
+extern "C" void __imp__sub_82368590(PPCContext& __restrict, uint8_t*);
+extern "C" void __imp__sub_8236FED0(PPCContext& __restrict, uint8_t*);
+extern "C" void __imp__sub_8222EAC8(PPCContext& __restrict, uint8_t*);
+extern "C" void __imp__sub_8222E8F8(PPCContext& __restrict, uint8_t*);
+extern "C" void __imp__sub_82367CF0(PPCContext& __restrict, uint8_t*);
+extern "C" void __imp__sub_822185D8(PPCContext& __restrict, uint8_t*);
+extern "C" void __imp__sub_82220EF8(PPCContext& __restrict, uint8_t*);
+extern "C" void __imp__sub_823667E0(PPCContext& __restrict, uint8_t*);
+extern "C" void __imp__sub_8259D2A0(PPCContext& __restrict, uint8_t*);
+extern "C" void __imp__sub_8221B010(PPCContext& __restrict, uint8_t*);
+extern "C" void __imp__sub_8221B1E8(PPCContext& __restrict, uint8_t*);
+extern "C" void __imp__sub_8221A220(PPCContext& __restrict, uint8_t*);
+extern "C" void __imp__sub_8222A2C8(PPCContext& __restrict, uint8_t*);
+extern "C" void __imp__sub_82372638(PPCContext& __restrict, uint8_t*);
+extern "C" void __imp__sub_82587570(PPCContext& __restrict, uint8_t*);
+extern "C" void __imp__sub_8221C328(PPCContext& __restrict, uint8_t*);
+extern "C" void __imp__sub_822162D0(PPCContext& __restrict, uint8_t*);
+extern "C" void __imp__sub_82214E88(PPCContext& __restrict, uint8_t*);
+extern "C" void __imp__sub_82218098(PPCContext& __restrict, uint8_t*);
+extern "C" void __imp__sub_82230800(PPCContext& __restrict, uint8_t*);
+extern "C" void __imp__sub_82365D60(PPCContext& __restrict, uint8_t*);
+extern "C" void __imp__sub_82365698(PPCContext& __restrict, uint8_t*);
+extern "C" void __imp__sub_8221BE38(PPCContext& __restrict, uint8_t*);
+extern "C" void __imp__sub_8236D920(PPCContext& __restrict, uint8_t*);
+extern "C" void __imp__sub_8222EAC8(PPCContext& __restrict, uint8_t*);
+extern "C" void __imp__sub_8236DE80(PPCContext& __restrict, uint8_t*);
+extern "C" void __imp__sub_825BF2B8(PPCContext& __restrict, uint8_t*);
+extern "C" void __imp__sub_825BF3E8(PPCContext& __restrict, uint8_t*);
 extern "C" void __imp__sub_82366F78(PPCContext& __restrict, uint8_t*);
 extern "C" void __imp__sub_8236C700(PPCContext& __restrict, uint8_t*);
 extern "C" void __imp__sub_821E6928(PPCContext& __restrict, uint8_t*);
@@ -565,12 +620,250 @@ REX_HOOK_RAW(sub_82587A88) {
                              xerenge::LoadGuestU32(base, api + 0x2A0)};
     if (std::memcmp(now, last, sizeof(now)) != 0) {
       std::memcpy(last, now, sizeof(now));
-      REXLOG_INFO("--online: ConnApi {:08X} state {} mangle state {} clients {} +a8 {} client0 {} client1 {}", api,
+      REXLOG_INFO("--online: ConnApi {:08X} state {} mangle state {} clients {} +a8 {} client0 {} client1 {} callback {:08X} user {:08X}", api,
                   int32_t(now[0]), int32_t(now[1]), int32_t(now[2]), int32_t(now[3]),
-                  int32_t(now[4]), int32_t(now[5]));
+                  int32_t(now[4]), int32_t(now[5]), xerenge::LoadGuestU32(base, api), xerenge::LoadGuestU32(base, api + 4));
     }
   }
   __imp__sub_82587A88(ctx, base);
+}
+
+// CommUDP (the game's peer link): its idle callback, run by the socket layer,
+// and Connect/Listen with the address string they are given.
+REX_HOOK_RAW(sub_82230C10) {
+  const uint32_t self = ctx.r3.u32;
+  const uint32_t before = Online() ? *xerenge::GuestPointer(base, self + 0xC) : 0;
+  __imp__sub_82230C10(ctx, base);
+  if (Online()) {
+    {
+      static std::string lastNat;
+      const uint32_t nm = 0x82A66880;
+      const int32_t count = int32_t(xerenge::LoadGuestU32(base, nm + 0x38));
+      std::string s = "count " + std::to_string(count);
+      for (int i = 0; i < count && i < 8; ++i) {
+        PPCContext c = ctx;
+        c.r3.u32 = nm + 0x18;
+        c.r4.u32 = uint32_t(i);
+        __imp__sub_82365758(c, base);
+        const uint32_t p = c.r3.u32;
+        s += " p" + std::to_string(i) + "=" + (p ? std::to_string(int32_t(xerenge::LoadGuestU32(base, p + 0x4B4))) : std::string("null"));
+      }
+      if (s != lastNat) {
+        REXLOG_INFO("--online: NAT data: {}", s);
+        lastNat = s;
+      }
+    }
+    static uint32_t lastState = 0xFFFF, lastRet = 0xFFFF;
+    const uint32_t after = *xerenge::GuestPointer(base, self + 0xC);
+    if (before != lastState || ctx.r3.u32 != lastRet) {
+      REXLOG_INFO("--online: PreLaunch update: state {} -> {}, returned {}", before, after, ctx.r3.u32);
+      lastState = before;
+      lastRet = ctx.r3.u32;
+    }
+  }
+}
+
+REX_HOOK_RAW(sub_822216C8) {
+  __imp__sub_822216C8(ctx, base);
+  if (Online()) {
+    static int lastIdle = -1;
+    const int now = ctx.r3.u32 & 0xFF;
+    if (now != lastIdle) {
+      REXLOG_INFO("--online: PreLaunch LobbyIdle -> {}", now);
+      lastIdle = now;
+    }
+  }
+}
+
+REX_HOOK_RAW(sub_82368400) {
+  __imp__sub_82368400(ctx, base);
+  if (Online()) {
+    static int lastFlag = -1;
+    const int now = ctx.r3.u32 & 0xFF;
+    if (now != lastFlag) {
+      REXLOG_INFO("--online: lobby flag d09 -> {}", now);
+      lastFlag = now;
+    }
+  }
+}
+
+REX_HOOK_RAW(sub_8236D920) {
+  __imp__sub_8236D920(ctx, base);
+  if (Online()) REXLOG_INFO("--online: DirtySock JoinGame returned {}", int32_t(ctx.r3.u32));
+}
+
+REX_HOOK_RAW(sub_8222EAC8) {
+  if (Online()) REXLOG_INFO("--online: lobby event callback ok={} r4={:08X} event={} r6={:08X}", ctx.r3.u32 & 0xFF, ctx.r4.u32, ctx.r5.u32, ctx.r6.u32);
+  if (Online()) REXLOG_INFO("--online: registered UI callback {:08X} ctx {:08X}", xerenge::LoadGuestU32(base, ctx.r4.u32 + 0x3CB20), xerenge::LoadGuestU32(base, ctx.r4.u32 + 0x3CB24));
+  __imp__sub_8222EAC8(ctx, base);
+}
+
+REX_HOOK_RAW(sub_8221BE38) {
+  const uint32_t lr = uint32_t(ctx.lr);
+  __imp__sub_8221BE38(ctx, base);
+  if (Online()) {
+    static int last = -99;
+    const int now = int32_t(ctx.r3.u32);
+    if (now != last) {
+      REXLOG_INFO("--online: lobby status -> {} (from {:08X})", now, lr);
+      last = now;
+    }
+  }
+}
+
+REX_HOOK_RAW(sub_82230800) {
+  const uint32_t mm = ctx.r3.u32;
+  const uint32_t before = *xerenge::GuestPointer(base, mm + 0x6C);
+  __imp__sub_82230800(ctx, base);
+  if (Online()) {
+    static uint32_t lastB = 999, lastR = 999;
+    const uint32_t ret = ctx.r3.u32;
+    if (before != lastB || ret != lastR) {
+      REXLOG_INFO("--online: MatchMaking update: state {} -> {}, returned {}, flag185f {}", before, *xerenge::GuestPointer(base, mm + 0x6C), ret, *xerenge::GuestPointer(base, 0x82A66880 + 0x185F));
+      lastB = before; lastR = ret;
+    }
+  }
+}
+
+REX_HOOK_RAW(sub_82365D60) {
+  const uint32_t lr = uint32_t(ctx.lr);
+  __imp__sub_82365D60(ctx, base);
+  if (Online() && lr == 0x82230990) {
+    static int last = -1; const int now = ctx.r3.u32 & 0xFF;
+    if (now != last) { REXLOG_INFO("--online: MatchMaking check 82365D60 -> {}", now); last = now; }
+  }
+}
+
+REX_HOOK_RAW(sub_82365698) {
+  const uint32_t lr = uint32_t(ctx.lr);
+  __imp__sub_82365698(ctx, base);
+  if (Online() && lr == 0x822309A4) {
+    static int last = -99; const int now = int32_t(ctx.r3.u32);
+    if (now != last) { REXLOG_INFO("--online: MatchMaking check 82365698 -> {}", now); last = now; }
+  }
+}
+
+REX_HOOK_RAW(sub_82218098) {
+  if (Online()) {
+    const uint32_t pop = xerenge::LoadGuestU32(base, 0x82A59E98 + 4);
+    const uint32_t hi = pop ? xerenge::LoadGuestU32(base, pop + 8) : 0;
+    const uint32_t lo = pop ? xerenge::LoadGuestU32(base, pop + 12) : 0;
+    REXLOG_INFO("--online: OnMatchmakingFinished ok={} state {:08X} popup {:08X} id {:08X}{:08X} (want 94413E560E367D57)", ctx.r3.u32 & 0xFF, ctx.r4.u32, pop, hi, lo);
+  }
+  __imp__sub_82218098(ctx, base);
+}
+
+REX_HOOK_RAW(sub_822162D0) {
+  if (Online()) {
+    const uint32_t s = ctx.r3.u32;
+    REXLOG_INFO("--online: GameState dispatch: 395={} 396={} 398={} 39d={} 39e={} from {:08X}", *xerenge::GuestPointer(base, s + 0x395), *xerenge::GuestPointer(base, s + 0x396), *xerenge::GuestPointer(base, s + 0x398), *xerenge::GuestPointer(base, s + 0x39D), *xerenge::GuestPointer(base, s + 0x39E), uint32_t(ctx.lr));
+  }
+  __imp__sub_822162D0(ctx, base);
+}
+
+REX_HOOK_RAW(sub_82214E88) {
+  if (Online()) REXLOG_INFO("--online: ShowInGameScreen from {:08X}", uint32_t(ctx.lr));
+  __imp__sub_82214E88(ctx, base);
+}
+
+REX_HOOK_RAW(sub_8221C328) {
+  static bool once = false;
+  if (!once && Online()) {
+    once = true;
+    const uint32_t vt = xerenge::LoadGuestU32(base, ctx.r3.u32 + 0xB50);
+    REXLOG_INFO("--online: DirtySock vtable {:08X} slot fc {:08X} slot 10c {:08X}", vt, xerenge::LoadGuestU32(base, vt + 0xFC), xerenge::LoadGuestU32(base, vt + 0x10C));
+  }
+  const uint32_t self = ctx.r3.u32;
+  const uint32_t lr = uint32_t(ctx.lr);
+  __imp__sub_8221C328(ctx, base);
+  if (Online()) {
+    static uint32_t last = 999;
+    const uint32_t now = ctx.r3.u32 & 0xFF;
+    if (now != last) {
+      REXLOG_INFO("--online: 8221C328 -> {} (cb01 {} cb02 {} pm70 {} pm68 {}) from {:08X}", now, *xerenge::GuestPointer(base, self + 0x3CB01), *xerenge::GuestPointer(base, self + 0x3CB02), xerenge::LoadGuestU32(base, self + 0x18 + 0x70), xerenge::LoadGuestU32(base, self + 0x18 + 0x68), lr);
+      last = now;
+    }
+  }
+}
+
+REX_HOOK_RAW(sub_82203D10) {
+  if (Online()) REXLOG_WARN("--online: game leaves the session (UI leave), from {:08X}", uint32_t(ctx.lr));
+  __imp__sub_82203D10(ctx, base);
+}
+
+REX_HOOK_RAW(sub_8236DE80) {
+  if (Online()) REXLOG_WARN("--online: LeaveGame, from {:08X}", uint32_t(ctx.lr));
+  __imp__sub_8236DE80(ctx, base);
+}
+
+REX_HOOK_RAW(sub_825BEB58) {
+  static int calls = 0;
+  if (Online() && (++calls <= 5 || calls % 20 == 0)) {
+    REXLOG_INFO("--online: CommUDP idle callback, call {} skipped {} lock owner {:08X} count {} flag {}", calls, xerenge::LoadGuestU32(base, 0x82D3E268), xerenge::LoadGuestU32(base, 0x82D3E6C0), xerenge::LoadGuestU32(base, 0x82D3E6C4), xerenge::LoadGuestU32(base, 0x82D3E6C8));
+  }
+  __imp__sub_825BEB58(ctx, base);
+}
+
+static std::string GuestText(uint8_t* base, uint32_t address) {
+  std::string s;
+  for (uint32_t i = 0; i < 64 && address; ++i) {
+    const uint8_t c = *xerenge::GuestPointer(base, address + i);
+    if (c == 0) {
+      break;
+    }
+    s += (c >= 32 && c < 127) ? char(c) : '?';
+  }
+  return s;
+}
+
+REX_HOOK_RAW(sub_825BE2F0) {
+  static int calls = 0;
+  if (Online() && (++calls <= 3 || calls % 20 == 0)) {
+    const uint32_t self = xerenge::LoadGuestU32(base, 0x82D3E6E8);
+    if (self < 0x10000000) { __imp__sub_825BE2F0(ctx, base); return; }
+    REXLOG_INFO("--online: CommUDP step {} tick {} obj {:08X} state {} socket {:08X} lastsend {} lasterr {}", calls, ctx.r3.u32, self,
+                xerenge::LoadGuestU32(base, self + 0x94), xerenge::LoadGuestU32(base, self + 0x80),
+                xerenge::LoadGuestU32(base, self + 0xE4), int32_t(xerenge::LoadGuestU32(base, self + 0xE0)));
+  }
+  __imp__sub_825BE2F0(ctx, base);
+}
+
+REX_HOOK_RAW(sub_825BF2B8) {
+  const std::string text = GuestText(base, ctx.r4.u32);
+  __imp__sub_825BF2B8(ctx, base);
+  if (Online()) {
+    REXLOG_INFO("--online: CommUDP connect \"{}\" -> {}", text, int32_t(ctx.r3.u32));
+  }
+}
+
+// The socket layer redirects every destination to the lobby host (a 0/0 entry in the game's
+// address table). Traffic to the peers' own ports has to reach the peer itself.
+REX_HOOK_RAW(sub_82415E48) {
+  if (Online()) {
+    const uint8_t* to = xerenge::GuestPointer(static_cast<const uint8_t*>(base), ctx.r4.u32);
+    const uint32_t port = (uint32_t(to[2]) << 8) | to[3];
+    if (port == 8192 || port == 6000) {
+      ctx.r3.u32 = ctx.r4.u32;
+      return;
+    }
+  }
+  __imp__sub_82415E48(ctx, base);
+}
+
+REX_HOOK_RAW(sub_825BF3E8) {
+  const std::string text = GuestText(base, ctx.r4.u32);
+  const uint32_t self = ctx.r3.u32;
+  __imp__sub_825BF3E8(ctx, base);
+  if (Online()) {
+    uint32_t table = xerenge::LoadGuestU32(base, 0x82D39330);
+    for (int i = 0; i < 6 && table >= 0x10000000; ++i, table += 12) {
+      REXLOG_INFO("--online: address remap [{}] net {:08X} mask {:08X} to {:08X}", i, xerenge::LoadGuestU32(base, table), xerenge::LoadGuestU32(base, table + 4), xerenge::LoadGuestU32(base, table + 8));
+      if (!xerenge::LoadGuestU32(base, table + 8)) break;
+    }
+  }
+  if (Online()) {
+    REXLOG_INFO("--online: CommUDP listen \"{}\" remote {:08X} {:08X} {:08X} {:08X}", text, xerenge::LoadGuestU32(base, self + 0x84), xerenge::LoadGuestU32(base, self + 0x88), xerenge::LoadGuestU32(base, self + 0x8C), xerenge::LoadGuestU32(base, self + 0x90));
+  }
 }
 
 // The session creation behind 'sess' (0x8240C908): the host when the host's
@@ -681,6 +974,12 @@ REX_HOOK_RAW(sub_8236C700) {
   __imp__sub_8236C700(ctx, base);
   if (log) {
     REXLOG_INFO("--online: lobby event '{}' - after: {}", name, LobbyGameState(base, lobby));
+    const uint32_t n = xerenge::LoadGuestU32(base, lobby + 0x22C);
+    for (uint32_t i = 0; i < n && i < 8; ++i) {
+      const uint32_t e = lobby + 0x234 + i * 0x8C;
+      auto str = [&](uint32_t o) { std::string s; for (int k = 0; k < 32; ++k) { char c = char(*xerenge::GuestPointer(base, e + o + k)); if (!c) break; s += c; } return s; };
+      REXLOG_INFO("--online: lobby cached player {} name='{}' params='{}'", i, str(4), str(0x68));
+    }
   }
 }
 
@@ -703,4 +1002,318 @@ REX_HOOK_RAW(sub_821E6928) {
     }
   }
   __imp__sub_821E6928(ctx, base);
+}
+
+REX_HOOK_RAW(sub_82372638) {
+  if (Online()) {
+    const uint32_t self = ctx.r3.u32;
+    const uint32_t f1b5 = *xerenge::GuestPointer(base, self + 0x1b5);
+    const uint32_t connApi = xerenge::LoadGuestU32(base, self + 0x1c0);
+    uint32_t list = 0, n = 0;
+    if (connApi) {
+      PPCContext c = ctx;
+      c.r3.u32 = connApi;
+      __imp__sub_82587570(c, base);
+      list = c.r3.u32;
+      if (list) n = xerenge::LoadGuestU32(base, list);
+    }
+    { const uint32_t vt = xerenge::LoadGuestU32(base, self); static bool once = false; if (!once) { once = true; REXLOG_INFO("--online: NATMgr vtable {:08X} slot0 {:08X}", vt, xerenge::LoadGuestU32(base, vt)); } }
+    std::string recs; for (int k = 0; k < 6; ++k) { const uint32_t r = self + 0x34 + k * 0x38; const int32_t rid = int32_t(xerenge::LoadGuestU32(base, r + 4)); if (rid != -1) recs += " rec" + std::to_string(k) + "{id=" + std::to_string(rid) + " st=" + std::to_string(int32_t(xerenge::LoadGuestU32(base, r + 0x20))) + " f19=" + std::to_string(*xerenge::GuestPointer(base, r + 0x19)) + " f1a=" + std::to_string(*xerenge::GuestPointer(base, r + 0x1a)) + "}"; }
+    std::string s = "cb c=" + std::to_string(xerenge::LoadGuestU32(base, self + 0xc)) + " 10=" + std::to_string(xerenge::LoadGuestU32(base, self + 0x10)) + " 14=" + std::to_string(xerenge::LoadGuestU32(base, self + 0x14)) + " b5=" + std::to_string(f1b5) + " connapi=" + std::to_string(connApi) + " list=" + std::to_string(list) + " n=" + std::to_string(n);
+    for (uint32_t i = 0; i < n && i < 4; ++i) {
+      s += " st" + std::to_string(i) + "=" + std::to_string(xerenge::LoadGuestU32(base, list + 0x90 + i * 0xb0)); { PPCContext c = ctx; c.r3.u32 = xerenge::LoadGuestU32(base, self + 4); c.r4.u32 = list + 0x50 + i * 0xb0; __imp__sub_82365C40(c, base); s += " lk=" + std::to_string(c.r3.u32) + " pm=" + std::to_string(xerenge::LoadGuestU32(base, self + 4)); } }
+    s += recs;
+    static std::string last;
+    if (s != last) {
+      REXLOG_INFO("--online: NATDataManager update: {} (self {:08X})", s, self);
+      last = s;
+    }
+  }
+  __imp__sub_82372638(ctx, base);
+}
+
+REX_HOOK_RAW(sub_8222A2C8) {
+  if (Online()) {
+    {
+      const std::string nm = GuestText(base, ctx.r4.u32);
+      uint32_t h = 0;
+      for (int i = 0; i < 4; ++i) h = (h << 8) | (i < int(nm.size()) ? uint8_t(nm[i]) : 0);
+      ctx.r3.u32 = h;
+    }
+    REXLOG_INFO("--online: ForEachNetworkOpponent id={} name='{}' local={} r7={:08X} r8={} lr={:08X}", int32_t(ctx.r3.u32),
+                GuestText(base, ctx.r4.u32), ctx.r6.u32 & 0xFF, ctx.r7.u32, ctx.r8.u32, uint32_t(ctx.lr));
+  }
+  __imp__sub_8222A2C8(ctx, base);
+}
+
+REX_HOOK_RAW(sub_8221C478) {
+  if (Online()) REXLOG_INFO("--online: PlayerNatCompleteCallback ok={} r4={} r5={} r6={} lr={:08X}", ctx.r3.u32 & 0xFF, int32_t(ctx.r4.u32), int32_t(ctx.r5.u32), int32_t(ctx.r6.u32), uint32_t(ctx.lr));
+  __imp__sub_8221C478(ctx, base);
+}
+
+REX_HOOK_RAW(sub_823648A8) {
+  if (Online()) REXLOG_INFO("--online: sub_823648A8 r3={:08X} r4={:08X} r5={:08X} r6={:08X} lr={:08X}", ctx.r3.u32, ctx.r4.u32, ctx.r5.u32, ctx.r6.u32, uint32_t(ctx.lr));
+  __imp__sub_823648A8(ctx, base);
+}
+
+REX_HOOK_RAW(sub_8236C060) {
+  if (Online()) REXLOG_INFO("--online: sub_8236C060 r3={:08X} r4={:08X} r5={:08X} r6={:08X} lr={:08X}", ctx.r3.u32, ctx.r4.u32, ctx.r5.u32, ctx.r6.u32, uint32_t(ctx.lr));
+  __imp__sub_8236C060(ctx, base);
+}
+
+REX_HOOK_RAW(sub_8221C670) {
+  if (Online()) REXLOG_INFO("--online: sub_8221C670 r3={:08X} r4={:08X} r5={:08X} r6={:08X} lr={:08X}", ctx.r3.u32, ctx.r4.u32, ctx.r5.u32, ctx.r6.u32, uint32_t(ctx.lr));
+  __imp__sub_8221C670(ctx, base);
+}
+
+REX_HOOK_RAW(sub_8221C6B8) {
+  if (Online()) REXLOG_INFO("--online: sub_8221C6B8 r3={:08X} r4={:08X} r5={:08X} r6={:08X} lr={:08X}", ctx.r3.u32, ctx.r4.u32, ctx.r5.u32, ctx.r6.u32, uint32_t(ctx.lr));
+  __imp__sub_8221C6B8(ctx, base);
+}
+
+REX_HOOK_RAW(sub_82370EA0) {
+  if (Online()) REXLOG_INFO("--online: sub_82370EA0 r3={:08X} r4={:08X} r5={:08X} r6={:08X} lr={:08X}", ctx.r3.u32, ctx.r4.u32, ctx.r5.u32, ctx.r6.u32, uint32_t(ctx.lr));
+  __imp__sub_82370EA0(ctx, base);
+}
+
+REX_HOOK_RAW(sub_8222A508) {
+  if (Online()) REXLOG_INFO("--online: AddPlayerCallback ok={} r4={} r5={} r6={} lr={:08X}", ctx.r3.u32 & 0xFF, int32_t(ctx.r4.u32), int32_t(ctx.r5.u32), int32_t(ctx.r6.u32), uint32_t(ctx.lr));
+  __imp__sub_8222A508(ctx, base);
+}
+
+REX_HOOK_RAW(sub_82370F60) {
+  if (Online()) {
+    const uint32_t p = ctx.r3.u32;
+    const uint32_t mgr = xerenge::LoadGuestU32(base, p + 0xC);
+    std::string s = "b1=" + std::to_string(*xerenge::GuestPointer(base, p + 0x4b1)) + " cnt=" + std::to_string(int32_t(xerenge::LoadGuestU32(base, p + 0x4ac))) +
+                    " id=" + std::to_string(xerenge::LoadGuestU32(base, p + 8)) + " mgr0=" + std::to_string(xerenge::LoadGuestU32(base, mgr)) +
+                    " m4=" + std::to_string(*xerenge::GuestPointer(base, mgr + 4)) + " m5=" + std::to_string(*xerenge::GuestPointer(base, mgr + 5));
+    static std::string last;
+    if (s != last) { REXLOG_INFO("--online: Player SendMessages {:08X}: {}", p, s); last = s; }
+  }
+  __imp__sub_82370F60(ctx, base);
+}
+
+REX_HOOK_RAW(sub_82371300) {
+  if (Online()) REXLOG_INFO("--online: Player ReceiveMessage player={:08X} msg={:08X} r5={} r6={}", ctx.r3.u32, ctx.r4.u32, int32_t(ctx.r5.u32), int32_t(ctx.r6.u32));
+  __imp__sub_82371300(ctx, base);
+}
+
+REX_HOOK_RAW(sub_82371478) {
+  if (Online()) {
+    const uint32_t m = ctx.r3.u32;
+    std::string s = "m0=" + std::to_string(xerenge::LoadGuestU32(base, m)) + " m4=" + std::to_string(*xerenge::GuestPointer(base, m + 4)) + " m5=" + std::to_string(*xerenge::GuestPointer(base, m + 5)) + " n=" + std::to_string(int32_t(xerenge::LoadGuestU32(base, m + 0x20)));
+    static std::string last;
+    if (s != last) { REXLOG_INFO("--online: Manager SendMessages {:08X}: {}", m, s); last = s; }
+  }
+  __imp__sub_82371478(ctx, base);
+}
+
+REX_HOOK_RAW(sub_823729E8) {
+  if (Online()) {
+    const uint32_t m = ctx.r3.u32;
+    std::string s = "m6c=" + std::to_string(xerenge::LoadGuestU32(base, m + 0x6c)) + " m4=" + std::to_string(*xerenge::GuestPointer(base, m + 4)) + " m0=" + std::to_string(xerenge::LoadGuestU32(base, m));
+    static std::string last;
+    if (s != last) { REXLOG_INFO("--online: ReceiveMessages {:08X}: {}", m, s); last = s; }
+  }
+  __imp__sub_823729E8(ctx, base);
+}
+
+REX_HOOK_RAW(sub_823610F8) {
+  const uint32_t self = ctx.r3.u32;
+  __imp__sub_823610F8(ctx, base);
+  if (Online()) {
+    static uint32_t calls = 0, lastRet = 0xFFFF;
+    ++calls;
+    if (ctx.r3.u32 != lastRet || calls == 1) {
+      REXLOG_INFO("--online: Adapter Recv {:08X} sock={:08X} -> {} (call {})", self, xerenge::LoadGuestU32(base, self + 0xd8), int32_t(ctx.r3.u32), calls);
+      lastRet = ctx.r3.u32;
+    }
+  }
+}
+
+static std::string NatMatrix(uint8_t* base, uint32_t p) {
+  std::string s = fmt::format("p={:08X} 4b4={} ids/st:", p, xerenge::LoadGuestU32(base, p + 0x4B4));
+  for (int i = 0; i < 6; i++)
+    s += fmt::format(" {:08X}/{}", xerenge::LoadGuestU32(base, p + 0x518 + i * 4), xerenge::LoadGuestU32(base, p + 0x530 + i * 4));
+  return s;
+}
+
+REX_HOOK_RAW(sub_8221B010) {
+  static int n = 0;
+  uint32_t p = ctx.r3.u32;
+  __imp__sub_8221B010(ctx, base);
+  if (Online() && (n++ < 6 || n % 500 == 0))
+    REXLOG_INFO("--online: SendDetailsOfNATFinalisedStatus #{} {} own4d0..:{:08X}/{}", n, NatMatrix(base, p),
+                xerenge::LoadGuestU32(base, p + 0x4CC), xerenge::LoadGuestU32(base, p + 0x4E4));
+}
+
+REX_HOOK_RAW(sub_8221A220) {
+  if (Online()) REXLOG_INFO("--online: NAT matrix message prepared r3={:08X} lr={:08X}", ctx.r3.u32, uint32_t(ctx.lr));
+  __imp__sub_8221A220(ctx, base);
+}
+
+REX_HOOK_RAW(sub_8221B1E8) {
+  static std::map<uint32_t, std::string> last;
+  uint32_t p = ctx.r3.u32;
+  __imp__sub_8221B1E8(ctx, base);
+  if (Online()) {
+    std::string s = fmt::format("res={} {} localid={:08X}", ctx.r3.u32 & 0xFF, NatMatrix(base, p),
+                                xerenge::LoadGuestU32(base, xerenge::LoadGuestU32(base, p + 0xC) + 0x68));
+    if (last[p] != s) { last[p] = s; REXLOG_INFO("--online: PlayerNATFinalised {}", s); }
+  }
+}
+
+REX_HOOK_RAW(sub_82219488) {
+  static std::string last;
+  uint32_t t = ctx.r3.u32, ev = ctx.r4.u32;
+  if (Online()) {
+    auto b = [&](uint32_t o) { return uint32_t(*xerenge::GuestPointer(base, t + o)); };
+    std::string s = fmt::format("3a5={} 3a6={} 395={} 396={} 397={} 398={} 39a={} 39d={} 39e={} scr={:X} f218={} cnt={}", b(0x3A5), b(0x3A6), b(0x395), b(0x396), b(0x397), b(0x398), b(0x39A), b(0x39D), b(0x39E), xerenge::LoadGuestU32(base, 0x82A528B0 + 0x2FC), uint32_t(*xerenge::GuestPointer(base, 0x82A528B0 + 0x218)), xerenge::LoadGuestU32(base, 0x82A66880 + 0x38));
+    if (s != last) { last = s; REXLOG_INFO("--online: CustomGameState dispatch ev={} this={:08X} {}", ev, t, s); }
+  }
+  // A stale popup flag would make the title drop 3a6 before the screen reaches 0x5B, so ConnectingToPlayers never opens.
+  uint8_t* popupFlag = xerenge::GuestPointer(base, 0x82A528B0 + 0x218);
+  uint8_t savedFlag = *popupFlag;
+  const bool mask = Online() && ev == 4 && *xerenge::GuestPointer(base, ctx.r3.u32 + 0x3A6) && xerenge::LoadGuestU32(base, 0x82A528B0 + 0x2FC) != 0x5B;
+  if (mask) *popupFlag = 0;
+  __imp__sub_82219488(ctx, base);
+  if (mask && savedFlag && !*popupFlag) *popupFlag = savedFlag;
+}
+
+REX_HOOK_RAW(sub_82224E78) {
+  static std::map<uint32_t, std::string> last;
+  uint32_t idx = ctx.r4.u32, md = ctx.r5.u32, lr = ctx.lr;
+  __imp__sub_82224E78(ctx, base);
+  if (Online()) {
+    auto b = [&](uint32_t o) { return uint32_t(*xerenge::GuestPointer(base, md + o)); };
+    std::string s = fmt::format("status={} 39={} 3b={} 3c={} lr={:08X}", b(0x38), b(0x39), b(0x3B), b(0x3C), lr);
+    if (true) { last[idx] = s; REXLOG_INFO("--online: SetMenuData idx={:08X} {}", idx, s); }
+  }
+}
+
+// TagFieldGetStructure(string, dest, size, format): logs how a lobby player-params string lands in the game's struct.
+REX_HOOK_RAW(sub_82404EF8) {
+  const uint32_t str = ctx.r3.u32, dest = ctx.r4.u32, size = ctx.r5.u32, fmt = ctx.r6.u32, lr = uint32_t(ctx.lr);
+  __imp__sub_82404EF8(ctx, base);
+  if (Online() && lr == 0x823679DC && size <= 0x40 && dest && str && fmt && str < 0xA0000000 && fmt < 0xA0000000 && dest < 0xA0000000) {
+    std::string s(reinterpret_cast<const char*>(xerenge::GuestPointer(base, str)), 40);
+    s.resize(strnlen(s.c_str(), 40));
+    std::string f(reinterpret_cast<const char*>(xerenge::GuestPointer(base, fmt)), 16);
+    f.resize(strnlen(f.c_str(), 16));
+    std::string bytes;
+    for (uint32_t i = 0; i < size; ++i) bytes += fmt::format("{:02X} ", *xerenge::GuestPointer(base, dest + i));
+    REXLOG_INFO("--online: TagFieldGetStructure '{}' fmt '{}' size {} -> {} ret {}", s, f, size, bytes, ctx.r3.u32);
+  }
+}
+
+// A NULL source (the ranking table has no name for the lobby) crashed strncpy in CB4NetworkManager::Update; treat it as "".
+REX_HOOK_RAW(sub_8259D2A0) {
+  if (ctx.r4.u32 == 0) {
+    if (Online()) {
+      const uint32_t rk = xerenge::LoadGuestU32(base, 0x82A66880 + 0x1d30);
+      REXLOG_INFO("--online: strncpy from NULL, lr={:08X}; rankings {:08X} +1c={:08X} +24={:08X} +30={:08X} +34={:08X} +38={:08X}",
+                  uint32_t(ctx.lr), rk, xerenge::LoadGuestU32(base, rk + 0x1c), xerenge::LoadGuestU32(base, rk + 0x24),
+                  xerenge::LoadGuestU32(base, rk + 0x30), xerenge::LoadGuestU32(base, rk + 0x34), xerenge::LoadGuestU32(base, rk + 0x38));
+    }
+    if (ctx.r5.u32) std::memset(xerenge::GuestPointer(base, ctx.r3.u32), 0, ctx.r5.u32);
+    return;
+  }
+  __imp__sub_8259D2A0(ctx, base);
+}
+
+REX_HOOK_RAW(sub_823667E0) {
+  if (Online()) {
+    uint32_t msg = ctx.r4.u32, lobby = ctx.r5.u32;
+    uint32_t tag = xerenge::LoadGuestU32(base, msg + 0x10);
+    std::string s;
+    for (uint32_t i = 0; i < 200 && tag; ++i) { char c = char(*xerenge::GuestPointer(base, tag + i)); if (!c) break; s += (c >= 32 && c < 127) ? c : '.'; }
+    std::string dump; for (uint32_t o = 0; o < 0x40; o += 4) dump += fmt::format("{:08X} ", xerenge::LoadGuestU32(base, msg + o));
+    REXLOG_INFO("--online: ChatCallback lr={:08X} msg={:08X} [{}] flags={:08X} cb={:08X} tag=\"{}\" queued={}", uint32_t(ctx.lr), msg, dump, xerenge::LoadGuestU32(base, msg + 0xC),
+                xerenge::LoadGuestU32(base, lobby + 0x11C8), s, xerenge::LoadGuestU32(base, 0x82D2AE28));
+  }
+  __imp__sub_823667E0(ctx, base);
+}
+
+REX_HOOK_RAW(sub_82220EF8) {
+  static uint32_t lastQueued = 0;
+  uint32_t q = xerenge::LoadGuestU32(base, 0x82D2AE28), t = ctx.r3.u32;
+  if (Online() && (q || lastQueued)) {
+    std::string h;
+    for (uint32_t o = 0; o < 0x20; o += 4) h += fmt::format("{:08X} ", xerenge::LoadGuestU32(base, t + o));
+    REXLOG_INFO("--online: ArbitraryMessages pump this={:08X} queued={} handlers [{}]", t, q, h);
+  }
+  lastQueued = q;
+  __imp__sub_82220EF8(ctx, base);
+}
+
+REX_HOOK_RAW(sub_822185D8) {
+  const uint32_t us = ctx.r5.u32;
+  if (Online()) {
+    uint32_t d = ctx.r3.u32;
+    REXLOG_INFO("--online: ArbitraryMessage type-0 handler data {:08X} {:08X} user={:08X} 395={} 396={}", xerenge::LoadGuestU32(base, d),
+                xerenge::LoadGuestU32(base, d + 4), us, uint32_t(*xerenge::GuestPointer(base, us + 0x395)), uint32_t(*xerenge::GuestPointer(base, us + 0x396)));
+  }
+  __imp__sub_822185D8(ctx, base);
+  if (Online()) {
+    REXLOG_INFO("--online: ArbitraryMessage type-0 handler done: 395={} 396={}", uint32_t(*xerenge::GuestPointer(base, us + 0x395)), uint32_t(*xerenge::GuestPointer(base, us + 0x396)));
+  }
+}
+
+REX_HOOK_RAW(sub_82367CF0) {
+  const uint32_t out = ctx.r4.u32;
+  __imp__sub_82367CF0(ctx, base);
+  if (Online() && (ctx.r3.u32 & 0xFF)) {
+    const uint32_t data = xerenge::LoadGuestU32(base, out), len = xerenge::LoadGuestU32(base, out + 4), type = xerenge::LoadGuestU32(base, out + 8);
+    std::string bytes;
+    for (uint32_t i = 0; i < len && i < 16 && data; ++i) bytes += fmt::format("{:02X} ", uint32_t(*xerenge::GuestPointer(base, data + i)));
+    REXLOG_INFO("--online: arbitrary message popped: type={} len={} data@{:08X} bytes [{}]", type, len, data, bytes);
+  }
+}
+
+static std::string GuestCString(uint8_t* base, uint32_t p) {
+  std::string s;
+  for (uint32_t i = 0; i < 48 && p; ++i) { char c = char(*xerenge::GuestPointer(base, p + i)); if (!c) break; s += (c >= 32 && c < 127) ? c : '.'; }
+  return s;
+}
+
+REX_HOOK_RAW(sub_8236FED0) {
+  if (Online()) REXLOG_INFO("--online: KickUserFromUserSet name=\"{}\" reason={} lr={:08X}", GuestCString(base, ctx.r4.u32), ctx.r5.u32, uint32_t(ctx.lr));
+  __imp__sub_8236FED0(ctx, base);
+}
+
+REX_HOOK_RAW(sub_8222E8F8) {
+  if (Online()) REXLOG_INFO("--online: RebuildPlayerList arg={} lr={:08X}", ctx.r4.u32 & 0xFF, uint32_t(ctx.lr));
+  __imp__sub_8222E8F8(ctx, base);
+}
+
+REX_HOOK_RAW(sub_821EEA68) {
+  const std::string name = GuestCString(base, ctx.r4.u32);
+  const uint32_t action = ctx.r5.u32;
+  __imp__sub_821EEA68(ctx, base);
+  if (Online()) REXLOG_INFO("--online: PlayerAction available? name=\"{}\" action={} -> {}", name, action, ctx.r3.u32 & 0xFF);
+}
+
+REX_HOOK_RAW(sub_821F3390) {
+  const std::string name = GuestCString(base, ctx.r4.u32);
+  const uint32_t action = ctx.r5.u32;
+  if (Online()) REXLOG_INFO("--online: PlayerAction run name=\"{}\" action={} lr={:08X}", name, action, uint32_t(ctx.lr));
+  __imp__sub_821F3390(ctx, base);
+  if (Online()) REXLOG_INFO("--online: PlayerAction done action={} -> {}", action, int32_t(ctx.r3.u32));
+}
+
+REX_HOOK_RAW(sub_82368590) {
+  if (Online()) REXLOG_INFO("--online: lobby kick from game name=\"{}\" lr={:08X}", GuestCString(base, ctx.r4.u32), uint32_t(ctx.lr));
+  __imp__sub_82368590(ctx, base);
+}
+
+REX_HOOK_RAW(sub_82588030) {
+  if (Online()) {
+    const uint32_t ev = ctx.r4.u32, user = ctx.r5.u32;
+    REXLOG_INFO("--online: ConnApi event {:08X} {:08X} {:08X} {:08X} {:08X} -> game callback {:08X} arg {:08X}",
+                xerenge::LoadGuestU32(base, ev), xerenge::LoadGuestU32(base, ev + 4), xerenge::LoadGuestU32(base, ev + 8),
+                xerenge::LoadGuestU32(base, ev + 0xC), xerenge::LoadGuestU32(base, ev + 0x10),
+                xerenge::LoadGuestU32(base, user + 0x680), xerenge::LoadGuestU32(base, user + 0x684));
+  }
+  __imp__sub_82588030(ctx, base);
 }
