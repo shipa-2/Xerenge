@@ -283,7 +283,9 @@ textures and every constant buffer.
 ## Playing online
 
 EA's lobby servers are gone, so the online mode brings its own. Start the game with `--real-lobby`
-(`./run.sh --plume --real-lobby --gamertag=Name`).
+(`./run.sh --plume --real-lobby --gamertag=Name`). An installed copy sets this on the installer's **Network** tab:
+the Gamertag, **Local multiplayer** (the mode below), and a **Server address** (the self-hosted server below; with
+it set, local multiplayer is off). They are kept in `xerenge.conf` as `gamertag`, `online` and `lobby_server`.
 
 **On one network, with no server anywhere.** Every copy runs a lobby of its own and the copies find each other on
 the LAN (UDP 31859). A game one player creates shows up in everyone else's Custom Match search and Quick Match; a

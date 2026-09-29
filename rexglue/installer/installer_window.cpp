@@ -92,6 +92,16 @@ fi
 gamertag=$(value gamertag)
 [ -n "$gamertag" ] && gamertag_arg="--gamertag=$gamertag"
 
+# Online: a server address means that server and nothing local; otherwise this copy
+# runs a lobby of its own when local multiplayer is on; otherwise no online mode.
+server=$(value lobby_server)
+online_args=""
+if [ -n "$server" ]; then
+    online_args="--online --online_fake_lobby=false --lobby_server=$server"
+elif [ "$(value online)" = true ]; then
+    online_args="--online --online_fake_lobby=false"
+fi
+
 lang=$(value language)
 [ -n "$lang" ] && export XERENGE_LANGUAGE="$lang"
 [ "$(value async_present)" = true ] && export XERENGE_ASYNC_PRESENT=1
@@ -146,7 +156,7 @@ exec "$dir/bin/burnout" \
     --log_file "$logs/burnout.log" \
     --log_max_file_size_mb 32 \
     --log_max_files 3 \
-    $extra $gamertag_arg \
+    $extra $gamertag_arg $online_args \
     "$@"
 )SH";
 
@@ -178,6 +188,13 @@ if "%renderer%"=="plume" (
 
 set "gamertag_arg="
 if defined gamertag set "gamertag_arg=--gamertag=%gamertag%"
+
+rem Online: a server address means that server and nothing local; otherwise this copy
+rem runs a lobby of its own when local multiplayer is on; otherwise no online mode.
+set "online_args="
+if /i "%online%"=="true" set "online_args=--online --online_fake_lobby=false"
+if defined lobby_server set "online_args=--online --online_fake_lobby=false --lobby_server=%lobby_server%"
+
 if defined language set "XERENGE_LANGUAGE=%language%"
 if /i "%async_present%"=="true" set "XERENGE_ASYNC_PRESENT=1"
 if /i "%early_submit%"=="false" set "XERENGE_ACQUIRE_FIRST=1"
@@ -220,7 +237,7 @@ start "" "%dir%bin\burnout.exe" ^
     --log_file "%logs%\burnout.log" ^
     --log_max_file_size_mb 32 ^
     --log_max_files 3 ^
-    %extra% %gamertag_arg% ^
+    %extra% %gamertag_arg% %online_args% ^
     %*
 )CMD";
 
@@ -432,18 +449,6 @@ InstallerWindow::InstallerWindow(QWidget* parent) : QWidget(parent) {
                             "debug_* lines in xerenge.conf."));
   layout->addWidget(debug_box_);
 
-  // The name shown to others online.
-  auto* gamertag_row = new QHBoxLayout;
-  gamertag_row->addWidget(new QLabel(tr("Gamertag")));
-  gamertag_edit_ = new QLineEdit;
-  gamertag_edit_->setMaxLength(15);
-  gamertag_edit_->setPlaceholderText(tr("Player"));
-  gamertag_edit_->setValidator(
-      new QRegularExpressionValidator(QRegularExpression("[A-Za-z0-9_-]*"), gamertag_edit_));
-  gamertag_edit_->setToolTip(tr("Your name online: up to 15 letters, digits, - and _."));
-  gamertag_row->addWidget(gamertag_edit_, 1);
-  layout->addLayout(gamertag_row);
-
   // The game asks for its language at every start unless one is set here.
   auto* language_row = new QHBoxLayout;
   language_row->addWidget(new QLabel(tr("Language")));
@@ -594,6 +599,61 @@ InstallerWindow::InstallerWindow(QWidget* parent) : QWidget(parent) {
   });
   tabs->addTab(keys_page, tr("Controls"));
 
+  // The network tab, second: the name shown to others, local multiplayer, and a server of your own.
+  auto* network_page = new QWidget;
+  auto* network_layout = new QVBoxLayout(network_page);
+  auto* gamertag_row = new QHBoxLayout;
+  gamertag_row->addWidget(new QLabel(tr("Gamertag")));
+  gamertag_edit_ = new QLineEdit;
+  gamertag_edit_->setMaxLength(15);
+  gamertag_edit_->setPlaceholderText(tr("Player"));
+  gamertag_edit_->setValidator(
+      new QRegularExpressionValidator(QRegularExpression("[A-Za-z0-9_-]*"), gamertag_edit_));
+  gamertag_edit_->setToolTip(tr("Your name online: up to 15 letters, digits, - and _."));
+  gamertag_row->addWidget(gamertag_edit_, 1);
+  network_layout->addLayout(gamertag_row);
+
+  online_box_ = new QCheckBox(tr("Local multiplayer"));
+  online_box_->setToolTip(
+      tr("Turns the online menus on. Every copy of the game on your network runs a lobby of its own; "
+         "the games one player creates show up for the others, and any player can host."));
+  network_layout->addWidget(online_box_);
+
+  auto* server_row = new QHBoxLayout;
+  server_row->addWidget(new QLabel(tr("Server address")));
+  server_edit_ = new QLineEdit;
+  server_edit_->setPlaceholderText(tr("empty: no server, local multiplayer only"));
+  server_edit_->setValidator(
+      new QRegularExpressionValidator(QRegularExpression("[A-Za-z0-9._-]*"), server_edit_));
+  server_edit_->setToolTip(tr("The host or IP of a lobby server of your own (the release carries one). "
+                              "With an address the game plays online through that server, and local "
+                              "multiplayer is off."));
+  server_row->addWidget(server_edit_, 1);
+  network_layout->addLayout(server_row);
+
+  server_note_ = new QLabel;
+  server_note_->setWordWrap(true);
+  network_layout->addWidget(server_note_);
+  network_layout->addStretch(1);
+  // A server address replaces local multiplayer: the box is off and not to be ticked while it is set.
+  const auto sync_network = [this] {
+    const bool server = !server_edit_->text().trimmed().isEmpty();
+    if (server && online_box_->isEnabled()) {
+      online_saved_ = online_box_->isChecked();
+      online_box_->setChecked(false);
+    } else if (!server && !online_box_->isEnabled()) {
+      online_box_->setChecked(online_saved_);
+    }
+    online_box_->setEnabled(!server);
+    server_note_->setText(server ? tr("Playing online through the server %1; local multiplayer is off.")
+                                       .arg(server_edit_->text().trimmed())
+                                 : tr("Local multiplayer finds the games of the other copies on your "
+                                      "network. To play through a server, enter its address."));
+  };
+  connect(server_edit_, &QLineEdit::textChanged, this, sync_network);
+  sync_network();
+  tabs->insertTab(1, network_page, tr("Network"));
+
   layout = outer;
   layout->addSpacing(12);
 
@@ -715,6 +775,10 @@ void InstallerWindow::LoadSettings(const QString& path) {
   if (values.contains("gamertag")) {
     gamertag_edit_->setText(values.value("gamertag"));
   }
+  flag("online", online_box_);
+  if (values.contains("lobby_server")) {
+    server_edit_->setText(values.value("lobby_server"));
+  }
   flag("async_present", async_box_);
   flag("early_submit", early_submit_box_);
   flag("packed_vertices", packed_vertices_box_);
@@ -789,6 +853,13 @@ void InstallerWindow::StartInstall() {
         << "windowed = " << (windowed_box_->isChecked() ? "true" : "false") << "\n"
         << "# The name shown to others online (empty: Player)\n"
         << "gamertag = " << gamertag_edit_->text().trimmed() << "\n"
+        << "# Local multiplayer: the copies on one network find each other's games\n"
+        << "online = "
+        << ((server_edit_->text().trimmed().isEmpty() ? online_box_->isChecked() : online_saved_) ? "true"
+                                                                                                    : "false")
+        << "\n"
+        << "# A server of your own (host or IP); set, it is the only lobby and local multiplayer is off\n"
+        << "lobby_server = " << server_edit_->text().trimmed() << "\n"
         << "# The language set ahead of time (empty: the game asks at every start)\n"
         << "language = " << language_combo_->currentData().toString() << "\n"
         << "# Hacks\n"
