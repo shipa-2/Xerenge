@@ -42,11 +42,14 @@
 #   ./run.sh --real-lobby
 #                       --online, but the title talks to a lobby server
 #                       (tools/ealobby) instead of being answered from inside.
-#                       With no --lobby-server every copy starts a lobby of its
-#                       own and announces it on the LAN (UDP 31859); all of
-#                       them use the one started first.
+#                       With no --lobby-server every copy runs a lobby of its
+#                       own and logs in to it; the lobbies find each other on
+#                       the LAN (UDP 31859), list each other's games and carry
+#                       a joined player's traffic to the host's, so any player
+#                       can host and no copy has to be started first.
 #   ./run.sh --lobby-server=HOST
-#                       --real-lobby against a server of your own (tools/ealobby).
+#                       --real-lobby against a server of your own (./lobby.sh):
+#                       the only lobby then, nothing local is started.
 #   ./run.sh --online-address=IP
 #                       the address this copy gives its peers and binds to:
 #                       127.0.0.2 and 127.0.0.3 run two copies on one machine.

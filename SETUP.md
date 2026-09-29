@@ -280,6 +280,30 @@ changes its colour, which is the quickest way from something visibly wrong to
 the draw responsible. `draw` then prints that draw's targets, blending, bound
 textures and every constant buffer.
 
+## Playing online
+
+EA's lobby servers are gone, so the online mode brings its own. Start the game with `--real-lobby`
+(`./run.sh --plume --real-lobby --gamertag=Name`).
+
+**On one network, with no server anywhere.** Every copy runs a lobby of its own and the copies find each other on
+the LAN (UDP 31859). A game one player creates shows up in everyone else's Custom Match search and Quick Match; a
+player who joins stays connected to their own lobby, which carries the game's traffic to the host's. Any player can
+host, and nobody has to start first. Two copies on one machine need their own addresses:
+`--online-address=127.0.0.2` and `--online-address=127.0.0.3`.
+
+**A server of your own** (at home, or on a VPS, for players who are not on one network). The release carries
+`ealobby-linux-amd64` and `ealobby-win-amd64.exe`; from a checkout, `rexglue/lobby.sh` builds and runs the same
+server (a C++17 compiler is all it needs):
+
+```
+./lobby.sh                          # ports 31860 and 31861, TCP
+./run.sh --real-lobby --lobby-server=<address of that machine>
+```
+
+With `--lobby-server` the server is the only lobby: the copies do not start lobbies of their own, every game on it
+is found by every player, and it keeps running when a player quits. Options: `--host`, `--directory-port`,
+`--lobby-port`, `--advertise <the address players should reach it at>`.
+
 ## When something is wrong
 
 **No window, but sound.** The Vulkan instance came up without a surface. Check

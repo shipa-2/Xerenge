@@ -15,6 +15,7 @@
 #include <unistd.h>
 #endif
 
+#include <algorithm>
 #include <cerrno>
 #include <cstdlib>
 #include <cstdio>
@@ -1068,7 +1069,7 @@ void Server::LeaveGame(Connection& connection) {
     return;
   }
   Game& game = it->second;
-  std::erase(game.players, connection.fd);
+  game.players.erase(std::remove(game.players.begin(), game.players.end(), connection.fd), game.players.end());
   if (game.players.empty()) {
     Log("lobby: game " + std::to_string(game.id) + " closed");
     games_.erase(it);

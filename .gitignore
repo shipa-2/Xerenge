@@ -57,3 +57,4 @@ rexglue/tools/make_runtime_shader_recipe
 .claw/settings.local.json
 .claw/sessions/
 .clawhip/
+rexglue/build-lobby/

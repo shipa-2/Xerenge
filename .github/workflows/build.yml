@@ -205,10 +205,51 @@ jobs:
           retention-days: 7
           if-no-files-found: error
 
+  # The lobby server for a self-hosted online game (rexglue/lobby.sh builds the
+  # same thing by hand): three source files and no dependencies, so it needs
+  # neither the private build inputs nor the game. One artifact carries the
+  # Linux and the Windows build.
+  lobby-server:
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v6
+
+      - name: Install the Windows cross compiler
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y g++-mingw-w64-x86-64-posix
+
+      - name: Build
+        run: |
+          sources="rexglue/tools/ealobby/main.cpp rexglue/src/ealobby/aries.cpp rexglue/src/ealobby/server.cpp"
+          mkdir -p out
+          g++ -std=c++17 -O2 -pthread -Irexglue/src -static-libstdc++ -static-libgcc $sources \
+            -o out/ealobby-linux-amd64
+          x86_64-w64-mingw32-g++-posix -std=c++17 -O2 -static -Irexglue/src $sources -lws2_32 \
+            -o out/ealobby-win-amd64.exe
+          cat > out/README.txt <<'EOF'
+          A lobby server for Burnout Revenge's online mode, standing in for EA's.
+
+            ealobby-linux-amd64 [--host A] [--directory-port P] [--lobby-port P] [--advertise A]
+            ealobby-win-amd64.exe  (the same options)
+
+          TCP ports 31860 and 31861 must be reachable. Players start the game with
+          `./run.sh --lobby-server=<address of this machine>` (see SETUP.md).
+          EOF
+          ls -la out
+
+      - uses: actions/upload-artifact@v6
+        with:
+          name: burnout-revenge-lobby-server
+          path: out/
+          retention-days: 7
+          if-no-files-found: error
+
   # A release when VERSION names one that does not exist yet: a push to main
-  # that raises VERSION publishes both installers as the latest release.
+  # that raises VERSION publishes the installers and the lobby server as the
+  # latest release.
   release:
-    needs: [linux-amd64, win-amd64]
+    needs: [linux-amd64, win-amd64, lobby-server]
     if: github.ref == 'refs/heads/main'
     runs-on: ubuntu-24.04
     permissions:
@@ -255,8 +296,12 @@ jobs:
           ```
 
           Run the installer again over an installed copy to update it; your settings are kept.
+
+          **Your own online server:** `ealobby-linux-amd64` or `ealobby-win-amd64.exe` is a lobby server for the online mode. Run it on a machine whose TCP ports 31860 and 31861 the players can reach, and start each game with `--lobby-server=<that machine>`. Without it, the copies on one LAN find each other's games with no server at all.
           EOF
           gh release create "v$VERSION" --title "$VERSION" --latest --target "$GITHUB_SHA" \
             --notes-file notes.md \
             artifacts/Burnout_Revenge_Installer-x86_64.AppImage \
-            artifacts/Burnout_Revenge_Installer-win-amd64.exe
+            artifacts/Burnout_Revenge_Installer-win-amd64.exe \
+            artifacts/ealobby-linux-amd64 \
+            artifacts/ealobby-win-amd64.exe
