@@ -61,6 +61,13 @@ extern "C" void __imp__sub_82370AA0(PPCContext& __restrict, uint8_t*);
 extern "C" void __imp__sub_8240F650(PPCContext& __restrict, uint8_t*);
 extern "C" void __imp__sub_8240EAD8(PPCContext& __restrict, uint8_t*);
 extern "C" void __imp__sub_824095D8(PPCContext& __restrict, uint8_t*);
+extern "C" void __imp__sub_8240D398(PPCContext& __restrict, uint8_t*);
+extern "C" void __imp__sub_8240C908(PPCContext& __restrict, uint8_t*);
+extern "C" void __imp__sub_82366CF8(PPCContext& __restrict, uint8_t*);
+extern "C" void __imp__sub_82587A88(PPCContext& __restrict, uint8_t*);
+extern "C" void __imp__sub_82366F78(PPCContext& __restrict, uint8_t*);
+extern "C" void __imp__sub_8236C700(PPCContext& __restrict, uint8_t*);
+extern "C" void __imp__sub_821E6928(PPCContext& __restrict, uint8_t*);
 
 namespace {
 
@@ -509,4 +516,191 @@ REX_HOOK_RAW(sub_824095D8) {
                 event ? FourCC(LoadU32(base, event + 8)) : std::string("-"));
   }
   __imp__sub_824095D8(ctx, base);
+}
+
+// ProtoMangleControl(ref, selector, value, value2, pointer): how the game's
+// net layer tells DirtySock's session code about a game - 'host' (the host's
+// XUID, 8 bytes at ref+0x70), 'suid', 'sess' (create the Xbox Live session)
+// and more. Logged per selector, with the XUID where it is one.
+REX_HOOK_RAW(sub_8240D398) {
+  if (Online()) {
+    const uint32_t selector = ctx.r4.u32;
+    const uint32_t pointer = ctx.r7.u32;
+    std::string name;
+    for (int shift = 24; shift >= 0; shift -= 8) {
+      const char c = char((selector >> shift) & 0xFF);
+      name += (c >= 32 && c < 127) ? c : '.';
+    }
+    // 'host', 'self' and 'suid' take an XUID as "$" and hex; its text, as given.
+    std::string text;
+    if ((selector == 0x686F7374u || selector == 0x73656C66u || selector == 0x73756964u) &&
+        pointer != 0) {
+      for (uint32_t i = 0; i < 24; ++i) {
+        const uint8_t c = *xerenge::GuestPointer(base, pointer + i);
+        if (c == 0) {
+          break;
+        }
+        text += (c >= 32 && c < 127) ? char(c) : '?';
+      }
+    }
+    REXLOG_INFO("--online: ProtoMangleControl '{}' value {} value2 {} pointer {:08X}{}", name,
+                int32_t(ctx.r5.u32), int32_t(ctx.r6.u32), pointer,
+                text.empty() ? std::string() : " \"" + text + "\"");
+  }
+  __imp__sub_8240D398(ctx, base);
+}
+
+// ConnApi update (0x82587A88): logs when its state (+0x15c), the mangle state
+// under it (+0x38 -> +0x6c), the client count (+0x160) or +0xa8 change.
+REX_HOOK_RAW(sub_82587A88) {
+  if (Online()) {
+    static uint32_t last[6] = {~0u, ~0u, ~0u, ~0u, ~0u, ~0u};
+    const uint32_t api = ctx.r3.u32;
+    const uint32_t mangle = xerenge::LoadGuestU32(base, api + 0x38);
+    const uint32_t now[6] = {xerenge::LoadGuestU32(base, api + 0x15C),
+                             mangle ? xerenge::LoadGuestU32(base, mangle + 0x6C) : ~0u,
+                             xerenge::LoadGuestU32(base, api + 0x160),
+                             xerenge::LoadGuestU32(base, api + 0xA8),
+                             xerenge::LoadGuestU32(base, api + 0x1F0),
+                             xerenge::LoadGuestU32(base, api + 0x2A0)};
+    if (std::memcmp(now, last, sizeof(now)) != 0) {
+      std::memcpy(last, now, sizeof(now));
+      REXLOG_INFO("--online: ConnApi {:08X} state {} mangle state {} clients {} +a8 {} client0 {} client1 {}", api,
+                  int32_t(now[0]), int32_t(now[1]), int32_t(now[2]), int32_t(now[3]),
+                  int32_t(now[4]), int32_t(now[5]));
+    }
+  }
+  __imp__sub_82587A88(ctx, base);
+}
+
+// The session creation behind 'sess' (0x8240C908): the host when the host's
+// XUID (ref+0x70) is this console's (ref+0x80), otherwise a joiner that copies
+// the host's session from the pointer. A joiner handed no pointer read address
+// 0 and brought the game down; it now says why and refuses instead.
+REX_HOOK_RAW(sub_8240C908) {
+  if (Online()) {
+    const uint32_t ref = ctx.r3.u32;
+    const uint64_t host = xerenge::LoadGuestU64(base, ref + 0x70);
+    const uint64_t self = xerenge::LoadGuestU64(base, ref + 0x80);
+    REXLOG_INFO("--online: session create - host XUID {:016X}, ours {:016X}, value {}, "
+                "session pointer {:08X}",
+                host, self, int32_t(ctx.r4.u32), ctx.r5.u32);
+    if (host != self && ctx.r5.u32 == 0) {
+      REXLOG_WARN("--online: joining a session with no session given - refused");
+      ctx.r3.u64 = uint64_t(-1);
+      return;
+    }
+  }
+  __imp__sub_8240C908(ctx, base);
+}
+
+// CGtLobbyDirtySock::CheckForPlayerKicked (0x82366CF8): once in a game, the
+// title looks for its own name (lobby+0x1098) among the game's players (OPPO%d,
+// lobby+0x238 on, 0x8C apart, COUNT at lobby+0x22C) and leaves the game - "the
+// game you were in no longer exists" - when it is not there. Logged when it
+// leaves, with both sides of the comparison.
+REX_HOOK_RAW(sub_82366CF8) {
+  const uint32_t lobby = ctx.r3.u32;
+  __imp__sub_82366CF8(ctx, base);
+  if (Online() && ctx.r3.u32 == 1) {
+    const auto text = [&](uint32_t address, uint32_t limit) {
+      std::string s;
+      for (uint32_t i = 0; i < limit; ++i) {
+        const uint8_t c = *xerenge::GuestPointer(base, address + i);
+        if (c == 0) {
+          break;
+        }
+        s += (c >= 32 && c < 127) ? char(c) : '?';
+      }
+      return s;
+    };
+    const uint32_t count = xerenge::LoadGuestU32(base, lobby + 0x22C);
+    std::string players;
+    for (uint32_t i = 0; i < count && i < 8; ++i) {
+      players += " \"" + text(lobby + 0x238 + i * 0x8C, 16) + "\"";
+    }
+    REXLOG_WARN("--online: left the game as kicked - own name \"{}\", players ({}):{}",
+                text(lobby + 0x1098, 32), count, players);
+  }
+}
+
+namespace {
+// The lobby object's game flags (lobby+0xD08..0xD11) and its game record's
+// IDENT, NAME and HOST (lobby+0x20, +0x24, +0x58), for the two hooks below.
+std::string LobbyGameState(const uint8_t* base, uint32_t lobby) {
+  const auto flag = [&](uint32_t offset) { return int(*xerenge::GuestPointer(base, lobby + offset)); };
+  const auto text = [&](uint32_t address, uint32_t limit) {
+    std::string s;
+    for (uint32_t i = 0; i < limit; ++i) {
+      const uint8_t c = *xerenge::GuestPointer(base, address + i);
+      if (c == 0) {
+        break;
+      }
+      s += (c >= 32 && c < 127) ? char(c) : '?';
+    }
+    return s;
+  };
+  return fmt::format("flags d08={} d09={} d0a={} d0b={} d0c={} d0f={} d11={}; record IDENT {} "
+                     "NAME \"{}\" HOST \"{}\"; no-host count {}",
+                     flag(0xD08), flag(0xD09), flag(0xD0A), flag(0xD0B), flag(0xD0C), flag(0xD0F),
+                     flag(0xD11), int32_t(xerenge::LoadGuestU32(base, lobby + 0x20)),
+                     text(lobby + 0x24, 36), text(lobby + 0x58, 16),
+                     xerenge::LoadGuestU32(base, lobby + 0xD20));
+}
+}  // namespace
+
+// CGtLobbyDirtySock::CheckRoomHasAHost (0x82366F78): while its game's record
+// names no HOST it counts, and at 1000 leaves - "the game you were in no
+// longer exists". Logged about once a second while it counts.
+REX_HOOK_RAW(sub_82366F78) {
+  const uint32_t lobby = ctx.r3.u32;
+  if (Online() && *xerenge::GuestPointer(base, lobby + 0x58) == 0) {
+    const uint32_t count = xerenge::LoadGuestU32(base, lobby + 0xD20);
+    if (count % 60 == 0 || count >= 999) {
+      REXLOG_WARN("--online: game has no host yet - {}", LobbyGameState(base, lobby));
+    }
+  }
+  __imp__sub_82366F78(ctx, base);
+}
+
+// CGtLobbyDirtySock's LobbyApi event callback (0x8236C700): 'game' (+mgm, its
+// own game's record), 'play' (+ses), 'uset'/'user'. Logged with the state it
+// finds, before and after.
+REX_HOOK_RAW(sub_8236C700) {
+  const uint32_t lobby = ctx.r5.u32;
+  const uint32_t event = xerenge::LoadGuestU32(base, ctx.r4.u32 + 8);
+  std::string name;
+  for (int shift = 24; shift >= 0; shift -= 8) {
+    const char c = char((event >> shift) & 0xFF);
+    name += (c >= 32 && c < 127) ? c : '.';
+  }
+  const bool log = Online() && (event == 0x67616D65u || event == 0x706C6179u);
+  if (log) {
+    REXLOG_INFO("--online: lobby event '{}' - before: {}", name, LobbyGameState(base, lobby));
+  }
+  __imp__sub_8236C700(ctx, base);
+  if (log) {
+    REXLOG_INFO("--online: lobby event '{}' - after: {}", name, LobbyGameState(base, lobby));
+  }
+}
+
+// The front end's popup (0x821E6928; r5 the text's key, "$Something"): every
+// message box shown under --online is logged with its key and its caller, so a
+// message on screen can be traced to the code that raised it.
+REX_HOOK_RAW(sub_821E6928) {
+  if (Online() && ctx.r5.u32 >= 0x80000000u) {
+    std::string key;
+    for (uint32_t i = 0; i < 64; ++i) {
+      const uint8_t c = *xerenge::GuestPointer(base, ctx.r5.u32 + i);
+      if (c == 0) {
+        break;
+      }
+      key += (c >= 32 && c < 127) ? char(c) : '?';
+    }
+    REXLOG_WARN("--online: popup \"{}\" (from {:08X})", key, uint32_t(ctx.lr));
+    if (key.rfind("$OnlineMessageNewsUpdated", 0) == 0) {
+      return;
+    }
+  }
+  __imp__sub_821E6928(ctx, base);
 }

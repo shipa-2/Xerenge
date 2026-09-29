@@ -323,6 +323,9 @@ void Server::Run() {
       }
     }
     for (SocketHandle fd : closed) {
+      if (Connection* gone = ConnectionFor(fd)) {
+        LeaveGame(*gone);
+      }
       connections_.erase(fd);
     }
     // DirtySock drops a lobby connection it has heard nothing on for 60 s
@@ -535,6 +538,8 @@ void Server::HandleLobby(Connection& connection, const Message& message) {
     // services) carry.
     const std::string name = field("GTAG", field("NAME", field("PERS", "Player")));
     connection.user = name;
+    connection.maddr = field("MADDR", "");
+    connection.xuid = field("XUID", "");
     Fields reply;
     for (const auto& [key, value] : asked) {
       if (key != "PASS") {
@@ -577,25 +582,7 @@ void Server::HandleLobby(Connection& connection, const Message& message) {
     if (connection.id == 0) {
       connection.id = next_user_++;
     }
-    Fields who;
-    who["I"] = std::to_string(connection.id);
-    who["N"] = name;
-    who["M"] = name;
-    who["F"] = "0";
-    who["A"] = PeerAddress(connection);
-    who["LA"] = PeerAddress(connection);
-    who["P"] = "0";
-    who["S"] = "";
-    who["X"] = "";
-    who["G"] = "0";
-    who["AT"] = "";
-    who["CL"] = "0";
-    who["LV"] = "0";
-    who["MD"] = "0";
-    who["HW"] = "0";
-    who["RP"] = "0";
-    Log("lobby -> +who " + Printable(FormatFields(who)));
-    Send(connection, Encode("+who", who));
+    SendWho(connection);
     return;
   }
   if (message.command == "cate") {
@@ -624,9 +611,258 @@ void Server::HandleLobby(Connection& connection, const Message& message) {
     reply_with(reply);
     return;
   }
+  // Games. A game is created (gcre), found (gsea), joined (gjoi), changed
+  // (gset), started (gsta) and left (glea); every player in it is sent the
+  // whole record again as '+mgm' whenever it changes, which is how the title
+  // (CGtLobbyDirtySock's event callback, 0x8236C700, event 'game') learns who
+  // is in its game and who hosts it - it finds itself among OPPO%d by name.
+  // '+ses' (event 'play') starts the session.
+  if (message.command == "gcre") {
+    LeaveGame(connection);
+    Game game;
+    game.id = next_game_++;
+    game.host = connection.user.empty() ? "Player" : connection.user;
+    game.name = field("NAME", game.host);
+    game.params = field("PARAMS", "");
+    game.room = field("ROOM", "0");
+    game.custflags = field("CUSTFLAGS", "0");
+    game.sysflags = field("SYSFLAGS", "0");
+    game.minsize = field("MINSIZE", "2");
+    game.maxsize = field("MAXSIZE", "2");
+    game.seed = uint32_t(std::stoul(RandomHex(4), nullptr, 16));
+    game.players.push_back(connection.fd);
+    connection.game = game.id;
+    connection.user_params = field("USERPARAMS", "");
+    const Game& stored = games_[game.id] = std::move(game);
+    reply_with(GameRecord(stored, connection));
+    SendGameToPlayers(stored);
+    SendWho(connection);
+    return;
+  }
+  if (message.command == "gjoi") {
+    // By IDENT, or by the host's name (NAME/USER).
+    Game* game = nullptr;
+    const std::string ident = field("IDENT", "");
+    const std::string by_name = field("NAME", field("USER", ""));
+    for (auto& [id, g] : games_) {
+      if ((!ident.empty() && std::to_string(id) == ident) ||
+          (ident.empty() && !by_name.empty() && (g.name == by_name || g.host == by_name))) {
+        game = &g;
+        break;
+      }
+    }
+    if (!game) {
+      Log("lobby: gjoi - no such game");
+      Send(connection, Encode(message.command, Fields{}, "gjnf"));
+      return;
+    }
+    if (connection.game != game->id) {
+      LeaveGame(connection);
+      game->players.push_back(connection.fd);
+      connection.game = game->id;
+    }
+    connection.user_params = field("USERPARAMS", connection.user_params);
+    reply_with(GameRecord(*game, connection));
+    SendGameToPlayers(*game);
+    SendWho(connection);
+    return;
+  }
+  if (message.command == "gqwk") {
+    // Quick match: the first open game with room, or none.
+    Game* game = nullptr;
+    for (auto& [id, g] : games_) {
+      if (id != connection.game && std::stoi(g.maxsize.empty() ? "0" : g.maxsize) >
+                                       static_cast<int>(g.players.size())) {
+        game = &g;
+        break;
+      }
+    }
+    if (!game) {
+      Log("lobby: gqwk - no open game");
+      Send(connection, Encode(message.command, Fields{}, "gjnf"));
+      return;
+    }
+    LeaveGame(connection);
+    game->players.push_back(connection.fd);
+    connection.game = game->id;
+    connection.user_params = field("USERPARAMS", connection.user_params);
+    reply_with(GameRecord(*game, connection));
+    SendGameToPlayers(*game);
+    SendWho(connection);
+    return;
+  }
+  if (message.command == "glea" || message.command == "gdel") {
+    reply_with(Fields{});
+    LeaveGame(connection);
+    Send(connection, Encode("+mgm", Fields{{"IDENT", "0"}, {"NAME", ""}, {"HOST", ""}, {"COUNT", "0"}}));
+    SendWho(connection);
+    return;
+  }
+  if (message.command == "gset") {
+    auto it = games_.find(connection.game);
+    if (it == games_.end()) {
+      reply_with(Fields{});
+      return;
+    }
+    Game& game = it->second;
+    game.name = field("NAME", game.name);
+    game.params = field("PARAMS", game.params);
+    game.custflags = field("CUSTFLAGS", game.custflags);
+    game.sysflags = field("SYSFLAGS", game.sysflags);
+    game.minsize = field("MINSIZE", game.minsize);
+    game.maxsize = field("MAXSIZE", game.maxsize);
+    game.session = field("SESS", game.session);
+    connection.user_params = field("USERPARAMS", connection.user_params);
+    reply_with(GameRecord(game, connection));
+    SendGameToPlayers(game);
+    return;
+  }
+  if (message.command == "gsta") {
+    auto it = games_.find(connection.game);
+    reply_with(it != games_.end() ? GameRecord(it->second, connection) : Fields{});
+    if (it != games_.end()) {
+      for (SocketHandle fd : it->second.players) {
+        if (Connection* player = ConnectionFor(fd)) {
+          const Fields record = GameRecord(it->second, *player);
+          Log("lobby -> +ses to " + player->user + " " + Printable(FormatFields(record)));
+          Send(*player, Encode("+ses", record));
+        }
+      }
+    }
+    return;
+  }
+  if (message.command == "gsea") {
+    // Every open game, one '+gam' each, after the reply says how many.
+    Fields reply;
+    reply["COUNT"] = std::to_string(games_.size());
+    reply_with(reply);
+    for (const auto& [id, game] : games_) {
+      const Fields record = GameRecord(game, connection);
+      Log("lobby -> +gam " + Printable(FormatFields(record)));
+      Send(connection, Encode("+gam", record));
+    }
+    return;
+  }
   // Not handled yet: an empty success, to see what comes next.
   Log("lobby: " + Printable(message.command) + " not handled yet; answered empty");
   Send(connection, Encode(message.command, std::string(1, '\0')));
+}
+
+
+Server::Connection* Server::ConnectionFor(SocketHandle fd) const {
+  auto it = connections_.find(fd);
+  return it != connections_.end() ? it->second.get() : nullptr;
+}
+
+Fields Server::GameRecord(const Game& game, const Connection& to) const {
+  const auto address = [](const Connection& c) {
+    return !c.address.empty() ? c.address : c.peer.substr(0, c.peer.find(':'));
+  };
+  Fields record;
+  record["IDENT"] = std::to_string(game.id);
+  record["NAME"] = game.name;
+  record["HOST"] = game.host;
+  record["SELF"] = to.user;
+  record["PARAMS"] = game.params;
+  record["PLATPARAMS"] = "";
+  record["ROOM"] = game.room;
+  record["CUSTFLAGS"] = game.custflags;
+  record["SYSFLAGS"] = game.sysflags;
+  record["PRIV"] = "0";
+  record["MINSIZE"] = game.minsize;
+  record["MAXSIZE"] = game.maxsize;
+  record["SEED"] = std::to_string(game.seed);
+  record["WHEN"] = "2006.2.10-0:00:00";
+  record["AUTH"] = "";
+  if (!game.session.empty()) {
+    record["SESS"] = game.session;
+  }
+  uint32_t count = 0;
+  for (SocketHandle fd : game.players) {
+    const Connection* player = ConnectionFor(fd);
+    if (!player) {
+      continue;
+    }
+    const std::string n = std::to_string(count++);
+    record["OPID" + n] = std::to_string(player->id);
+    record["OPPO" + n] = player->user;
+    record["ADDR" + n] = address(*player);
+    record["LADDR" + n] = address(*player);
+    record["MADDR" + n] = player->maddr;
+    record["OPPART" + n] = "0";
+    record["OPPARAM" + n] = player->user_params;
+    record["OPFLAG" + n] = "0";
+    record["PRES" + n] = "0";
+  }
+  record["COUNT"] = std::to_string(count);
+  record["NUMPART"] = std::to_string(count);
+  return record;
+}
+
+void Server::SendGameToPlayers(const Game& game) {
+  for (SocketHandle fd : game.players) {
+    if (Connection* player = ConnectionFor(fd)) {
+      const Fields record = GameRecord(game, *player);
+      Log("lobby -> +mgm to " + player->user + " " + Printable(FormatFields(record)));
+      Send(*player, Encode("+mgm", record));
+    }
+  }
+}
+
+void Server::LeaveGame(Connection& connection) {
+  auto it = games_.find(connection.game);
+  connection.game = 0;
+  if (it == games_.end()) {
+    return;
+  }
+  Game& game = it->second;
+  std::erase(game.players, connection.fd);
+  if (game.players.empty()) {
+    Log("lobby: game " + std::to_string(game.id) + " closed");
+    games_.erase(it);
+    return;
+  }
+  // The host gone, the next player hosts.
+  if (game.host == connection.user) {
+    if (const Connection* next = ConnectionFor(game.players.front())) {
+      game.host = next->user;
+    }
+  }
+  SendGameToPlayers(game);
+}
+
+void Server::SendWho(Connection& connection) {
+  const std::string address =
+      !connection.address.empty() ? connection.address
+                                  : connection.peer.substr(0, connection.peer.find(':'));
+  Fields who;
+  who["I"] = std::to_string(connection.id);
+  who["N"] = connection.user;
+  who["M"] = connection.user;
+  who["F"] = "0";
+  who["A"] = address;
+  who["LA"] = address;
+  who["P"] = "0";
+  who["S"] = "";
+  // X: the XUID, "$" and hex, as the client sent it.
+  who["X"] = connection.xuid;
+  // MA: its Xbox Live address as it gave it in MADDR ("$" XUID "^" XNADDR). The
+  // session code takes the console's own XUID from it (ConnApiOnline
+  // 0x82587D00, self+0x1E0) and compares it with the host's MADDR to tell
+  // that it hosts a game it created; empty, it never did, and left the game.
+  who["MA"] = connection.maddr;
+  // G: the game the user is in. Once in one, the title checks it every tick
+  // (0x8236D2D8) and after 200 with G still 0 gives the game up -
+  // "$NetworkingNoGame", "the game you were in no longer exists".
+  who["G"] = std::to_string(connection.game);
+  who["AT"] = "";
+  who["CL"] = "0";
+  who["LV"] = "0";
+  who["MD"] = "0";
+  who["HW"] = "0";
+  who["RP"] = "0";
+  Log("lobby -> +who " + Printable(FormatFields(who)));
+  Send(connection, Encode("+who", who));
 }
 
 }  // namespace ealobby

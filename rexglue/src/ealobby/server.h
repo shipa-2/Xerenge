@@ -59,6 +59,10 @@ class Server {
     std::string user;           // the persona it logged in as, once it has
     std::string address;        // the address the client gives for itself (addr)
     uint32_t id = 0;            // its user id in this lobby, from the login on
+    std::string maddr;          // its Xbox Live address (MADDR), as it sent it
+    std::string xuid;           // its XUID ("$" and hex), as it sent it
+    std::string user_params;    // its player parameters (USERPARAMS) in its game
+    uint32_t game = 0;          // the game it is in (IDENT), 0 for none
     // When it was last sent anything: a quiet lobby connection is pinged.
     std::chrono::steady_clock::time_point last_sent = std::chrono::steady_clock::now();
     std::vector<uint8_t> in;
@@ -89,6 +93,35 @@ class Server {
   uint32_t next_session_ = 100000;
   uint32_t next_user_ = 1;
   uint32_t next_ping_ = 1;
+
+  // Games (gcre/gjoi/glea/gsta/gset/gsea). The title reads a game as a
+  // LobbyApi play record (LobbyApiExtractPlayRecord, 0x82411A58): the fields
+  // below plus, per player, OPID/OPPO/ADDR/LADDR/MADDR/OPPART/OPPARAM/
+  // OPFLAG/PRES with its index.
+  struct Game {
+    uint32_t id = 0;
+    std::string name;
+    std::string host;
+    std::string params;
+    std::string room;
+    std::string custflags;
+    std::string sysflags;
+    std::string minsize;
+    std::string maxsize;
+    std::string session;  // SESS: the host's Xbox Live session, for joiners
+    uint32_t seed = 0;
+    std::vector<SocketHandle> players;  // the host first
+  };
+  std::map<uint32_t, Game> games_;
+  uint32_t next_game_ = 1;
+  Fields GameRecord(const Game& game, const Connection& to) const;
+  // Sends the game's record to every player in it, as '+mgm' (their own game).
+  void SendGameToPlayers(const Game& game);
+  void LeaveGame(Connection& connection);
+  Connection* ConnectionFor(SocketHandle fd) const;
+  // '+who': the user's own record, sent at login and again whenever the game
+  // it is in (G) changes.
+  void SendWho(Connection& connection);
 };
 
 }  // namespace ealobby

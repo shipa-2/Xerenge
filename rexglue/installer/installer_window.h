@@ -72,6 +72,7 @@ class InstallerWindow : public QWidget {
   QCheckBox* blur_box_ = nullptr;
   QCheckBox* xenia_box_ = nullptr;
   // The language set ahead of time (XERENGE_LANGUAGE), windowed, the hacks.
+  QLineEdit* gamertag_edit_ = nullptr;
   QComboBox* language_combo_ = nullptr;
   QCheckBox* windowed_box_ = nullptr;
   // Debug mode: the launcher logs what the debug_* lines of xerenge.conf ask.

@@ -23,6 +23,7 @@
 #include <QProgressBar>
 #include <QPushButton>
 #include <QRegularExpression>
+#include <QRegularExpressionValidator>
 #include <QStandardPaths>
 #include <QTabWidget>
 #include <QTextStream>
@@ -88,6 +89,9 @@ if [ "$renderer" != xenos ]; then
            XERENGE_REAL_SHADERS=1 XERENGE_D3D_DRAWS=1 XERENGE_SECONDARY_TICKS=1
 fi
 
+gamertag=$(value gamertag)
+[ -n "$gamertag" ] && gamertag_arg="--gamertag=$gamertag"
+
 lang=$(value language)
 [ -n "$lang" ] && export XERENGE_LANGUAGE="$lang"
 [ "$(value async_present)" = true ] && export XERENGE_ASYNC_PRESENT=1
@@ -142,7 +146,7 @@ exec "$dir/bin/burnout" \
     --log_file "$logs/burnout.log" \
     --log_max_file_size_mb 32 \
     --log_max_files 3 \
-    $extra \
+    $extra $gamertag_arg \
     "$@"
 )SH";
 
@@ -172,6 +176,8 @@ if "%renderer%"=="plume" (
     set "XERENGE_SECONDARY_TICKS=1"
 )
 
+set "gamertag_arg="
+if defined gamertag set "gamertag_arg=--gamertag=%gamertag%"
 if defined language set "XERENGE_LANGUAGE=%language%"
 if /i "%async_present%"=="true" set "XERENGE_ASYNC_PRESENT=1"
 if /i "%early_submit%"=="false" set "XERENGE_ACQUIRE_FIRST=1"
@@ -214,7 +220,7 @@ start "" "%dir%bin\burnout.exe" ^
     --log_file "%logs%\burnout.log" ^
     --log_max_file_size_mb 32 ^
     --log_max_files 3 ^
-    %extra% ^
+    %extra% %gamertag_arg% ^
     %*
 )CMD";
 
@@ -425,6 +431,18 @@ InstallerWindow::InstallerWindow(QWidget* parent) : QWidget(parent) {
   debug_box_->setToolTip(tr("Detailed logs, for reporting a problem. What is logged is set by the "
                             "debug_* lines in xerenge.conf."));
   layout->addWidget(debug_box_);
+
+  // The name shown to others online.
+  auto* gamertag_row = new QHBoxLayout;
+  gamertag_row->addWidget(new QLabel(tr("Gamertag")));
+  gamertag_edit_ = new QLineEdit;
+  gamertag_edit_->setMaxLength(15);
+  gamertag_edit_->setPlaceholderText(tr("Player"));
+  gamertag_edit_->setValidator(
+      new QRegularExpressionValidator(QRegularExpression("[A-Za-z0-9_-]*"), gamertag_edit_));
+  gamertag_edit_->setToolTip(tr("Your name online: up to 15 letters, digits, - and _."));
+  gamertag_row->addWidget(gamertag_edit_, 1);
+  layout->addLayout(gamertag_row);
 
   // The game asks for its language at every start unless one is set here.
   auto* language_row = new QHBoxLayout;
@@ -694,6 +712,9 @@ void InstallerWindow::LoadSettings(const QString& path) {
   flag("windowed", windowed_box_);
   flag("debug", debug_box_);
   choice("language", language_combo_);
+  if (values.contains("gamertag")) {
+    gamertag_edit_->setText(values.value("gamertag"));
+  }
   flag("async_present", async_box_);
   flag("early_submit", early_submit_box_);
   flag("packed_vertices", packed_vertices_box_);
@@ -766,6 +787,8 @@ void InstallerWindow::StartInstall() {
     QTextStream out(&extra);
     out << "# Fullscreen unless true\n"
         << "windowed = " << (windowed_box_->isChecked() ? "true" : "false") << "\n"
+        << "# The name shown to others online (empty: Player)\n"
+        << "gamertag = " << gamertag_edit_->text().trimmed() << "\n"
         << "# The language set ahead of time (empty: the game asks at every start)\n"
         << "language = " << language_combo_->currentData().toString() << "\n"
         << "# Hacks\n"
