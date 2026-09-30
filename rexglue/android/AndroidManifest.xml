@@ -28,6 +28,18 @@
         android:theme="@style/AppTheme"
         android:hardwareAccelerated="true">
 
+        <!-- The installer opens first; it starts the game at once when the game
+             is installed and the GPU driver will do. -->
+        <activity android:name="com.xerenge.burnout.InstallerActivity"
+            android:label="@string/app_name"
+            android:exported="true">
+            <intent-filter>
+                <action android:name="android.intent.action.MAIN" />
+                <category android:name="android.intent.category.LAUNCHER" />
+            </intent-filter>
+            <meta-data android:name="android.app.shortcuts" android:resource="@xml/shortcuts" />
+        </activity>
+
         <activity android:name="com.xerenge.burnout.BurnoutActivity"
             android:label="@string/app_name"
             android:alwaysRetainTaskState="true"
@@ -35,11 +47,6 @@
             android:screenOrientation="sensorLandscape"
             android:configChanges="layoutDirection|locale|grammaticalGender|fontScale|fontWeightAdjustment|orientation|uiMode|screenLayout|screenSize|smallestScreenSize|keyboard|keyboardHidden|navigation"
             android:preferMinimalPostProcessing="true"
-            android:exported="true">
-            <intent-filter>
-                <action android:name="android.intent.action.MAIN" />
-                <category android:name="android.intent.category.LAUNCHER" />
-            </intent-filter>
-        </activity>
+            android:exported="false" />
     </application>
 </manifest>

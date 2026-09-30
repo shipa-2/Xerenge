@@ -38,6 +38,12 @@
 #include "plume_renderer/plume_swapchain.h"
 #include "shader_cache.h"
 
+#if defined(__ANDROID__)
+#include <dlfcn.h>
+
+#include <adrenotools/driver.h>
+#endif
+
 namespace rex::plume_renderer {
 
 namespace {
@@ -109,6 +115,49 @@ bool VideoFrameWeakerThan(const GuestDrawSnapshot& next, const GuestDrawSnapshot
   }
   return next.video_luma_mean + 28 < current.video_luma_mean && next.video_luma_mean < 22;
 }
+
+#if defined(__ANDROID__)
+// A Vulkan driver the installer put in the app's own files (Mesa Turnip, for
+// Adreno GPUs whose stock driver lacks what the shaders need: Vulkan 1.2,
+// 64-bit integers, descriptor indexing). BurnoutActivity passes where it is:
+//   XERENGE_VULKAN_DRIVER   the driver .so, in internal storage (dlopen refuses
+//                           libraries on shared storage)
+//   XERENGE_NATIVE_LIB_DIR  the app's nativeLibraryDir, where libadrenotools'
+//                           hook libraries are
+// libadrenotools opens it in place of the system driver, and plume takes its
+// vkGetInstanceProcAddr. Without it, or should it fail, the system driver.
+void UseAndroidCustomVulkanDriver() {
+  const char* driver = std::getenv("XERENGE_VULKAN_DRIVER");
+  const char* hooks = std::getenv("XERENGE_NATIVE_LIB_DIR");
+  if (!driver || !*driver || !hooks || !*hooks) {
+    REXLOG_INFO("plume: using the system Vulkan driver");
+    return;
+  }
+  const std::string path(driver);
+  const size_t slash = path.rfind('/');
+  if (slash == std::string::npos) {
+    return;
+  }
+  const std::string directory = path.substr(0, slash + 1);
+  const std::string name = path.substr(slash + 1);
+  const std::string hook_dir = std::string(hooks) + "/";
+  void* vulkan = adrenotools_open_libvulkan(RTLD_NOW, ADRENOTOOLS_DRIVER_CUSTOM, nullptr,
+                                            hook_dir.c_str(), directory.c_str(), name.c_str(),
+                                            nullptr, nullptr);
+  if (!vulkan) {
+    REXLOG_ERROR("plume: the custom Vulkan driver {} did not load; using the system one", path);
+    return;
+  }
+  auto get_instance_proc_addr =
+      reinterpret_cast<PFN_vkGetInstanceProcAddr>(dlsym(vulkan, "vkGetInstanceProcAddr"));
+  if (!get_instance_proc_addr) {
+    REXLOG_ERROR("plume: {} has no vkGetInstanceProcAddr; using the system driver", path);
+    return;
+  }
+  plume::SetVulkanGetInstanceProcAddr(get_instance_proc_addr);
+  REXLOG_INFO("plume: using the custom Vulkan driver {}", path);
+}
+#endif
 }  // namespace
 
 PlumeGraphicsSystem::PlumeGraphicsSystem() {
@@ -142,6 +191,9 @@ bool PlumeGraphicsSystem::InitializePlumeDevice() {
     }
   }
 
+#if defined(__ANDROID__)
+  UseAndroidCustomVulkanDriver();
+#endif
   render_interface_ = std::make_unique<plume::VulkanInterface>();
   if (!render_interface_ || !render_interface_->isValid()) {
     REXLOG_ERROR("plume: Vulkan interface failed to initialize");

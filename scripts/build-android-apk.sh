@@ -49,6 +49,16 @@ for lib in "$build/libmain.so" "$build/librexgpu-plume.so" "$runtime_libs/librex
     [ -f "$lib" ] || { echo "missing: $lib" >&2; exit 1; }
     cp "$lib" "$out/pack/lib/arm64-v8a/"
 done
+# The installer's native half, and libadrenotools' hooks (they must lie in
+# nativeLibraryDir: it loads them from there to open a custom GPU driver).
+for lib in "$build/libxerenge_installer.so" \
+           "$build/adrenotools/src/hook/libhook_impl.so" \
+           "$build/adrenotools/src/hook/libmain_hook.so" \
+           "$build/adrenotools/src/hook/libfile_redirect_hook.so" \
+           "$build/adrenotools/src/hook/libgsl_alloc_hook.so"; do
+    [ -f "$lib" ] || { echo "missing: $lib" >&2; exit 1; }
+    cp "$lib" "$out/pack/lib/arm64-v8a/"
+done
 [ -f "$runtime_libs/libTracyClient.so" ] && cp "$runtime_libs/libTracyClient.so" "$out/pack/lib/arm64-v8a/"
 "$ndk/toolchains/llvm/prebuilt/linux-x86_64/bin/llvm-strip" --strip-unneeded "$out/pack/lib/arm64-v8a/"*.so
 

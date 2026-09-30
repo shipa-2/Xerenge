@@ -1,0 +1,23 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <string name="installer_title">Burnout Revenge — установка</string>
+    <string name="section_gpu">Графический драйвер</string>
+    <string name="gpu_ok">Системный драйвер Vulkan достаточно новый (1.2 или выше).</string>
+    <string name="gpu_too_old">Системный драйвер Vulkan старше 1.2, а игре нужен 1.2. Загрузите пакет драйвера Mesa Turnip (.zip, такой же, как для эмуляторов).</string>
+    <string name="gpu_custom">Используется загруженный драйвер: %1$s</string>
+    <string name="pick_driver">Загрузить драйвер Turnip (.zip)…</string>
+    <string name="use_system_driver">Вернуть системный драйвер</string>
+    <string name="driver_installed">Драйвер загружен: %1$s</string>
+    <string name="driver_failed">Не удалось прочитать пакет драйвера: %1$s</string>
+    <string name="driver_not_a_package">Это не пакет драйвера: нет meta.json с именем библиотеки и не один .so-файл.</string>
+    <string name="section_game">Игра</string>
+    <string name="game_installed">Игра установлена.</string>
+    <string name="game_missing">Игра не установлена. Выберите образ диска Burnout Revenge (.iso).</string>
+    <string name="pick_image">Выбрать образ диска (.iso)…</string>
+    <string name="checking">Проверка образа: %1$d%%</string>
+    <string name="extracting">Распаковка: %1$d из %2$d файлов</string>
+    <string name="image_done">Игра установлена.</string>
+    <string name="image_failed">Установка не удалась: %1$s</string>
+    <string name="start_game">Запустить игру</string>
+    <string name="shortcut_setup">Установка</string>
+</resources>

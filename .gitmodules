@@ -1,0 +1,3 @@
+[submodule "rexglue/android/thirdparty/libadrenotools"]
+	path = rexglue/android/thirdparty/libadrenotools
+	url = https://github.com/bylaws/libadrenotools.git

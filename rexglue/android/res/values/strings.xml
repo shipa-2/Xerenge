@@ -1,4 +1,24 @@
 <?xml version="1.0" encoding="utf-8"?>
 <resources>
     <string name="app_name">Burnout Revenge</string>
+    <string name="installer_title">Burnout Revenge — setup</string>
+    <string name="section_gpu">Graphics driver</string>
+    <string name="gpu_ok">The system Vulkan driver is recent enough (1.2 or newer).</string>
+    <string name="gpu_too_old">The system Vulkan driver is older than 1.2, which the game needs. Load a Mesa Turnip driver package (.zip, the kind emulators use).</string>
+    <string name="gpu_custom">Using the loaded driver: %1$s</string>
+    <string name="pick_driver">Load a Turnip driver (.zip)…</string>
+    <string name="use_system_driver">Use the system driver again</string>
+    <string name="driver_installed">Driver loaded: %1$s</string>
+    <string name="driver_failed">Could not read the driver package: %1$s</string>
+    <string name="driver_not_a_package">That is not a driver package: no meta.json naming a library, and not a single .so file.</string>
+    <string name="section_game">Game</string>
+    <string name="game_installed">The game is installed.</string>
+    <string name="game_missing">The game is not installed. Pick your retail Burnout Revenge disc image (.iso).</string>
+    <string name="pick_image">Choose the disc image (.iso)…</string>
+    <string name="checking">Checking the disc image: %1$d%%</string>
+    <string name="extracting">Extracting: %1$d of %2$d files</string>
+    <string name="image_done">The game is installed.</string>
+    <string name="image_failed">Installation failed: %1$s</string>
+    <string name="start_game">Start the game</string>
+    <string name="shortcut_setup">Setup</string>
 </resources>

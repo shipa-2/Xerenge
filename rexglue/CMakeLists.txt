@@ -193,6 +193,22 @@ if(NOT TARGET libzstd)
     add_subdirectory("${XENON_RECOMP_ROOT}/thirdparty/zstd/build/cmake" xenos-zstd)
 endif()
 target_link_libraries(rexgpu-plume PRIVATE plume rex::runtime libzstd xxHash::xxhash)
+if(ANDROID)
+    # libadrenotools opens a Vulkan driver the app ships (Mesa Turnip) in place
+    # of the system one; its hook libraries go into the APK beside it.
+    add_subdirectory(android/thirdparty/libadrenotools adrenotools EXCLUDE_FROM_ALL)
+    target_link_libraries(rexgpu-plume PRIVATE adrenotools)
+    add_dependencies(rexgpu-plume main_hook file_redirect_hook gsl_alloc_hook)
+
+    # The installer's native half: the disc image check and extraction, with
+    # the desktop extract-image's own code.
+    add_library(xerenge_installer SHARED
+        android/jni/installer_jni.cpp
+        ${CMAKE_CURRENT_SOURCE_DIR}/../tools/cxx/xdvdfs.cpp
+        ${CMAKE_CURRENT_SOURCE_DIR}/../tools/cxx/crypto.cpp)
+    target_include_directories(xerenge_installer PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/../tools/cxx)
+    add_dependencies(burnout xerenge_installer)
+endif()
 if(XERENGE_SHADER_CACHE_CPP)
     target_compile_definitions(rexgpu-plume PRIVATE XERENGE_HAS_SHADER_CACHE=1)
 endif()

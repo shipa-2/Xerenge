@@ -1,5 +1,8 @@
 package com.xerenge.burnout;
 
+import android.os.Bundle;
+import android.system.Os;
+
 import java.io.File;
 import java.util.ArrayList;
 
@@ -16,6 +19,24 @@ import org.libsdl.app.SDLActivity;
  *   burnout.log  the log of the last run
  */
 public class BurnoutActivity extends SDLActivity {
+    @Override
+    protected void onCreate(Bundle state) {
+        // Before SDL loads the libraries: the renderer reads these when it
+        // creates its Vulkan instance (UseAndroidCustomVulkanDriver).
+        String driver = getSharedPreferences(InstallerActivity.PREFS, MODE_PRIVATE)
+                .getString(InstallerActivity.PREF_DRIVER, null);
+        try {
+            if (driver != null && new File(driver).isFile()) {
+                Os.setenv("XERENGE_VULKAN_DRIVER", driver, true);
+                Os.setenv("XERENGE_NATIVE_LIB_DIR", getApplicationInfo().nativeLibraryDir, true);
+            } else {
+                Os.unsetenv("XERENGE_VULKAN_DRIVER");
+            }
+        } catch (Exception ignored) {
+        }
+        super.onCreate(state);
+    }
+
     @Override
     protected String[] getLibraries() {
         // SDL itself is linked into librexruntime.so, which libmain.so needs;
