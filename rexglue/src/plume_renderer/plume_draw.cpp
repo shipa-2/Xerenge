@@ -1067,6 +1067,93 @@ std::vector<uint32_t> ParsePsInterpolatorRegisters(const uint8_t* bytes, uint32_
 
 constexpr uint32_t kFloatsPerVert = kVertexStrideBytes / 4;
 
+// Xenos drops a primitive one of whose vertices has a NaN position; a PC GPU does not have to, and AMD rasterizes it
+// as a slab or a needle across the screen. The title's particles make such vertices themselves (a zero-length
+// vector normalized with vrsqrtefp), so the console's behaviour is emulated: every primitive touching a vertex with a
+// non-finite or absurd position is collapsed to one point, which has no area and draws nothing. The vertices are
+// already one per index here, so primitives are consecutive. Returns how many vertices were bad.
+bool BadPosition(const float* p) {
+  for (int i = 0; i < 4; ++i) {
+    if (!std::isfinite(p[i]) || std::fabs(p[i]) > 1.0e12f) {
+      return true;
+    }
+  }
+  return false;
+}
+
+uint32_t CollapseBadPrimitives(rex::graphics::xenos::PrimitiveType prim, float* vb, uint32_t vertex_count,
+                               uint32_t pos_float) {
+  using rex::graphics::xenos::PrimitiveType;
+  auto pos = [&](uint32_t i) { return vb + size_t(i) * kFloatsPerVert + pos_float; };
+  uint32_t bad = 0;
+  for (uint32_t i = 0; i < vertex_count; ++i) {
+    bad += BadPosition(pos(i)) ? 1u : 0u;
+  }
+  if (bad == 0) {
+    return 0;
+  }
+  static const float kOrigin[4] = {0.0f, 0.0f, 0.0f, 1.0f};
+  // A primitive of `size` consecutive vertices goes to the place of its first good vertex.
+  auto collapse_groups = [&](uint32_t size) {
+    for (uint32_t first = 0; first + size <= vertex_count; first += size) {
+      const float* good = nullptr;
+      bool any_bad = false;
+      for (uint32_t k = 0; k < size; ++k) {
+        if (BadPosition(pos(first + k))) {
+          any_bad = true;
+        } else if (!good) {
+          good = pos(first + k);
+        }
+      }
+      if (any_bad) {
+        float point[4];
+        std::memcpy(point, good ? good : kOrigin, sizeof(point));
+        for (uint32_t k = 0; k < size; ++k) {
+          std::memcpy(pos(first + k), point, sizeof(point));
+        }
+      }
+    }
+  };
+  switch (prim) {
+    case PrimitiveType::kTriangleList:
+    case PrimitiveType::kRectangleList:
+      collapse_groups(3);
+      break;
+    case PrimitiveType::kQuadList:
+      collapse_groups(4);
+      break;
+    case PrimitiveType::kLineList:
+      collapse_groups(2);
+      break;
+    case PrimitiveType::kTriangleFan:
+      // Every triangle of a fan has the centre in it.
+      if (BadPosition(pos(0))) {
+        collapse_groups(vertex_count);
+        break;
+      }
+      [[fallthrough]];
+    default: {
+      // Strips share vertices between primitives: a bad vertex takes its neighbour's place, which leaves the
+      // primitives it belonged to without area. The nearest good vertex before it, else after it.
+      for (uint32_t i = 0; i < vertex_count; ++i) {
+        if (!BadPosition(pos(i))) {
+          continue;
+        }
+        const float* good = nullptr;
+        for (uint32_t j = i; j-- > 0 && !good;) {
+          good = BadPosition(pos(j)) ? nullptr : pos(j);
+        }
+        for (uint32_t j = i + 1; j < vertex_count && !good; ++j) {
+          good = BadPosition(pos(j)) ? nullptr : pos(j);
+        }
+        std::memcpy(pos(i), good ? good : kOrigin, 4 * sizeof(float));
+      }
+      break;
+    }
+  }
+  return bad;
+}
+
 float Dist2XY(const float* a, const float* b) {
   const float dx = a[0] - b[0];
   const float dy = a[1] - b[1];
@@ -3186,7 +3273,8 @@ void FillPhase(int phase, std::chrono::steady_clock::time_point& mark) {
 // the vertex cache's content check.
 void PlumeDrawContext::UnpackVertices(const GuestDrawSnapshot& snap,
                                       const std::vector<VfetchAttr>& attrs,
-                                      int32_t pos_fetch_const, uint32_t vertex_count,
+                                      int32_t pos_fetch_const, uint32_t pos_float,
+                                      uint32_t vertex_count,
                                       memory::Memory* memory, float* staged,
                                       std::vector<uint32_t>& read_lo,
                                       std::vector<uint32_t>& read_hi, uint32_t& fetched,
@@ -3436,9 +3524,9 @@ void PlumeDrawContext::UnpackVertices(const GuestDrawSnapshot& snap,
                 data[2], data[3], unpacked[0], unpacked[1], unpacked[2], unpacked[3], uint32_t(dword_addr),
                 uint32_t(prep.base_dwords), prep.stream0, index_instanced, mesh_vertices, snap.num_indices);
           }
-          // Location 1 is the position. A NaN there is left alone: the GPU drops the primitives it belongs to, as the
-          // console does; zeroing it drew the vertex at the mesh origin, and every triangle of it became a needle.
-          if (!keep && attr.location != 1) {
+          // The position is left alone here: CollapseBadPrimitives drops the primitives it belongs to, as Xenos does.
+          // Zeroing it drew the vertex at the origin, and every triangle of it became a needle.
+          if (!keep && attr.location * 4 != pos_float) {
             for (float& x : unpacked) {
               if (!std::isfinite(x) || std::fabs(x) > 1.0e12f) {
                 x = 0.0f;
@@ -3881,10 +3969,31 @@ uint32_t PlumeDrawContext::FillVertices(const GuestDrawSnapshot& snap, memory::M
     fetch_addr = pre->fetch_addr;
     fetch_type = pre->fetch_type;
   } else {
-    UnpackVertices(snap, attrs, pos_fetch_const, vertex_count, memory, staged, read_lo, read_hi,
+    UnpackVertices(snap, attrs, pos_fetch_const, pos_float, vertex_count, memory, staged, read_lo, read_hi,
                    fetched, fetch_addr, fetch_type);
   }
   FillPhase(1, fill_mark);
+  if (!attrs.empty() && pos_float + 4 <= kFloatsPerVert) {
+    static const bool keep = std::getenv("XERENGE_KEEP_BAD_VERTICES") != nullptr;
+    if (!keep) {
+      if (const uint32_t bad = CollapseBadPrimitives(
+              static_cast<rex::graphics::xenos::PrimitiveType>(snap.prim_type), staged, vertex_count, pos_float)) {
+        static const bool trace = std::getenv("XERENGE_VERTEX_TRACE") != nullptr;
+        static std::atomic<uint64_t> collapsed{0};
+        static std::atomic<uint64_t> last_ms{0};
+        const uint64_t total = collapsed.fetch_add(bad, std::memory_order_relaxed) + bad;
+        const uint64_t now = static_cast<uint64_t>(std::chrono::duration_cast<std::chrono::milliseconds>(
+                                                       std::chrono::steady_clock::now().time_since_epoch())
+                                                       .count());
+        uint64_t was = last_ms.load(std::memory_order_relaxed);
+        if (trace && now - was >= 3000 && last_ms.compare_exchange_strong(was, now)) {
+          REXLOG_INFO("plume: {} vertices with a bad position so far, their primitives dropped (last vs={:016X} "
+                      "prim={} indices={})",
+                      total, snap.vs_hash, snap.prim_type, snap.num_indices);
+        }
+      }
+    }
+  }
   const float* c0 = reinterpret_cast<const float*>(snap.vs_constants.data());
   const float* ps0 = reinterpret_cast<const float*>(snap.ps_constants.data());
   bool looks_pixel = false;
@@ -5971,6 +6080,7 @@ void PlumeDrawContext::EncodeDraws(plume::RenderCommandList* list,
       const GuestDrawSnapshot* snap = nullptr;
       const std::vector<VfetchAttr>* attrs = nullptr;
       int32_t pos_fetch_const = -1;
+      uint32_t pos_float = 0;
       PreUnpacked result;
     };
     std::vector<Job> jobs;
@@ -5993,6 +6103,7 @@ void PlumeDrawContext::EncodeDraws(plume::RenderCommandList* list,
       job.snap = &snap;
       job.attrs = &vs_info->real_attrs;
       job.pos_fetch_const = vs_info->real_pos_fetch_const;
+      job.pos_float = vs_info->real_pos_float;
       job.result.offset = total;
       job.result.count = snap.num_indices;
       total += size_t(snap.num_indices) * kFloatsPerVert;
@@ -6009,7 +6120,7 @@ void PlumeDrawContext::EncodeDraws(plume::RenderCommandList* list,
         std::memset(out, 0, size_t(job.result.count) * kVertexStrideBytes);
         job.result.read_lo.assign(job.attrs->size(), ~0u);
         job.result.read_hi.assign(job.attrs->size(), 0u);
-        UnpackVertices(*job.snap, *job.attrs, job.pos_fetch_const, job.result.count, memory, out,
+        UnpackVertices(*job.snap, *job.attrs, job.pos_fetch_const, job.pos_float, job.result.count, memory, out,
                        job.result.read_lo, job.result.read_hi, job.result.fetched,
                        job.result.fetch_addr, job.result.fetch_type);
       });

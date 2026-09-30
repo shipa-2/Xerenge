@@ -667,8 +667,8 @@ class PlumeDrawContext {
     bool unstable = false;  // changes too often to be worth caching
   };
   void UnpackVertices(const GuestDrawSnapshot& snap, const std::vector<VfetchAttr>& attrs,
-                      int32_t pos_fetch_const, uint32_t vertex_count, memory::Memory* memory,
-                      float* staged, std::vector<uint32_t>& read_lo, std::vector<uint32_t>& read_hi,
+                      int32_t pos_fetch_const, uint32_t pos_float, uint32_t vertex_count,
+                      memory::Memory* memory, float* staged, std::vector<uint32_t>& read_lo, std::vector<uint32_t>& read_hi,
                       uint32_t& fetched, uint32_t& fetch_addr, uint32_t& fetch_type) const;
   // Draws of this frame unpacked before encoding, into pre_arena_ (kept
   // between frames so it is not reallocated every frame).

@@ -131,7 +131,7 @@ if [ "$(value debug)" = true ]; then
     [ "$(value debug_movie_trace)" = true ] && export XERENGE_MOVIE_TRACE=1
     [ "$(value debug_pipeline_log)" = true ] && export XERENGE_PIPELINE_LOG=1
     [ "$(value debug_vertex_trace)" = false ] || export XERENGE_VERTEX_TRACE=1
-    [ "$(value debug_constant_trace)" = false ] || export XERENGE_CONSTANT_TRACE=1
+    [ "$(value debug_constant_trace)" != true ] || export XERENGE_CONSTANT_TRACE=1
     video_gpu=$(value debug_video_gpu)
     [ -n "$video_gpu" ] && export XERENGE_VIDEO_GPU="$video_gpu"
     [ "$(value debug_noisy)" = true ] && extra="$extra --log_noisy=true"
@@ -226,7 +226,7 @@ if /i "%debug_gpu_trace%"=="true" set "XERENGE_GPU_TRACE=1"
 if /i "%debug_movie_trace%"=="true" set "XERENGE_MOVIE_TRACE=1"
 if /i "%debug_pipeline_log%"=="true" set "XERENGE_PIPELINE_LOG=1"
 if /i not "%debug_vertex_trace%"=="false" set "XERENGE_VERTEX_TRACE=1"
-if /i not "%debug_constant_trace%"=="false" set "XERENGE_CONSTANT_TRACE=1"
+if /i "%debug_constant_trace%"=="true" set "XERENGE_CONSTANT_TRACE=1"
 if defined debug_video_gpu set "XERENGE_VIDEO_GPU=%debug_video_gpu%"
 if /i "%debug_noisy%"=="true" set "extra=%extra% --log_noisy=true"
 :debug_done
@@ -892,7 +892,7 @@ void InstallerWindow::StartInstall() {
         << "#   debug_movie_trace: the video player's states\n"
         << "#   debug_pipeline_log: every render pipeline built\n"
         << "#   debug_vertex_trace: vertex attributes that come out as NaN or absurd, and then who writes those vertices (on unless false)\n"
-        << "#   debug_constant_trace: shader constants (object and bone matrices) that are NaN or absurd, and who writes them (on unless false)\n"
+        << "#   debug_constant_trace: shader constants (object and bone matrices) that are NaN or absurd, and who writes them (off unless true)\n"
         << "#   debug_video_gpu: 0 turns menu video into RGB on the CPU, 3 (the default) on the GPU; empty: the default\n"
         << "#   debug_noisy: the per-frame log lines as well (very large)\n";
     if (!preserved_debug_settings_.isEmpty()) {
@@ -903,7 +903,7 @@ void InstallerWindow::StartInstall() {
           << "debug_movie_trace = false\n"
           << "debug_pipeline_log = false\n"
           << "debug_vertex_trace = true\n"
-          << "debug_constant_trace = true\n"
+          << "debug_constant_trace = false\n"
           << "debug_video_gpu = \n"
           << "debug_noisy = false\n";
     }
