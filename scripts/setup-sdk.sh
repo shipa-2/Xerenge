@@ -23,7 +23,7 @@ else
 fi
 
 echo "== submodules"
-git -C "$sdk" submodule update --init --recursive --depth 1
+retry git -C "$sdk" submodule update --init --recursive --depth 1
 
 echo "== building the SDK"
 cmake --preset $XR_PRESET -S "$sdk"

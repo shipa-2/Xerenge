@@ -26,3 +26,15 @@ XR_JOBS=${XR_JOBS:-$(nproc 2>/dev/null || echo 4)}
 if [ "$XR_OS" = windows ] && [ -n "$root" ]; then
     root=$(cd "$root" && pwd -W)
 fi
+
+# Runs a network step up to four times: a CI runner sometimes cannot reach
+# github.com for half a minute, and one failed submodule fetch ends the build.
+retry() {
+    n=1
+    until "$@"; do
+        [ "$n" -ge 4 ] && return 1
+        echo "== failed (attempt $n), retrying in $((n * 15)) s: $*" >&2
+        sleep $((n * 15))
+        n=$((n + 1))
+    done
+}

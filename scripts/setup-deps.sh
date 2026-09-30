@@ -25,7 +25,7 @@ else
     git -C "$plume" reset --hard origin/HEAD
 fi
 echo "== plume submodules"
-git -C "$plume" submodule update --init --recursive --depth 1
+retry git -C "$plume" submodule update --init --recursive --depth 1
 
 if [ ! -d "$xenos/.git" ]; then
     echo "== fetching XenosRecomp into $xenos"
@@ -36,7 +36,7 @@ else
     git -C "$xenos" reset --hard origin/HEAD
 fi
 echo "== XenosRecomp submodules"
-git -C "$xenos" submodule update --init --recursive --depth 1
+retry git -C "$xenos" submodule update --init --recursive --depth 1
 
 echo "== building XenosRecomp"
 cmake -S "$xenos" -B "$xenos/build" -G Ninja -DCMAKE_BUILD_TYPE=Release \
