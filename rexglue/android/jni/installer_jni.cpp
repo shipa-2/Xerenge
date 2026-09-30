@@ -3,10 +3,13 @@
 // the desktop installer's extract-image runs (tools/cxx). Kept apart from the
 // game so the installer does not load 60 MB of recompiled code.
 //
-// The image comes from the system file picker as a descriptor; the process
-// reaches it as /proc/self/fd/N, which is what the XDVDFS reader opens.
+// The image comes from the system file picker as a descriptor, and is read
+// through it: reopening it by path (/proc/self/fd/N) is checked against the
+// storage permissions the app does not have.
 
 #include <jni.h>
+#include <sys/stat.h>
+#include <unistd.h>
 
 #include <cstdint>
 #include <fstream>
@@ -57,23 +60,22 @@ extern "C" JNIEXPORT jstring JNICALL Java_com_xerenge_burnout_InstallerActivity_
     JNIEnv* env, jclass, jint fd, jstring destination, jboolean verify, jobject progress_object) {
   Progress progress{env, progress_object,
                     env->GetMethodID(env->GetObjectClass(progress_object), "onProgress", "(IJJ)V")};
-  const std::string image = "/proc/self/fd/" + std::to_string(fd);
   try {
     if (verify) {
-      std::ifstream in(image, std::ios::binary);
-      if (!in) {
+      struct stat info {};
+      if (fstat(fd, &info) != 0) {
         return env->NewStringUTF("cannot read the image");
       }
-      in.seekg(0, std::ios::end);
-      const int64_t size = in.tellg();
-      in.seekg(0, std::ios::beg);
+      const int64_t size = info.st_size;
       Sha256 hash;
       std::vector<char> chunk(size_t(1) << 22);
       int64_t done = 0;
-      while (in) {
-        in.read(chunk.data(), std::streamsize(chunk.size()));
-        const std::streamsize got = in.gcount();
-        if (got <= 0) {
+      for (;;) {
+        const ssize_t got = pread(fd, chunk.data(), chunk.size(), off_t(done));
+        if (got < 0) {
+          return env->NewStringUTF("cannot read the image");
+        }
+        if (got == 0) {
           break;
         }
         hash.Update(chunk.data(), size_t(got));
@@ -87,7 +89,7 @@ extern "C" JNIEXPORT jstring JNICALL Java_com_xerenge_burnout_InstallerActivity_
             "this is not the retail Burnout Revenge disc image (the checksum does not match)");
       }
     }
-    XdvdfsImage xdvdfs(image);
+    XdvdfsImage xdvdfs{static_cast<int>(fd)};
     uint32_t root_sector = 0;
     uint32_t root_size = 0;
     xdvdfs.Root(&root_sector, &root_size);

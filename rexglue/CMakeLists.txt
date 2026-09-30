@@ -28,7 +28,7 @@ if(WIN32)
     add_executable(burnout WIN32 ${BURNOUT_SOURCES})
 elseif(ANDROID)
     # SDLActivity loads the game as libmain.so and calls its SDL_main.
-    add_library(burnout SHARED ${BURNOUT_SOURCES})
+    add_library(burnout SHARED ${BURNOUT_SOURCES} src/android_touch.cpp)
     set_target_properties(burnout PROPERTIES OUTPUT_NAME main)
 else()
     add_executable(burnout ${BURNOUT_SOURCES})

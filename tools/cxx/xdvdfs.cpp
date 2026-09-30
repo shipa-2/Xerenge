@@ -7,6 +7,11 @@
 #include <set>
 #include <stdexcept>
 
+#ifndef _WIN32
+#include <sys/stat.h>
+#include <unistd.h>
+#endif
+
 namespace {
 
 constexpr uint32_t kSector = 2048;
@@ -70,13 +75,14 @@ void CopyFile(XdvdfsImage& image, uint32_t start, uint64_t length, const std::st
     if (!out) {
         throw std::runtime_error("cannot write " + destination);
     }
-    image.file.seekg(static_cast<std::streamoff>(image.base + static_cast<uint64_t>(start) * kSector));
+    image.in.clear();
+    image.in.seekg(static_cast<std::streamoff>(image.base + static_cast<uint64_t>(start) * kSector));
     uint64_t remaining = length;
     std::vector<char> chunk(1 << 20);
     while (remaining > 0) {
         const size_t want = static_cast<size_t>(std::min<uint64_t>(chunk.size(), remaining));
-        image.file.read(chunk.data(), static_cast<std::streamsize>(want));
-        const std::streamsize got = image.file.gcount();
+        image.in.read(chunk.data(), static_cast<std::streamsize>(want));
+        const std::streamsize got = image.in.gcount();
         if (got <= 0) {
             throw std::runtime_error("the image ends partway through " + destination);
         }
@@ -92,11 +98,68 @@ XdvdfsImage::XdvdfsImage(const std::string& path) {
     if (!file) {
         throw std::runtime_error("cannot open " + path);
     }
+    in.rdbuf(file.rdbuf());
+    FindVolume();
+}
+
+#ifndef _WIN32
+namespace {
+
+// Reads a descriptor with pread, through a buffer; seeking only moves the offset.
+class FdStreamBuf : public std::streambuf {
+public:
+    explicit FdStreamBuf(int fd) : fd_(fd), buffer_(size_t(1) << 20) {}
+
+protected:
+    int_type underflow() override {
+        const ssize_t got = pread(fd_, buffer_.data(), buffer_.size(), next_);
+        if (got <= 0) {
+            return traits_type::eof();
+        }
+        setg(buffer_.data(), buffer_.data(), buffer_.data() + got);
+        next_ += got;
+        return traits_type::to_int_type(buffer_[0]);
+    }
+    pos_type seekoff(off_type offset, std::ios_base::seekdir from, std::ios_base::openmode) override {
+        off_type target = offset;
+        if (from == std::ios_base::cur) {
+            target += next_ - (egptr() - gptr());
+        } else if (from == std::ios_base::end) {
+            struct stat info {};
+            if (fstat(fd_, &info) != 0) {
+                return pos_type(off_type(-1));
+            }
+            target += info.st_size;
+        }
+        return seekpos(pos_type(target), std::ios_base::in);
+    }
+    pos_type seekpos(pos_type position, std::ios_base::openmode) override {
+        next_ = off_t(position);
+        setg(nullptr, nullptr, nullptr);
+        return position;
+    }
+
+private:
+    int fd_;
+    off_t next_ = 0;
+    std::vector<char> buffer_;
+};
+
+}  // namespace
+
+XdvdfsImage::XdvdfsImage(int fd) : fd_buffer(std::make_unique<FdStreamBuf>(fd)) {
+    in.rdbuf(fd_buffer.get());
+    FindVolume();
+}
+#endif
+
+void XdvdfsImage::FindVolume() {
     for (uint64_t candidate : kPartitionOffsets) {
-        file.seekg(static_cast<std::streamoff>(candidate + 32 * kSector));
+        in.clear();
+        in.seekg(static_cast<std::streamoff>(candidate + 32 * kSector));
         char magic[sizeof(kMagic) - 1] = {};
-        file.read(magic, sizeof(magic));
-        if (file && std::memcmp(magic, kMagic, sizeof(magic)) == 0) {
+        in.read(magic, sizeof(magic));
+        if (in && std::memcmp(magic, kMagic, sizeof(magic)) == 0) {
             base = candidate;
             return;
         }
@@ -107,9 +170,10 @@ XdvdfsImage::XdvdfsImage(const std::string& path) {
 std::vector<uint8_t> XdvdfsImage::Sector(uint32_t number, uint32_t count) {
     std::vector<uint8_t> out(static_cast<size_t>(count) * kSector);
     const auto pos = static_cast<std::streamoff>(base + static_cast<uint64_t>(number) * kSector);
-    file.seekg(pos);
-    file.read(reinterpret_cast<char*>(out.data()), static_cast<std::streamsize>(out.size()));
-    out.resize(static_cast<size_t>(file.gcount()));
+    in.clear();
+    in.seekg(pos);
+    in.read(reinterpret_cast<char*>(out.data()), static_cast<std::streamsize>(out.size()));
+    out.resize(static_cast<size_t>(in.gcount()));
     return out;
 }
 
