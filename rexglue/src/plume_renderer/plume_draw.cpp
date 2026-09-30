@@ -5140,12 +5140,13 @@ void PlumeDrawContext::BindGuestTextures(plume::RenderCommandList* list,
       if (now - last_ms >= 2000) {
         last_ms = now;
         REXLOG_INFO("plume: video: {} uploads, {} distinct frames; Y {}x{} row {} key {:016X} "
-                    "slot {}, U {}x{} row {} key {:016X} slot {}{}, captured {}, video pipeline {}",
+                    "slot {}, U {}x{} row {} key {:016X} slot {}{}, V {}x{} row {} key {:016X} slot {}, captured {}, video pipeline {}",
                     uploads, distinct, snap.video_width, snap.video_height,
                     snap.video_y_row_texels, snap.video_key, VideoPlaneSlot(snap.video_key),
                     snap.video_u_width, snap.video_u_height, snap.video_u_row_texels,
                     snap.video_u_key, VideoPlaneSlot(snap.video_u_key),
-                    snap.video_packed_uv ? " (Cb,Cr packed)" : "", captured,
+                    snap.video_packed_uv ? " (Cb,Cr packed)" : "", snap.video_v_width, snap.video_v_height,
+                    snap.video_v_row_texels, snap.video_v_key, VideoPlaneSlot(snap.video_v_key), captured,
                     UsesVideoPipeline(snap));
         uploads = 0;
         distinct = 0;
