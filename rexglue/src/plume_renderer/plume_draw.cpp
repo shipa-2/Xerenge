@@ -4864,10 +4864,15 @@ void PlumeDrawContext::PresentResolvedFrame(plume::RenderCommandList* list,
   // A frame that drew nothing and copied nothing - a clear and a Swap, or tiny spark effects
   // after a whole clear without resolve. A console shows its front buffer unchanged then;
   // shown from the target it was a black frame. Show the last picture again.
+  // And a frame of a few draws and no copy of its own while the frames before
+  // were shown from their copies (the menus: drawn, copied to one of two front
+  // buffers, shown from the copy) - on a slow device every sixth or so held
+  // only a clear and the background video, and the menu blinked out.
   const bool empty_or_cleared_secondary =
       (frame_encoded_draws_ == 0) ||
       (frame_cleared_whole_ && frame_encoded_draws_ <= 8) ||
-      (!frame_drawn_since_copy_ && frame_cleared_whole_);
+      (!frame_drawn_since_copy_ && frame_cleared_whole_) ||
+      (last_shown_from_copy_ && frame_encoded_draws_ <= 8);
   if (frame_output_dest_ == 0 && empty_or_cleared_secondary) {
     const uint32_t fallback = last_output_dest_ != 0 ? last_output_dest_ : front_buffer;
     if (fallback != 0 && resolved_targets_.find(fallback) != resolved_targets_.end()) {
@@ -4883,6 +4888,7 @@ void PlumeDrawContext::PresentResolvedFrame(plume::RenderCommandList* list,
   if (frame_output_dest_ != 0) {
     last_output_dest_ = frame_output_dest_;
   }
+  last_shown_from_copy_ = frame_output_dest_ != 0;
   static const bool targets = std::getenv("XERENGE_D3D_TARGETS") != nullptr;
   {
     static std::atomic<uint32_t> shown{0};

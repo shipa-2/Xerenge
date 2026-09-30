@@ -709,6 +709,7 @@ class PlumeDrawContext {
   // nothing and copied nothing shows that copy again (see PresentResolvedFrame).
   uint32_t frame_encoded_draws_ = 0;
   double hold_average_ = 0.0;  // Direct3D draws per frame, for HoldsThinFrame
+  bool last_shown_from_copy_ = false;  // the last frame was shown from a copy (PresentResolvedFrame)
   uint32_t last_output_dest_ = 0;
   std::unordered_set<uint32_t> frame_resolved_dests_;
   uint32_t last_resolve_dest_ = 0;
