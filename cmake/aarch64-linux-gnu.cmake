@@ -5,7 +5,9 @@
 # ARM64 before Android's own differences come in.
 #
 #   cmake -DCMAKE_TOOLCHAIN_FILE=cmake/aarch64-linux-gnu.cmake ...
-#   qemu-aarch64 -L /usr/aarch64-linux-gnu <program>   runs the result here
+#   qemu-aarch64 -L /usr/aarch64-linux-gnu \
+#     -E LD_LIBRARY_PATH=$HOME/Projects/xerenge-cross/aarch64-extra/usr/lib <program>
+#                                                     runs the result here
 set(CMAKE_SYSTEM_NAME Linux)
 set(CMAKE_SYSTEM_PROCESSOR aarch64)
 
@@ -45,4 +47,5 @@ set(CMAKE_FIND_ROOT_PATH_MODE_LIBRARY ONLY)
 set(CMAKE_FIND_ROOT_PATH_MODE_INCLUDE ONLY)
 set(CMAKE_FIND_ROOT_PATH_MODE_PACKAGE ONLY)
 
-set(CMAKE_CROSSCOMPILING_EMULATOR qemu-aarch64 -L ${XERENGE_CROSS_SYSROOT})
+set(CMAKE_CROSSCOMPILING_EMULATOR qemu-aarch64 -L ${XERENGE_CROSS_SYSROOT}
+    -E LD_LIBRARY_PATH=${XERENGE_CROSS_EXTRA}/usr/lib)
