@@ -31,7 +31,7 @@ float PlaneByte(uint id, ivec2 at, int stride, int lane, ivec2 size) {
 
 // Bilinear, by hand: the sampler cannot filter bytes packed into texels.
 float SamplePlane(uint id, int stride, int lane) {
-    id = min(id, 1023u);
+    id = min(id, 4095u);
     ivec2 texels = textureSize(sampler2D(g_textures[id], g_samplers[0]), 0);
     ivec2 size = ivec2(texels.x * 4 / stride, texels.y);
     vec2 pos = v_uv * vec2(size) - 0.5;

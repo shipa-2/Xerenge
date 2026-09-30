@@ -11,7 +11,7 @@ layout(set = 0, binding = 0) uniform texture2D g_textures[4096];
 layout(set = 3, binding = 0) uniform sampler g_samplers[16];
 
 void main() {
-    uint texid = min(v_texid, 1023u);
+    uint texid = min(v_texid, 4095u);
     vec4 tex = texture(nonuniformEXT(sampler2D(g_textures[texid], g_samplers[0])), v_uv);
     // Keep the texture's own alpha ramp. Clipping it to a binary coverage
     // mask was a workaround for the outline pass bleeding a white halo
