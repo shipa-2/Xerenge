@@ -4815,6 +4815,26 @@ bool PlumeDrawContext::UploadHostTexture(plume::RenderCommandList* list, uint64_
   return true;
 }
 
+bool PlumeDrawContext::HoldsThinFrame(const std::vector<GuestDrawSnapshot>& draws) {
+  uint32_t d3d = 0;
+  uint32_t copies = 0;
+  for (const auto& d : draws) {
+    copies += d.is_resolve ? 1 : 0;
+    d3d += (!d.is_clear && !d.is_resolve && d.d3d_vertex_buffer != 0) ? 1 : 0;
+  }
+  const bool hold = d3d == 0 && copies == 0 && hold_average_ >= 50.0;
+  hold_average_ = hold_average_ * 0.9 + double(d3d) * 0.1;
+  if (hold) {
+    static std::atomic<uint32_t> held{0};
+    const uint32_t n = held.fetch_add(1, std::memory_order_relaxed) + 1;
+    if (n <= 4 || (n % 500) == 0) {
+      REXLOG_INFO("plume: frame {} has {} entries and no Direct3D draw; showing the last picture again ({} so far)",
+                  frame_serial_, draws.size(), n);
+    }
+  }
+  return hold;
+}
+
 void PlumeDrawContext::PresentResolvedFrame(plume::RenderCommandList* list,
                                             plume::RenderTexture* color, uint32_t front_buffer) {
   // The front buffer the title swaps to wins; the frame's last copy is only a

@@ -481,7 +481,12 @@ void PlumeSwapchain::CheckProbe() {
 }
 
 void PlumeSwapchain::ClearAndPresent(float r, float g, float b, float a, DrawEncodeFn encode,
-                                     void* encode_context, ResolveFn resolve) {
+                                     void* encode_context, ResolveFn resolve, bool hold) {
+  hold = hold && scene_texture_ != nullptr;
+  if (hold) {
+    encode = nullptr;
+    resolve = nullptr;
+  }
   if (!ready_ || !swap_chain_ || !command_list_ || !command_queue_ || !acquire_semaphore_ ||
       !submit_fence_) {
     return;
@@ -600,13 +605,16 @@ void PlumeSwapchain::ClearAndPresent(float r, float g, float b, float a, DrawEnc
 
   command_list_->setViewports(plume::RenderViewport(0.0f, 0.0f, float(width), float(height)));
   command_list_->setScissors(plume::RenderRect(0, 0, width, height));
-  command_list_->clearColor(0, plume::RenderColor(r, g, b, a));
-  if (second_target) {
-    command_list_->clearColor(1, plume::RenderColor(0.0f, 0.0f, 0.0f, 0.0f));
-  }
-  if (depth_texture_) {
-    // Far plane, matching the guest's own convention of clearing depth to 1.
-    command_list_->clearDepth(true, 1.0f);
+  // A held frame keeps what the scene target holds: the last picture.
+  if (!hold) {
+    command_list_->clearColor(0, plume::RenderColor(r, g, b, a));
+    if (second_target) {
+      command_list_->clearColor(1, plume::RenderColor(0.0f, 0.0f, 0.0f, 0.0f));
+    }
+    if (depth_texture_) {
+      // Far plane, matching the guest's own convention of clearing depth to 1.
+      command_list_->clearDepth(true, 1.0f);
+    }
   }
   if (encode) {
     // The pass can be reopened from inside encoding, for a copy that has to

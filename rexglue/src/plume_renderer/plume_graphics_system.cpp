@@ -1941,7 +1941,11 @@ void PlumeGraphicsSystem::PresentClearColorOnUiThread(uint32_t guest_width,
   };
 
   const auto present_prepared = std::chrono::steady_clock::now();
-  swapchain_->ClearAndPresent(0.03f, 0.04f, 0.07f, 1.0f, encode, &ctx, resolve);
+  // A frame of nothing but a clear (and maybe a video frame) among full ones:
+  // the last picture again, rather than a blink of the bare background.
+  const bool hold = swapchain_->CanHoldFrames() && draw_context_ &&
+                    draw_context_->HoldsThinFrame(batch);
+  swapchain_->ClearAndPresent(0.03f, 0.04f, 0.07f, 1.0f, encode, &ctx, resolve, hold);
   // A slow frame, split: waiting for this renderer's lock, taking the queue,
   // encoding the draws (textures included), and the rest of the swapchain's
   // work - acquire, submit, present, fences.

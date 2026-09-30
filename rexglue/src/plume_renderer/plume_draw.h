@@ -342,6 +342,14 @@ class PlumeDrawContext {
   // the frame was last resolved into, not the render target - the title clears
   // that for the next frame straight after resolving. Copies that picture over
   // `color` once the pass is closed; does nothing if there was no such copy.
+  // Whether to show the last picture again instead of this frame: it holds no
+  // Direct3D draw and no copy - a clear, perhaps a menu video frame - while the
+  // frames around it draw hundreds (the menus over their background video on a
+  // slow device: every other present was the bare video, and the menu blinked).
+  // Pure video, with no interface drawn at all, brings the average down within
+  // half a second and is shown again. Call once per frame.
+  bool HoldsThinFrame(const std::vector<GuestDrawSnapshot>& draws);
+
   void PresentResolvedFrame(plume::RenderCommandList* list, plume::RenderTexture* color,
                             uint32_t front_buffer);
   void ResolveRenderTarget(plume::RenderCommandList* list, plume::RenderTexture* color,
@@ -700,6 +708,7 @@ class PlumeDrawContext {
   // Draws encoded this frame, and the copy shown last - a frame that drew
   // nothing and copied nothing shows that copy again (see PresentResolvedFrame).
   uint32_t frame_encoded_draws_ = 0;
+  double hold_average_ = 0.0;  // Direct3D draws per frame, for HoldsThinFrame
   uint32_t last_output_dest_ = 0;
   std::unordered_set<uint32_t> frame_resolved_dests_;
   uint32_t last_resolve_dest_ = 0;

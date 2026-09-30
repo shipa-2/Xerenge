@@ -66,8 +66,12 @@ class PlumeSwapchain {
                                 const RenderPassBreak& pass);
   // Called once the render pass is closed, with the same target.
   using ResolveFn = DrawEncodeFn;
+  // hold: show the last frame again - no clear, nothing encoded (see
+  // PlumeDrawContext::HoldsThinFrame). Only with a scene target, which keeps it.
   void ClearAndPresent(float r, float g, float b, float a, DrawEncodeFn encode = nullptr,
-                       void* encode_context = nullptr, ResolveFn resolve = nullptr);
+                       void* encode_context = nullptr, ResolveFn resolve = nullptr,
+                       bool hold = false);
+  bool CanHoldFrames() const { return scene_texture_ != nullptr; }
 
  private:
   void CreateFramebuffers();
