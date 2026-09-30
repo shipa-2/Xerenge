@@ -628,6 +628,8 @@ InstallerWindow::InstallerWindow(QWidget* parent) : QWidget(parent) {
   server_row->addWidget(new QLabel(tr("Server address")));
   server_edit_ = new QLineEdit;
   server_edit_->setPlaceholderText(tr("empty: no server, local multiplayer only"));
+  // Filled in on a new install (an installed copy that has its own lobby_server line, empty or not, keeps that).
+  server_edit_->setText(QStringLiteral("94639.snk.wtf"));
   server_edit_->setValidator(
       new QRegularExpressionValidator(QRegularExpression("[A-Za-z0-9._-]*"), server_edit_));
   server_edit_->setToolTip(tr("The host or IP of a lobby server of your own (the release carries one). "
