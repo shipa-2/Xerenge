@@ -1,4 +1,10 @@
+#include <atomic>
 #include <mutex>
+#include <string>
+#if defined(__linux__)
+#include <dlfcn.h>
+#include <execinfo.h>
+#endif
 #include <thread>
 /**
  * @file        plume_renderer/plume_draw.cpp
@@ -44,6 +50,10 @@
 #include <ctime>
 
 namespace rex::plume_renderer {
+
+namespace {
+void TrapArm(uint32_t physical_byte_address);  // the vertex writer trap, defined below
+}  // namespace
 
 std::string g_plume_frame_summary;
 
@@ -3411,6 +3421,9 @@ void PlumeDrawContext::UnpackVertices(const GuestDrawSnapshot& snap,
             fresh = bad_seen.size() < 64 &&
                     bad_seen.insert(snap.vs_hash ^ (uint64_t(attr.location) << 58)).second;
           }
+          if (trace) {
+            TrapArm(uint32_t(dword_addr) << 2);
+          }
           if (fresh && trace) {
             REXLOG_WARN(
                 "plume: absurd vertex attribute vs={:016X} loc={} fmt={} signed={} norm={} fetch={} stride={} "
@@ -4877,12 +4890,128 @@ namespace {
 void EncodeStage(const char* stage, const GuestDrawSnapshot* snap = nullptr);
 }  // namespace
 
+// The vertex writer trap (XERENGE_VERTEX_TRACE): when an absurd vertex attribute is found in guest memory, the
+// pages around it are watched, and each write to them logs the host stack of the writer - the recompiled code runs
+// as native functions named after their guest address, so the stack says which guest routine wrote the vertices.
+// Frames are "module+offset" (nm the build's binary for the sub_XXXXXXXX). The pages are watched again every frame.
+namespace {
+struct VertexTrap {
+  std::mutex mutex;
+  std::vector<std::pair<uint32_t, uint32_t>> ranges;  // physical start, length
+  std::map<uint64_t, uint32_t> writers;                // stack signature -> writes
+  std::atomic<bool> armed{false};
+  std::atomic<uint32_t> events{0};
+  uint32_t absurd_seen = 0;
+};
+VertexTrap& Trap() {
+  static VertexTrap trap;
+  return trap;
+}
+
+// An absurd value was read at this physical byte address: watch its neighbourhood from the next frame on.
+void TrapArm(uint32_t physical_byte_address) {
+  auto& trap = Trap();
+  std::lock_guard lock(trap.mutex);
+  if (trap.absurd_seen++ < 40) {
+    REXLOG_INFO("plume: vertex trap: absurd value at physical {:08X}", physical_byte_address);
+  }
+  for (const auto& [start, length] : trap.ranges) {
+    if (physical_byte_address >= start && physical_byte_address < start + length) {
+      return;
+    }
+  }
+  if (trap.ranges.size() >= 6) {
+    return;
+  }
+  const uint32_t page = physical_byte_address & ~0xFFFu;
+  const uint32_t start = page >= 0x8000u ? page - 0x8000u : 0u;
+  trap.ranges.emplace_back(start, 0x14000u);  // 20 pages around it
+  trap.armed.store(true, std::memory_order_relaxed);
+  REXLOG_INFO("plume: vertex trap: watching physical {:08X}..{:08X}", start, start + 0x14000u);
+}
+
+void TrapRearm(memory::Memory* memory) {
+  auto& trap = Trap();
+  if (!memory || !trap.armed.load(std::memory_order_relaxed)) {
+    return;
+  }
+  std::vector<std::pair<uint32_t, uint32_t>> ranges;
+  {
+    std::lock_guard lock(trap.mutex);
+    ranges = trap.ranges;
+  }
+  for (const auto& [start, length] : ranges) {
+    memory->EnablePhysicalMemoryAccessCallbacks(start, length, true, false);
+  }
+}
+
+// From the write callback, on the writing thread, before the write goes through.
+void TrapHit(uint32_t start, uint32_t length) {
+#if defined(__linux__)
+  auto& trap = Trap();
+  bool inside = false;
+  {
+    std::lock_guard lock(trap.mutex);
+    for (const auto& [range_start, range_length] : trap.ranges) {
+      if (start < range_start + range_length && start + std::max(length, 1u) > range_start) {
+        inside = true;
+        break;
+      }
+    }
+  }
+  if (!inside) {
+    return;
+  }
+  void* frames[24];
+  const int count = backtrace(frames, 24);
+  uint64_t signature = 0;
+  for (int i = 3; i < count && i < 12; ++i) {
+    signature = signature * 1099511628211ull ^ reinterpret_cast<uintptr_t>(frames[i]);
+  }
+  const uint32_t event = trap.events.fetch_add(1, std::memory_order_relaxed);
+  bool first = false;
+  uint32_t seen = 0;
+  {
+    std::lock_guard lock(trap.mutex);
+    uint32_t& writes = trap.writers[signature];
+    first = writes++ == 0 && trap.writers.size() <= 48;
+    seen = writes;
+  }
+  if (first) {
+    std::string stack;
+    for (int i = 2; i < count; ++i) {
+      Dl_info info{};
+      if (dladdr(frames[i], &info) && info.dli_fname) {
+        const char* slash = std::strrchr(info.dli_fname, '/');
+        stack += fmt::format(" {}+{:X}", slash ? slash + 1 : info.dli_fname,
+                             reinterpret_cast<uintptr_t>(frames[i]) - reinterpret_cast<uintptr_t>(info.dli_fbase));
+        if (info.dli_sname) {
+          stack += fmt::format("({})", info.dli_sname);
+        }
+      }
+    }
+    REXLOG_INFO("plume: vertex trap: a new writer #{} of physical {:08X}+{}, event {}:{}", trap.writers.size(),
+                start, length, event, stack);
+  } else if ((event % 2000) == 1999) {
+    REXLOG_INFO("plume: vertex trap: {} events, {} distinct writers", event + 1, trap.writers.size());
+  }
+  (void)seen;
+#else
+  (void)start;
+  (void)length;
+#endif
+}
+}  // namespace
+
 constexpr uint32_t kWatchedPages = 0x20000000u >> 12;  // 512 MB of physical memory
 
 std::pair<uint32_t, uint32_t> PlumeDrawContext::OnGuestWrite(void* context, uint32_t start,
                                                              uint32_t length, bool exact_range) {
   (void)exact_range;
   auto* self = static_cast<PlumeDrawContext*>(context);
+  if (Trap().armed.load(std::memory_order_relaxed)) {
+    TrapHit(start, length);
+  }
   if (self->page_writes_ && length != 0) {
     const uint32_t first = (start & 0x1FFFFFFFu) >> 12;
     const uint64_t last = (uint64_t(start & 0x1FFFFFFFu) + length - 1) >> 12;
@@ -4918,6 +5047,7 @@ void PlumeDrawContext::BindGuestTextures(plume::RenderCommandList* list,
   using rex::graphics::xenos::TextureFormat;
   textures_done_this_frame_.clear();
   EncodeStage("textures", nullptr);
+  TrapRearm(memory);
   // The vertex cache starts over when nearly full; the previous frame has
   // finished on the GPU by now, so nothing still reads what is overwritten.
   // Also when the one-off draws' markers pile up in the table.

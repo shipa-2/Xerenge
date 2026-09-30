@@ -887,7 +887,7 @@ void InstallerWindow::StartInstall() {
         << "#   debug_gpu_trace: the renderer's per-draw and per-frame diagnostics (large)\n"
         << "#   debug_movie_trace: the video player's states\n"
         << "#   debug_pipeline_log: every render pipeline built\n"
-        << "#   debug_vertex_trace: vertex attributes that come out as NaN or absurd (on unless false)\n"
+        << "#   debug_vertex_trace: vertex attributes that come out as NaN or absurd, and then who writes those vertices (on unless false)\n"
         << "#   debug_video_gpu: 0 turns menu video into RGB on the CPU, 3 (the default) on the GPU; empty: the default\n"
         << "#   debug_noisy: the per-frame log lines as well (very large)\n";
     if (!preserved_debug_settings_.isEmpty()) {
