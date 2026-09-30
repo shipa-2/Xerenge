@@ -1,7 +1,7 @@
 #include <atomic>
 #include <mutex>
 #include <string>
-#if defined(__linux__)
+#if defined(__linux__) && !defined(__ANDROID__)
 #include <dlfcn.h>
 #include <execinfo.h>
 #endif
@@ -5060,7 +5060,7 @@ void TrapRearm(memory::Memory* memory) {
 
 // From the write callback, on the writing thread, before the write goes through.
 void TrapHit(uint32_t start, uint32_t length) {
-#if defined(__linux__)
+#if defined(__linux__) && !defined(__ANDROID__)  // bionic: backtrace() only from API 33
   auto& trap = Trap();
   bool inside = false;
   const char* kind = "vertices";

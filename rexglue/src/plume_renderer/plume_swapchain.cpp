@@ -120,6 +120,12 @@ plume::RenderWindow NativeRenderWindow(SDL_Window* window, void* native_window) 
 #ifdef _WIN32
   (void)window;
   return static_cast<HWND>(native_window);
+#elif defined(__ANDROID__)
+  // plume makes the surface itself there (VK_KHR_android_surface), from the
+  // ANativeWindow SDL draws into.
+  (void)native_window;
+  return static_cast<ANativeWindow*>(SDL_GetPointerProperty(
+      SDL_GetWindowProperties(window), SDL_PROP_WINDOW_ANDROID_WINDOW_POINTER, nullptr));
 #else
   (void)native_window;
   return window;

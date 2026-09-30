@@ -26,6 +26,10 @@ set(BURNOUT_SOURCES
 
 if(WIN32)
     add_executable(burnout WIN32 ${BURNOUT_SOURCES})
+elseif(ANDROID)
+    # SDLActivity loads the game as libmain.so and calls its SDL_main.
+    add_library(burnout SHARED ${BURNOUT_SOURCES})
+    set_target_properties(burnout PROPERTIES OUTPUT_NAME main)
 else()
     add_executable(burnout ${BURNOUT_SOURCES})
 endif()
@@ -37,7 +41,13 @@ if(NOT EXISTS "${PLUME_ROOT}/CMakeLists.txt")
     message(FATAL_ERROR "plume not found at ${PLUME_ROOT}; clone it beside Xerenge")
 endif()
 
-set(PLUME_SDL_VULKAN_ENABLED ON CACHE BOOL "" FORCE)
+# On Android plume makes the surface from the ANativeWindow itself (see
+# NativeRenderWindow in plume_swapchain.cpp); its SDL path is for desktops.
+if(ANDROID)
+    set(PLUME_SDL_VULKAN_ENABLED OFF CACHE BOOL "" FORCE)
+else()
+    set(PLUME_SDL_VULKAN_ENABLED ON CACHE BOOL "" FORCE)
+endif()
 set(PLUME_BUILD_EXAMPLES OFF CACHE BOOL "" FORCE)
 add_subdirectory("${PLUME_ROOT}" plume)
 # Static plume linked into a shared plugin must be PIC, and must not inherit
@@ -111,11 +121,29 @@ target_include_directories(shader_source_info_gen PRIVATE "${CMAKE_CURRENT_SOURC
 file(GLOB XERENGE_TRANSLATED_HLSL CONFIGURE_DEPENDS
     "${CMAKE_CURRENT_SOURCE_DIR}/generated/xenos-hlsl/*.hlsl")
 set(XERENGE_SHADER_SOURCE_INFO_CPP "${CMAKE_CURRENT_BINARY_DIR}/shader_source_info_table.cpp")
+# It runs during the build, so a cross build without an emulator (Android)
+# needs it for the build machine: compiled there by the host's own compiler.
+set(XERENGE_SHADER_SOURCE_INFO_GEN shader_source_info_gen)
+if(CMAKE_CROSSCOMPILING AND NOT CMAKE_CROSSCOMPILING_EMULATOR)
+    find_program(XERENGE_HOST_CXX NAMES c++ clang++ g++ NO_CMAKE_FIND_ROOT_PATH REQUIRED)
+    set(XERENGE_SHADER_SOURCE_INFO_GEN "${CMAKE_CURRENT_BINARY_DIR}/host/shader_source_info_gen")
+    add_custom_command(
+        OUTPUT "${XERENGE_SHADER_SOURCE_INFO_GEN}"
+        COMMAND "${CMAKE_COMMAND}" -E make_directory "${CMAKE_CURRENT_BINARY_DIR}/host"
+        COMMAND "${XERENGE_HOST_CXX}" -std=c++20 -O2 -I "${CMAKE_CURRENT_SOURCE_DIR}/src"
+                "${CMAKE_CURRENT_SOURCE_DIR}/tools/shader_source_info_gen.cpp"
+                "${CMAKE_CURRENT_SOURCE_DIR}/src/plume_renderer/shader_source_info.cpp"
+                -o "${XERENGE_SHADER_SOURCE_INFO_GEN}"
+        DEPENDS tools/shader_source_info_gen.cpp src/plume_renderer/shader_source_info.cpp
+                src/plume_renderer/shader_source_info.h
+        COMMENT "Building shader_source_info_gen for the build machine"
+        VERBATIM)
+endif()
 add_custom_command(
     OUTPUT "${XERENGE_SHADER_SOURCE_INFO_CPP}"
-    COMMAND shader_source_info_gen "${CMAKE_CURRENT_SOURCE_DIR}/generated/xenos-hlsl"
+    COMMAND ${XERENGE_SHADER_SOURCE_INFO_GEN} "${CMAKE_CURRENT_SOURCE_DIR}/generated/xenos-hlsl"
             "${XERENGE_SHADER_SOURCE_INFO_CPP}"
-    DEPENDS shader_source_info_gen ${XERENGE_TRANSLATED_HLSL}
+    DEPENDS ${XERENGE_SHADER_SOURCE_INFO_GEN} ${XERENGE_TRANSLATED_HLSL}
     COMMENT "Reading the translated shaders into shader_source_info_table.cpp"
     VERBATIM)
 list(APPEND REXGPU_PLUME_SOURCES "${XERENGE_SHADER_SOURCE_INFO_CPP}")

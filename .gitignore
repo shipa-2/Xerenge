@@ -35,6 +35,7 @@ plume/
 rexglue/generated/
 rexglue/build/
 rexglue/build-arm64/
+rexglue/build-android/
 
 # Run logs and captures of the ReXGlue project
 rexglue/logs/
