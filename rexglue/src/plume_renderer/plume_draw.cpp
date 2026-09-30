@@ -3421,7 +3421,9 @@ void PlumeDrawContext::UnpackVertices(const GuestDrawSnapshot& snap,
                 data[2], data[3], unpacked[0], unpacked[1], unpacked[2], unpacked[3], uint32_t(dword_addr),
                 uint32_t(prep.base_dwords), prep.stream0, index_instanced, mesh_vertices, snap.num_indices);
           }
-          if (!keep) {
+          // Location 1 is the position. A NaN there is left alone: the GPU drops the primitives it belongs to, as the
+          // console does; zeroing it drew the vertex at the mesh origin, and every triangle of it became a needle.
+          if (!keep && attr.location != 1) {
             for (float& x : unpacked) {
               if (!std::isfinite(x) || std::fabs(x) > 1.0e12f) {
                 x = 0.0f;
