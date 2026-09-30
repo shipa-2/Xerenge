@@ -33,11 +33,12 @@ final class Settings {
         {"Suomi", "12"},
     };
 
-    /** Render resolutions: label (null: the window's) and value. */
+    /** Render resolutions: label (null: the device's screen) and value. */
     static final String[][] RESOLUTIONS = {
         {null, ""},
-        {"1280x720", "1280x720"},
-        {"1600x900", "1600x900"},
+        {"1440p", "2560x1440"},
+        {"1080p", "1920x1080"},
+        {"720p", "1280x720"},
     };
 
     static final String DEFAULT_SERVER = "94639.snk.wtf";

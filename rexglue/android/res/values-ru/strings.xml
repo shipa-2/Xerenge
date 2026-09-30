@@ -25,8 +25,8 @@
     <string name="culling">Отсечение задних граней</string>
     <string name="culling_tip">Пропускать грани, которые игра отсекает сама, как на консоли. Экспериментально.</string>
     <string name="render_resolution">Разрешение рендера</string>
-    <string name="resolution_window">Как у окна</string>
-    <string name="render_resolution_tip">Рисовать кадр в этом размере и масштабировать на окно. 1280x720 — размер, в котором игра рисует на консоли.</string>
+    <string name="resolution_window">Устройства</string>
+    <string name="render_resolution_tip">Рисовать кадр в этом размере и масштабировать на экран. 720p — размер, в котором игра рисует на консоли; чем меньше, тем быстрее.</string>
     <string name="fps_counter">Счётчик кадров</string>
     <string name="fps_counter_tip">Кадры в секунду в левом верхнем углу.</string>
     <string name="install_path">Путь установки</string>

@@ -26,8 +26,8 @@
     <string name="culling">Back-face culling</string>
     <string name="culling_tip">Skip the faces the game culls itself, as the console does. Experimental.</string>
     <string name="render_resolution">Render resolution</string>
-    <string name="resolution_window">The window\'s</string>
-    <string name="render_resolution_tip">Draw the frame at this size and scale it onto the window. 1280x720 is the size the game renders at on the console.</string>
+    <string name="resolution_window">The device\'s</string>
+    <string name="render_resolution_tip">Draw the frame at this size and scale it onto the screen. 720p is the size the game renders at on the console; lower is faster.</string>
     <string name="fps_counter">Frame counter</string>
     <string name="fps_counter_tip">Frames per second in the top left corner.</string>
     <string name="install_path">Install path</string>
