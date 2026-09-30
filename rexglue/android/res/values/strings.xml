@@ -12,10 +12,6 @@
     <string name="bloom_tip">Sky bloom and the low-resolution gaussian blur.</string>
     <string name="blur">Blur on</string>
     <string name="blur_tip">Motion blur and radial blur.</string>
-    <string name="xenia">Xenia render</string>
-    <string name="xenia_tip">Draw with the Xenos backend (Xenia\'s renderer) instead of plume.</string>
-    <string name="windowed">Windowed</string>
-    <string name="windowed_tip">Run in a window. Fullscreen otherwise.</string>
     <string name="debug">Debug mode</string>
     <string name="debug_tip">Detailed logs, for reporting a problem. What is logged is set by the debug_* lines in xerenge.conf.</string>
     <string name="language">Language</string>

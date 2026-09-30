@@ -45,7 +45,6 @@ javac -nowarn -Xlint:none -source 17 -target 17 -encoding UTF-8 \
 
 echo "== native libraries"
 for lib in "$build/libmain.so" "$build/librexgpu-plume.so" "$runtime_libs/librexruntime.so" \
-           "$runtime_libs/librexgpu-xenos.so" \
            "$ndk/toolchains/llvm/prebuilt/linux-x86_64/sysroot/usr/lib/aarch64-linux-android/libc++_shared.so"; do
     [ -f "$lib" ] || { echo "missing: $lib" >&2; exit 1; }
     cp "$lib" "$out/pack/lib/arm64-v8a/"

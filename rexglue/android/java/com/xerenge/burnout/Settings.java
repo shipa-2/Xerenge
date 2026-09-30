@@ -226,7 +226,7 @@ final class Settings {
     void applyEnvironment() {
         if (!"true".equals(value("bloom"))) env("XERENGE_NO_BLOOM", "1");
         if (!"true".equals(value("motion_blur"))) env("XERENGE_NO_MOTION_BLUR", "1");
-        if (!"xenos".equals(value("renderer"))) {
+        {  // plume, the only renderer here
             for (String name : new String[] {"XERENGE_D3D_TARGETS", "XERENGE_D3D_UI", "XERENGE_SKIP_LOGOS",
                                              "XERENGE_REAL_SHADERS", "XERENGE_D3D_DRAWS", "XERENGE_SECONDARY_TICKS"}) {
                 env(name, "1");
@@ -252,7 +252,8 @@ final class Settings {
     /** The game's command line, as the desktop launcher builds it. */
     List<String> arguments(Context context) {
         File root = root(context);
-        String renderer = "xenos".equals(value("renderer")) ? "xenos" : "plume";
+        // Always plume: the Xenos plugin is not shipped on Android.
+        String renderer = "plume";
         String level = "info";
         if ("true".equals(value("debug"))) {
             level = value("debug_log_level").isEmpty() ? "debug" : value("debug_log_level");
@@ -267,7 +268,7 @@ final class Settings {
         args.add("--log_file=" + new File(root, "burnout.log").getAbsolutePath());
         args.add("--log_max_file_size_mb=32");
         args.add("--log_max_files=3");
-        args.add("true".equals(value("windowed")) ? "--no-fullscreen" : "--fullscreen");
+        args.add("--fullscreen");  // a phone has no windows to speak of
         if ("true".equals(value("debug")) && "true".equals(value("debug_noisy"))) {
             args.add("--log_noisy=true");
         }

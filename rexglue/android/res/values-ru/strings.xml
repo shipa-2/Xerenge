@@ -11,10 +11,6 @@
     <string name="bloom_tip">Свечение неба и размытие по Гауссу в низком разрешении.</string>
     <string name="blur">Размытие</string>
     <string name="blur_tip">Размытие в движении и радиальное размытие.</string>
-    <string name="xenia">Рендер Xenia</string>
-    <string name="xenia_tip">Рисовать бэкендом Xenos (рендерер Xenia) вместо plume.</string>
-    <string name="windowed">В окне</string>
-    <string name="windowed_tip">Запуск в окне, иначе на весь экран.</string>
     <string name="debug">Режим отладки</string>
     <string name="debug_tip">Подробные логи для сообщения о проблеме. Что пишется в лог, задают строки debug_* в xerenge.conf.</string>
     <string name="language">Язык</string>

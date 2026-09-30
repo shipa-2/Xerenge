@@ -91,7 +91,8 @@ public class InstallerActivity extends Activity {
     private TextView imageField;
     private Button imageBrowse;
     private Uri imageUri;
-    private CheckBox bloomBox, blurBox, xeniaBox, windowedBox, debugBox;
+    // No "Windowed" or "Xenia render" here: a phone runs full screen, and on plume.
+    private CheckBox bloomBox, blurBox, debugBox;
     private Spinner languageSpinner;
     private CheckBox asyncBox, earlySubmitBox, packedVerticesBox, cullingBox, fpsBox;
     private Spinner resolutionSpinner;
@@ -340,8 +341,6 @@ public class InstallerActivity extends Activity {
         // Off unless ticked.
         bloomBox = check(page, R.string.bloom, R.string.bloom_tip);
         blurBox = check(page, R.string.blur, R.string.blur_tip);
-        xeniaBox = check(page, R.string.xenia, R.string.xenia_tip);
-        windowedBox = check(page, R.string.windowed, R.string.windowed_tip);
         debugBox = check(page, R.string.debug, R.string.debug_tip);
 
         // The game asks for its language at every start unless one is set here.
@@ -456,8 +455,6 @@ public class InstallerActivity extends Activity {
     private void showSettings(Settings s) {
         bloomBox.setChecked(s.bloom);
         blurBox.setChecked(s.motionBlur);
-        xeniaBox.setChecked(s.xenia);
-        windowedBox.setChecked(s.windowed);
         debugBox.setChecked(s.debug);
         int language = indexOf(Settings.LANGUAGES, s.language);
         languageSpinner.setSelection(language >= 0 ? language : 1);
@@ -491,8 +488,8 @@ public class InstallerActivity extends Activity {
         s.preservedDebug = settings.preservedDebug;
         s.bloom = bloomBox.isChecked();
         s.motionBlur = blurBox.isChecked();
-        s.xenia = xeniaBox.isChecked();
-        s.windowed = windowedBox.isChecked();
+        s.xenia = false;
+        s.windowed = false;
         s.debug = debugBox.isChecked();
         s.language = Settings.LANGUAGES[languageSpinner.getSelectedItemPosition()][1];
         s.gamertag = gamertagEdit.getText().toString().trim();
@@ -648,7 +645,7 @@ public class InstallerActivity extends Activity {
 
     private void setBusy(boolean value) {
         busy = value;
-        for (View view : new View[] {bloomBox, blurBox, xeniaBox, installButton}) {
+        for (View view : new View[] {bloomBox, blurBox, installButton}) {
             view.setEnabled(!value);
         }
         refreshInstallState();
