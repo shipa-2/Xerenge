@@ -97,6 +97,24 @@ void RequestedRenderResolution(uint32_t* width, uint32_t* height) {
   }
 }
 
+// XERENGE_ASPECT_16_9 (the installer's "Keep 16:9"): the frame keeps the
+// console's shape on a screen of another one, centred with black bars.
+bool FixedAspect() {
+  static const bool fixed = std::getenv("XERENGE_ASPECT_16_9") != nullptr;
+  return fixed;
+}
+
+// The largest 16:9 rectangle inside the window, centred.
+plume::RenderRect AspectRect(uint32_t window_width, uint32_t window_height) {
+  uint32_t width = std::min(window_width, window_height * 16 / 9);
+  uint32_t height = width * 9 / 16;
+  width &= ~1u;
+  height &= ~1u;
+  const int32_t left = int32_t((window_width - width) / 2);
+  const int32_t top = int32_t((window_height - height) / 2);
+  return plume::RenderRect(left, top, left + int32_t(width), top + int32_t(height));
+}
+
 // Presents in the last whole second.
 uint32_t CountFps() {
   static auto second_started = std::chrono::steady_clock::now();
@@ -298,6 +316,12 @@ void PlumeSwapchain::CreateFramebuffers() {
   uint32_t requested_width = 0;
   uint32_t requested_height = 0;
   RequestedRenderResolution(&requested_width, &requested_height);
+  if (FixedAspect() && requested_width == 0) {
+    // "The device's" resolution, kept 16:9: as much of the screen as that shape fills.
+    const plume::RenderRect fit = AspectRect(window_width, window_height);
+    requested_width = uint32_t(fit.right - fit.left);
+    requested_height = uint32_t(fit.bottom - fit.top);
+  }
   const bool scaled = scene_wanted && requested_width != 0 &&
                       (requested_width != window_width || requested_height != window_height);
   const uint32_t width = scaled ? requested_width : window_width;
@@ -660,7 +684,8 @@ void PlumeSwapchain::ClearAndPresent(float r, float g, float b, float a, DrawEnc
     // At another size (XERENGE_RENDER_RESOLUTION) the frame is scaled onto
     // the window, filtered; at the window's own size it is a straight copy.
     if (width != window_width || height != window_height) {
-      if (!out->blitTexture(swapchain_texture, draw_target, true)) {
+      const plume::RenderRect letterbox = AspectRect(window_width, window_height);
+      if (!out->blitTexture(swapchain_texture, draw_target, true, FixedAspect() ? &letterbox : nullptr)) {
         static bool warned = false;
         if (!warned) {
           warned = true;

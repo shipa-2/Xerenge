@@ -51,6 +51,7 @@ final class Settings {
     String lobbyServer = DEFAULT_SERVER;
     boolean asyncPresent, earlySubmit = true, packedVertices = true, culling, fpsCounter;
     String renderResolution = "";
+    boolean aspect169 = true;  // Android: keep the frame 16:9, black bars on a wider screen
     // On-screen controls (Android only; the desktop has the keyboard instead).
     boolean touchControls = true;
     int touchOpacity = 40;  // percent
@@ -127,6 +128,7 @@ final class Settings {
         if (v.containsKey("render_resolution")) {
             settings.renderResolution = v.get("render_resolution");
         }
+        settings.aspect169 = flag(v, "aspect_16_9", settings.aspect169);
         settings.fpsCounter = flag(v, "fps_counter", settings.fpsCounter);
         settings.touchControls = flag(v, "touch_controls", settings.touchControls);
         try {
@@ -171,6 +173,8 @@ final class Settings {
            .append("packed_vertices = ").append(tf(packedVertices)).append('\n')
            .append("culling = ").append(tf(culling)).append('\n')
            .append("render_resolution = ").append(renderResolution).append('\n')
+           .append("# Keep the frame 16:9 (black bars on a wider screen)\n")
+           .append("aspect_16_9 = ").append(tf(aspect169)).append('\n')
            .append("fps_counter = ").append(tf(fpsCounter)).append('\n')
            .append("# On-screen controls: translucent pad buttons over the game, and how opaque (percent)\n")
            .append("touch_controls = ").append(tf(touchControls)).append('\n')
@@ -239,6 +243,7 @@ final class Settings {
         if ("false".equals(value("packed_vertices"))) env("XERENGE_FULL_VERTICES", "1");
         if ("true".equals(value("culling"))) env("XERENGE_CULL", "1");
         if (!value("render_resolution").isEmpty()) env("XERENGE_RENDER_RESOLUTION", value("render_resolution"));
+        if (!"false".equals(value("aspect_16_9"))) env("XERENGE_ASPECT_16_9", "1");
         if ("true".equals(value("fps_counter"))) env("XERENGE_FPS_SHOW", "1");
         if ("true".equals(value("debug"))) {
             if ("true".equals(value("debug_gpu_trace"))) env("XERENGE_GPU_TRACE", "1");

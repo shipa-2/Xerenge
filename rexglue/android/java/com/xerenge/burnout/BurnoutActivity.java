@@ -46,6 +46,13 @@ public class BurnoutActivity extends SDLActivity {
         }
     }
 
+    // Always landscape, either way up: SDL would otherwise allow any
+    // orientation for a resizable window, and the game started in portrait.
+    @Override
+    public void setOrientationBis(int w, int h, boolean resizable, String hint) {
+        setRequestedOrientation(android.content.pm.ActivityInfo.SCREEN_ORIENTATION_SENSOR_LANDSCAPE);
+    }
+
     @Override
     protected String[] getLibraries() {
         // SDL itself is linked into librexruntime.so, which libmain.so needs;

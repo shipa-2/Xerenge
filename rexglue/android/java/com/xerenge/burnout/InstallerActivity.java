@@ -96,6 +96,7 @@ public class InstallerActivity extends Activity {
     private Spinner languageSpinner;
     private CheckBox asyncBox, earlySubmitBox, packedVerticesBox, cullingBox, fpsBox;
     private Spinner resolutionSpinner;
+    private CheckBox aspectBox;
     private TextView gpuStatus;
     private Button driverButton, systemDriverButton;
     // The network tab.
@@ -366,6 +367,7 @@ public class InstallerActivity extends Activity {
         label(resolutionRow, getString(R.string.render_resolution), 15, false, Color.WHITE).setPadding(0, 0, dp(12), 0);
         resolutionSpinner = spinner(resolutionRow, Settings.RESOLUTIONS, getString(R.string.resolution_window));
         note(hacks, R.string.render_resolution_tip);
+        aspectBox = check(hacks, R.string.aspect_16_9, R.string.aspect_16_9_tip);
         fpsBox = check(hacks, R.string.fps_counter, R.string.fps_counter_tip);
         hacks.setVisibility(View.GONE);
         page.addView(hacks);
@@ -464,6 +466,7 @@ public class InstallerActivity extends Activity {
         cullingBox.setChecked(s.culling);
         int resolution = indexOf(Settings.RESOLUTIONS, s.renderResolution);
         resolutionSpinner.setSelection(Math.max(resolution, 0));
+        aspectBox.setChecked(s.aspect169);
         fpsBox.setChecked(s.fpsCounter);
     }
 
@@ -501,6 +504,7 @@ public class InstallerActivity extends Activity {
         s.packedVertices = packedVerticesBox.isChecked();
         s.culling = cullingBox.isChecked();
         s.renderResolution = Settings.RESOLUTIONS[resolutionSpinner.getSelectedItemPosition()][1];
+        s.aspect169 = aspectBox.isChecked();
         s.fpsCounter = fpsBox.isChecked();
         s.touchControls = touchBox.isChecked();
         s.touchOpacity = opacityBar.getProgress() + 10;
