@@ -23,7 +23,7 @@ namespace {
 // frame (Ryzen 5 4500U) for an image to come back from the display, and a
 // frame that missed a vblank by that much was held to the next - 30 fps.
 constexpr uint32_t kBufferCount = 3;
-constexpr plume::RenderFormat kSwapchainFormat = plume::RenderFormat::B8G8R8A8_UNORM;
+constexpr plume::RenderFormat kSwapchainFormat = kColorTargetFormat;
 
 // XERENGE_FPS_SHOW=1: presents per second, in the top left corner.
 bool FpsShown() {
@@ -328,11 +328,11 @@ void PlumeSwapchain::CreateFramebuffers() {
     // Same format as the swapchain, so presenting it is a straight copy.
     scene_texture_ = scene_target_enabled
                          ? device_->createTexture(plume::RenderTextureDesc::ColorTarget(
-                               width, height, plume::RenderFormat::B8G8R8A8_UNORM))
+                               width, height, kColorTargetFormat))
                          : nullptr;
     if (scene_texture_ && PlumeSecondTargetEnabled()) {
       scene_texture1_ = device_->createTexture(plume::RenderTextureDesc::ColorTarget(
-          width, height, plume::RenderFormat::B8G8R8A8_UNORM));
+          width, height, kColorTargetFormat));
     }
     if (scene_texture_) {
       const plume::RenderTexture* scene_attachments[2] = {scene_texture_.get(),
@@ -651,7 +651,7 @@ void PlumeSwapchain::ClearAndPresent(float r, float g, float b, float a, DrawEnc
                                  int32_t(width / 2 + 32), int32_t(height / 2 + 32));
       out->copyTextureRegion(
           plume::RenderTextureCopyLocation::PlacedFootprint(probe_buffer_.get(),
-                                                            plume::RenderFormat::B8G8R8A8_UNORM,
+                                                            kColorTargetFormat,
                                                             64, 64, 1, 64, 0),
           plume::RenderTextureCopyLocation::Subresource(draw_target, 0, 0), 0, 0, 0, &box);
       probe_pending_ = true;

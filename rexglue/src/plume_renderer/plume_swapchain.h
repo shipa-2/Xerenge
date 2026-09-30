@@ -32,6 +32,14 @@ namespace rex::plume_renderer {
 // Depth buffer format for the presentation framebuffer. Pipelines that enable
 // depth have to declare the same one, so both sides read it from here.
 inline constexpr plume::RenderFormat kPlumeDepthFormat = plume::RenderFormat::D32_FLOAT;
+// The colour targets' format, the swapchain's included: frames are copied
+// from the one to the other, so they have to agree. Android surfaces offer
+// R8G8B8A8 (no B8G8R8A8), desktops B8G8R8A8.
+#if defined(__ANDROID__)
+inline constexpr plume::RenderFormat kColorTargetFormat = plume::RenderFormat::R8G8B8A8_UNORM;
+#else
+inline constexpr plume::RenderFormat kColorTargetFormat = plume::RenderFormat::B8G8R8A8_UNORM;
+#endif
 
 class PlumeSwapchain {
  public:

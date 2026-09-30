@@ -2585,12 +2585,12 @@ plume::RenderPipeline* PlumeDrawContext::ScreenPipelineFor(
   // attachment either way, and the pipeline has to agree with it.
   desc.depthTargetFormat = kPlumeDepthFormat;
   desc.renderTargetCount = 1;
-  desc.renderTargetFormat[0] = plume::RenderFormat::B8G8R8A8_UNORM;
+  desc.renderTargetFormat[0] = kColorTargetFormat;
   desc.renderTargetBlend[0] = BlendDescFromGuest(blend_control, write_mask);
   if (PlumeSecondTargetEnabled()) {
     // Declared, never written: this shader has no second output.
     desc.renderTargetCount = 2;
-    desc.renderTargetFormat[1] = plume::RenderFormat::B8G8R8A8_UNORM;
+    desc.renderTargetFormat[1] = kColorTargetFormat;
     desc.renderTargetBlend[1] = BlendDescFromGuest(0x00010001u, 0);
   }
   desc.inputSlots = &input_slots_[0];
@@ -2965,7 +2965,7 @@ plume::RenderPipeline* PlumeDrawContext::GetOrCreatePipeline(
   // and the pipeline has to agree with it.
   desc.depthTargetFormat = kPlumeDepthFormat;
   desc.renderTargetCount = 1;
-  desc.renderTargetFormat[0] = plume::RenderFormat::B8G8R8A8_UNORM;
+  desc.renderTargetFormat[0] = kColorTargetFormat;
   desc.renderTargetBlend[0] = BlendDescFromGuest(blend_control, WriteMaskForRt0(color_mask));
   if (PlumeSecondTargetEnabled()) {
     // Render target 1 takes the shader's second output, unblended, through
@@ -2973,7 +2973,7 @@ plume::RenderPipeline* PlumeDrawContext::GetOrCreatePipeline(
     // a second target bound (the caller clears those bits otherwise), so a
     // pass drawing into one target leaves the other's contents alone.
     desc.renderTargetCount = 2;
-    desc.renderTargetFormat[1] = plume::RenderFormat::B8G8R8A8_UNORM;
+    desc.renderTargetFormat[1] = kColorTargetFormat;
     desc.renderTargetBlend[1] = BlendDescFromGuest(
         0x00010001u, PixelShaderWritesOc1(ps_hash) ? WriteMaskForRt0(color_mask >> 4) : 0);
   }
@@ -4944,18 +4944,18 @@ void PlumeDrawContext::ResolveRenderTarget(plume::RenderCommandList* list,
     plume::RenderTextureDesc desc =
         cube ? plume::RenderTextureDesc::Texture(plume::RenderTextureDimension::TEXTURE_2D,
                                                  dest_width, dest_height, 1, 1, 6,
-                                                 plume::RenderFormat::B8G8R8A8_UNORM,
+                                                 kColorTargetFormat,
                                                  plume::RenderTextureFlag::CUBE)
              : plume::RenderTextureDesc::Texture2D(dest_width, dest_height, 1,
-                                                   plume::RenderFormat::B8G8R8A8_UNORM);
+                                                   kColorTargetFormat);
     desc.committed = true;
     target.texture = device_->createTexture(desc);
     if (!target.texture) {
       return;
     }
     target.view = target.texture->createTextureView(
-        cube ? plume::RenderTextureViewDesc::TextureCube(plume::RenderFormat::B8G8R8A8_UNORM)
-             : plume::RenderTextureViewDesc::Texture2D(plume::RenderFormat::B8G8R8A8_UNORM));
+        cube ? plume::RenderTextureViewDesc::TextureCube(kColorTargetFormat)
+             : plume::RenderTextureViewDesc::Texture2D(kColorTargetFormat));
     target.cube = cube;
     if (!target.view) {
       target.texture.reset();
