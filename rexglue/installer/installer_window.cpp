@@ -130,6 +130,7 @@ if [ "$(value debug)" = true ]; then
     [ "$(value debug_gpu_trace)" = true ] && export XERENGE_GPU_TRACE=1
     [ "$(value debug_movie_trace)" = true ] && export XERENGE_MOVIE_TRACE=1
     [ "$(value debug_pipeline_log)" = true ] && export XERENGE_PIPELINE_LOG=1
+    [ "$(value debug_vertex_trace)" = false ] || export XERENGE_VERTEX_TRACE=1
     [ "$(value debug_noisy)" = true ] && extra="$extra --log_noisy=true"
 fi
 
@@ -221,6 +222,7 @@ if defined debug_log_level set "level=%debug_log_level%"
 if /i "%debug_gpu_trace%"=="true" set "XERENGE_GPU_TRACE=1"
 if /i "%debug_movie_trace%"=="true" set "XERENGE_MOVIE_TRACE=1"
 if /i "%debug_pipeline_log%"=="true" set "XERENGE_PIPELINE_LOG=1"
+if /i not "%debug_vertex_trace%"=="false" set "XERENGE_VERTEX_TRACE=1"
 if /i "%debug_noisy%"=="true" set "extra=%extra% --log_noisy=true"
 :debug_done
 
@@ -882,6 +884,7 @@ void InstallerWindow::StartInstall() {
         << "#   debug_gpu_trace: the renderer's per-draw and per-frame diagnostics (large)\n"
         << "#   debug_movie_trace: the video player's states\n"
         << "#   debug_pipeline_log: every render pipeline built\n"
+        << "#   debug_vertex_trace: vertex attributes that come out as NaN or absurd (on unless false)\n"
         << "#   debug_noisy: the per-frame log lines as well (very large)\n";
     if (!preserved_debug_settings_.isEmpty()) {
       out << preserved_debug_settings_;
@@ -890,6 +893,7 @@ void InstallerWindow::StartInstall() {
           << "debug_gpu_trace = true\n"
           << "debug_movie_trace = false\n"
           << "debug_pipeline_log = false\n"
+          << "debug_vertex_trace = true\n"
           << "debug_noisy = false\n";
     }
     out.flush();

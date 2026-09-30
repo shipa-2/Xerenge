@@ -3390,6 +3390,46 @@ void PlumeDrawContext::UnpackVertices(const GuestDrawSnapshot& snap,
       float unpacked[4];
       UnpackVertex(static_cast<rex::graphics::xenos::VertexFormat>(attr.format), data,
                    attr.is_signed, attr.is_normalized, unpacked);
+      // An attribute that comes out as NaN or absurdly large (crash mode: debris drawn by a hand-instanced shader
+      // came out as black needles, one attribute of the vertices holding -nan or -2.9e38) is logged once for its
+      // shader and location with everything that decides where it was read, and zeroed - a spike in a vertex
+      // costs the whole frame its picture. The log line needs XERENGE_VERTEX_TRACE (the launcher's debug_vertex_trace);
+      // XERENGE_KEEP_BAD_VERTICES=1 keeps the raw values.
+      {
+        bool absurd = false;
+        for (float x : unpacked) {
+          absurd = absurd || !std::isfinite(x) || std::fabs(x) > 1.0e12f;
+        }
+        if (absurd) {
+          static const bool keep = std::getenv("XERENGE_KEEP_BAD_VERTICES") != nullptr;
+          static const bool trace = std::getenv("XERENGE_VERTEX_TRACE") != nullptr;
+          static std::mutex bad_mutex;
+          static std::set<uint64_t> bad_seen;
+          bool fresh = false;
+          {
+            std::lock_guard lock(bad_mutex);
+            fresh = bad_seen.size() < 64 &&
+                    bad_seen.insert(snap.vs_hash ^ (uint64_t(attr.location) << 58)).second;
+          }
+          if (fresh && trace) {
+            REXLOG_WARN(
+                "plume: absurd vertex attribute vs={:016X} loc={} fmt={} signed={} norm={} fetch={} stride={} "
+                "off={} vertex {} (fetched {}) raw={:08X} {:08X} {:08X} {:08X} -> ({},{},{},{}) at dword {:08X} "
+                "base {:08X} stream0={} indexed={} mesh_vertices={} draw indices={}",
+                snap.vs_hash, attr.location, uint32_t(attr.format), attr.is_signed, attr.is_normalized,
+                attr.fetch_const, attr.stride_dwords, attr.offset_dwords, vi, fetch_vertex, data[0], data[1],
+                data[2], data[3], unpacked[0], unpacked[1], unpacked[2], unpacked[3], uint32_t(dword_addr),
+                uint32_t(prep.base_dwords), prep.stream0, index_instanced, mesh_vertices, snap.num_indices);
+          }
+          if (!keep) {
+            for (float& x : unpacked) {
+              if (!std::isfinite(x) || std::fabs(x) > 1.0e12f) {
+                x = 0.0f;
+              }
+            }
+          }
+        }
+      }
       if (from_d3d && vi == 0 && attr.location == 0) {
         static std::atomic<uint64_t> shown{0};
         if (shown.fetch_add(1, std::memory_order_relaxed) < 6) {
