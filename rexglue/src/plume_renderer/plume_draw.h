@@ -767,4 +767,7 @@ class PlumeDrawContext {
   uint32_t next_bindless_ = 1;
 };
 
+// Tells the vertex/constant writer trap (plume_draw.cpp) where the Direct3D device is.
+void NoteD3DDeviceForTrap(uint32_t device_guest);
+
 }  // namespace rex::plume_renderer

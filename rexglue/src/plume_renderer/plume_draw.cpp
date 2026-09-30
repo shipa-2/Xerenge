@@ -53,6 +53,7 @@ namespace rex::plume_renderer {
 
 namespace {
 void TrapArm(uint32_t physical_byte_address);  // the vertex writer trap, defined below
+void CheckShaderConstants(const GuestDrawSnapshot& snap);  // the constants trace, defined below
 }  // namespace
 
 std::string g_plume_frame_summary;
@@ -3233,6 +3234,7 @@ void PlumeDrawContext::UnpackVertices(const GuestDrawSnapshot& snap,
                   restarts, highest, head);
     }
   }
+  CheckShaderConstants(snap);
   // Hand-instanced shaders: see IsIndexInstancedShader.
   const auto* vs_info = FindResolvedVfetch(snap.vs_hash);
   const bool index_instanced = vs_info ? vs_info->is_index_instanced : false;
@@ -4898,6 +4900,7 @@ namespace {
 struct VertexTrap {
   std::mutex mutex;
   std::vector<std::pair<uint32_t, uint32_t>> ranges;  // physical start, length
+  std::vector<const char*> kinds;                      // "vertices" or "constants", one per range
   std::map<uint64_t, uint32_t> writers;                // stack signature -> writes
   std::atomic<bool> armed{false};
   std::atomic<uint32_t> events{0};
@@ -4926,6 +4929,7 @@ void TrapArm(uint32_t physical_byte_address) {
   const uint32_t page = physical_byte_address & ~0xFFFu;
   const uint32_t start = page >= 0x8000u ? page - 0x8000u : 0u;
   trap.ranges.emplace_back(start, 0x14000u);  // 20 pages around it
+  trap.kinds.push_back("vertices");
   trap.armed.store(true, std::memory_order_relaxed);
   REXLOG_INFO("plume: vertex trap: watching physical {:08X}..{:08X}", start, start + 0x14000u);
 }
@@ -4950,11 +4954,14 @@ void TrapHit(uint32_t start, uint32_t length) {
 #if defined(__linux__)
   auto& trap = Trap();
   bool inside = false;
+  const char* kind = "vertices";
   {
     std::lock_guard lock(trap.mutex);
-    for (const auto& [range_start, range_length] : trap.ranges) {
+    for (size_t r = 0; r < trap.ranges.size(); ++r) {
+      const auto& [range_start, range_length] = trap.ranges[r];
       if (start < range_start + range_length && start + std::max(length, 1u) > range_start) {
         inside = true;
+        kind = trap.kinds[r];
         break;
       }
     }
@@ -4968,13 +4975,14 @@ void TrapHit(uint32_t start, uint32_t length) {
   for (int i = 3; i < count && i < 12; ++i) {
     signature = signature * 1099511628211ull ^ reinterpret_cast<uintptr_t>(frames[i]);
   }
+  signature ^= reinterpret_cast<uintptr_t>(kind);
   const uint32_t event = trap.events.fetch_add(1, std::memory_order_relaxed);
   bool first = false;
   uint32_t seen = 0;
   {
     std::lock_guard lock(trap.mutex);
     uint32_t& writes = trap.writers[signature];
-    first = writes++ == 0 && trap.writers.size() <= 48;
+    first = writes++ == 0 && trap.writers.size() <= 64;
     seen = writes;
   }
   if (first) {
@@ -4990,8 +4998,8 @@ void TrapHit(uint32_t start, uint32_t length) {
         }
       }
     }
-    REXLOG_INFO("plume: vertex trap: a new writer #{} of physical {:08X}+{}, event {}:{}", trap.writers.size(),
-                start, length, event, stack);
+    REXLOG_INFO("plume: vertex trap: a new writer #{} of {} at physical {:08X}+{}, event {}:{}", trap.writers.size(),
+                kind, start, length, event, stack);
   } else if ((event % 2000) == 1999) {
     REXLOG_INFO("plume: vertex trap: {} events, {} distinct writers", event + 1, trap.writers.size());
   }
@@ -5001,7 +5009,91 @@ void TrapHit(uint32_t start, uint32_t length) {
   (void)length;
 #endif
 }
+
+// The Direct3D device the title draws with (its shader constants live at device + 0x780, see
+// plume_graphics_system.cpp); told to us when the graphics system finds it.
+std::atomic<uint32_t> g_trap_device{0};
+
+// The vertex shader constants shadow, 4 KB from device + 0x780: watched, so the writers of a constant register that turns
+// out absurd (see CheckShaderConstants) show up. Only the first write to a page after each re-arm is seen.
+void TrapArmConstants() {
+  const uint32_t device = g_trap_device.load(std::memory_order_relaxed);
+  if (device == 0) {
+    return;
+  }
+  // Guest virtual to physical, as the vertex cache does it.
+  const uint32_t constants = device + 0x780u;
+  const uint32_t physical = (constants & 0x1FFFFFFFu) + (((constants >> 20) + 0x200u) & 0x1000u);
+  const uint32_t start = physical & ~0xFFFu;
+  auto& trap = Trap();
+  std::lock_guard lock(trap.mutex);
+  for (const char* kind : trap.kinds) {
+    if (std::strcmp(kind, "constants") == 0) {
+      return;
+    }
+  }
+  trap.ranges.emplace_back(start, 0x3000u);
+  trap.kinds.push_back("constants");
+  trap.armed.store(true, std::memory_order_relaxed);
+  REXLOG_INFO("plume: vertex trap: watching the shader constants, physical {:08X}..{:08X} (device {:08X})", start,
+              start + 0x3000u, device);
+}
+
+// XERENGE_CONSTANT_TRACE (the launcher's debug_constant_trace): an absurd value (NaN, infinity, beyond 1e8) in one of the
+// vertex shader's placement-matrix registers - the ones that carry object and bone transforms - is logged once per shader
+// and register with the 4x4 block it sits in and the draw, and starts the writer trap on the constants.
+void CheckShaderConstants(const GuestDrawSnapshot& snap) {
+  static const bool on = std::getenv("XERENGE_CONSTANT_TRACE") != nullptr;
+  if (!on) {
+    return;
+  }
+  const ShaderSourceInfo* info = FindShaderSourceInfo(snap.vs_hash);
+  if (!info || info->matrix_registers.empty()) {
+    return;
+  }
+  const float* constants = reinterpret_cast<const float*>(snap.vs_constants.data());
+  for (uint16_t reg : info->matrix_registers) {
+    if (reg >= 256) {
+      continue;
+    }
+    bool absurd = false;
+    for (int i = 0; i < 4; ++i) {
+      const float x = constants[size_t(reg) * 4 + i];
+      absurd = absurd || !std::isfinite(x) || std::fabs(x) > 1.0e8f;
+    }
+    if (!absurd) {
+      continue;
+    }
+    static std::mutex seen_mutex;
+    static std::set<uint64_t> seen;
+    bool fresh = false;
+    {
+      std::lock_guard lock(seen_mutex);
+      fresh = seen.size() < 96 && seen.insert(snap.vs_hash ^ (uint64_t(reg) << 52)).second;
+    }
+    if (fresh) {
+      const uint32_t base = reg & ~3u;
+      std::string block;
+      for (uint32_t r = base; r < base + 4 && r < 256; ++r) {
+        block += fmt::format(" c{}=({:.4g},{:.4g},{:.4g},{:.4g})", r, constants[r * 4], constants[r * 4 + 1],
+                             constants[r * 4 + 2], constants[r * 4 + 3]);
+      }
+      REXLOG_WARN(
+          "plume: absurd shader constant vs={:016X} c{} in the block at c{}:{} - placement registers {} (c{}..c{}), "
+          "prim {} indices {} vb {:08X} stride {}",
+          snap.vs_hash, reg, base, block, info->matrix_registers.size(), info->matrix_registers.front(),
+          info->matrix_registers.back(), snap.prim_type, snap.num_indices, snap.d3d_vertex_buffer,
+          snap.d3d_vertex_stride);
+    }
+    TrapArmConstants();
+    return;
+  }
+}
 }  // namespace
+
+void NoteD3DDeviceForTrap(uint32_t device_guest) {
+  g_trap_device.store(device_guest, std::memory_order_relaxed);
+}
 
 constexpr uint32_t kWatchedPages = 0x20000000u >> 12;  // 512 MB of physical memory
 

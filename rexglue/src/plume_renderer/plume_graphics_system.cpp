@@ -522,6 +522,7 @@ void PlumeGraphicsSystem::NoteGuestDraw(uint32_t primitive_type, uint32_t index_
 void PlumeGraphicsSystem::BindGuestD3DDevice(uint32_t device_guest) {
   if (device_guest >= 0x10000000 && device_guest < 0x80000000 && (device_guest & 0xF) == 0) {
     d3d_device_guest_.store(device_guest, std::memory_order_relaxed);
+    NoteD3DDeviceForTrap(device_guest);
   }
 }
 
