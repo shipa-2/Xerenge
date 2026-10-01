@@ -22,6 +22,7 @@
 #include <rex/hook.h>
 #include <rex/logging.h>
 #include <rex/ppc.h>
+#include "ealobby/aries.h"
 #include "guest_memory.h"
 
 REXCVAR_DECLARE(bool, online);
@@ -1035,12 +1036,7 @@ REX_HOOK_RAW(sub_82372638) {
 
 REX_HOOK_RAW(sub_8222A2C8) {
   if (Online()) {
-    {
-      const std::string nm = GuestText(base, ctx.r4.u32);
-      uint32_t h = 0;
-      for (int i = 0; i < 4; ++i) h = (h << 8) | (i < int(nm.size()) ? uint8_t(nm[i]) : 0);
-      ctx.r3.u32 = h;
-    }
+    ctx.r3.u32 = ealobby::PlayerId(GuestText(base, ctx.r4.u32));
     REXLOG_INFO("--online: ForEachNetworkOpponent id={} name='{}' local={} r7={:08X} r8={} lr={:08X}", int32_t(ctx.r3.u32),
                 GuestText(base, ctx.r4.u32), ctx.r6.u32 & 0xFF, ctx.r7.u32, ctx.r8.u32, uint32_t(ctx.lr));
   }

@@ -45,4 +45,17 @@ bool TakeMessage(std::vector<uint8_t>* buffer, Message* message);
 // A body for a log line: printable text, other bytes as \xNN, newlines as |.
 std::string Printable(const std::string& body);
 
+// The id a player goes by in a game: ConnApi's client id and the lobby's
+// OPIDn, which the game matches against each other. A hash of the whole
+// gamertag (FNV-1a), so names sharing four letters ("Shipa", "Shipa_2") no
+// longer collide; positive and non-zero, as -1 and 0 mean "no player".
+inline uint32_t PlayerId(const std::string& name) {
+  uint32_t h = 2166136261u;
+  for (unsigned char c : name) {
+    h = (h ^ c) * 16777619u;
+  }
+  h &= 0x7FFFFFFFu;
+  return h ? h : 1;
+}
+
 }  // namespace ealobby

@@ -1030,14 +1030,8 @@ Fields Server::GameRecord(const Game& game, const Connection& to) const {
       continue;
     }
     const std::string n = std::to_string(count++);
-    {
-      // The game finds a remote player in its manager by the id ConnApi gave it: the first four gamertag characters.
-      uint32_t opid = 0;
-      for (size_t i = 0; i < 4; ++i) {
-        opid = (opid << 8) | (i < player->user.size() ? uint8_t(player->user[i]) : 0);
-      }
-      record["OPID" + n] = std::to_string(opid);
-    }
+    // The game finds a remote player in its manager by the id ConnApi gave it.
+    record["OPID" + n] = std::to_string(PlayerId(player->user));
     record["OPPO" + n] = player->user;
     record["ADDR" + n] = address(*player);
     record["LADDR" + n] = address(*player);

@@ -11,7 +11,7 @@ set -e
 cd "$(dirname "$0")"
 out=build-lobby/ealobby
 if [ ! -x "$out" ] || [ src/ealobby/server.cpp -nt "$out" ] || [ src/ealobby/server.h -nt "$out" ] ||
-   [ src/ealobby/aries.cpp -nt "$out" ] || [ tools/ealobby/main.cpp -nt "$out" ]; then
+   [ src/ealobby/aries.cpp -nt "$out" ] || [ src/ealobby/aries.h -nt "$out" ] || [ tools/ealobby/main.cpp -nt "$out" ]; then
     mkdir -p build-lobby
     echo "building the lobby server..." >&2
     ${CXX:-c++} -std=c++17 -O2 -pthread -Isrc \
