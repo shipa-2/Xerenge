@@ -76,13 +76,10 @@ if(NOT XERENGE_SHADER_CACHE_CPP)
         set(XERENGE_SHADER_CACHE_CPP "${_bootstrap_shader_cache}")
     endif()
 endif()
-if(NOT XERENGE_SHADER_CACHE_EXTRA_CPP)
-    set(_default_shader_cache_extra
-        "${CMAKE_CURRENT_SOURCE_DIR}/../../xerenge-release/shader-cache-src/shader_cache_extra.cpp")
-    if(EXISTS "${_default_shader_cache_extra}")
-        set(XERENGE_SHADER_CACHE_EXTRA_CPP "${_default_shader_cache_extra}")
-    endif()
-endif()
+# The old hand-made extra cache (xerenge-release/shader-cache-src) is no longer
+# picked up by itself: its shaders read constants through buffer addresses, and
+# the pipelines now bind them as uniform buffers. Name one with
+# -DXERENGE_SHADER_CACHE_EXTRA_CPP= only if it was translated the current way.
 if(NOT XERENGE_SHADER_CACHE_BOOTSTRAP_CPP)
     # The runtime-assembled shaders: translate_runtime_shaders.sh's output,
     # which supersedes the older hand-wrapped bootstrap cache.

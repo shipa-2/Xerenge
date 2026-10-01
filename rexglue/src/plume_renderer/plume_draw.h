@@ -735,9 +735,8 @@ class PlumeDrawContext {
   void* ps_constants_mapped_ = nullptr;
   void* shared_constants_mapped_ = nullptr;
   float* vb_mapped_ = nullptr;
-  uint64_t vs_constants_addr_ = 0;
-  uint64_t ps_constants_addr_ = 0;
-  uint64_t shared_constants_addr_ = 0;
+  // The three constant buffers, bound as set 4 with each draw's offsets.
+  std::unique_ptr<plume::RenderDescriptorSet> constants_set_;
 
   std::array<plume::RenderInputSlot, 1> input_slots_{};
   std::array<plume::RenderInputElement, 32> input_elements_{};

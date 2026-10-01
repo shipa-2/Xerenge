@@ -28,7 +28,8 @@ std::vector<uint16_t> ParseMatrixRegisters(const std::string& hlsl) {
   // Every named vertex constant and where it starts.
   std::vector<std::pair<uint32_t, bool>> starts;  // register, is a matrix
   static constexpr std::string_view kDefine = "#define g";
-  static constexpr std::string_view kBase = "g_PushConstants.VertexShaderConstants + ";
+  // "g_VertexShaderConstants[START + min(INDEX, ...)]" for arrays, "[REGISTER]" for single ones.
+  static constexpr std::string_view kBase = "g_VertexShaderConstants[";
   for (size_t at = hlsl.find(kDefine); at != std::string::npos; at = hlsl.find(kDefine, at + 1)) {
     const size_t eol = hlsl.find('\n', at);
     const std::string line = hlsl.substr(at, eol == std::string::npos ? std::string::npos : eol - at);
@@ -36,14 +37,7 @@ std::vector<uint16_t> ParseMatrixRegisters(const std::string& hlsl) {
     if (base == std::string::npos) {
       continue;
     }
-    // "+ (START + min(INDEX, ...)) * 16" for arrays, "+ OFFSET," for single ones.
-    size_t num = base + kBase.size();
-    uint32_t reg = 0;
-    if (line[num] == '(') {
-      reg = uint32_t(std::strtoul(line.c_str() + num + 1, nullptr, 10));
-    } else {
-      reg = uint32_t(std::strtoul(line.c_str() + num, nullptr, 10)) / 16;
-    }
+    const uint32_t reg = uint32_t(std::strtoul(line.c_str() + base + kBase.size(), nullptr, 10));
     const std::string id = line.substr(8, line.find_first_of("( ", 8) - 8);
     bool matrix = false;
     for (const char* m : kMatrices) {
@@ -135,7 +129,7 @@ ShaderSourceInfo ParseShaderSource(std::string_view src) {
   }
   info.writes_oc1 = src.find("output.oC1") != std::string_view::npos;
   static constexpr std::string_view kSamplerKey =
-      "_Texture2DDescriptorIndex vk::RawBufferLoad<uint>(g_PushConstants.SharedConstants + ";
+      "_Texture2DDescriptorIndex XENOS_SHARED_UINT(";
   for (size_t at = src.find(kSamplerKey); at != std::string_view::npos;
        at = src.find(kSamplerKey, at + 1)) {
     const std::string digits(src.substr(at + kSamplerKey.size(), 12));

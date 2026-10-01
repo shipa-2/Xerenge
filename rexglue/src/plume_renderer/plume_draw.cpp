@@ -299,7 +299,6 @@ bool DecodeCompressedForDump(rex::graphics::xenos::TextureFormat base_fmt,
 constexpr uint32_t kBindlessTextureCount = 4096;
 constexpr uint32_t kIdentityLutSize = 64;
 constexpr uint32_t kBindlessSamplerCount = 64;
-constexpr uint32_t kPushConstantBytes = 24;
 constexpr uint32_t kVsConstantBytes = 256 * 16;
 constexpr uint32_t kPsConstantBytes = 256 * 16;
 constexpr uint32_t kSharedConstantBytes = 512;
@@ -2215,9 +2214,7 @@ void PlumeDrawContext::Shutdown() {
   ps_constants_mapped_ = nullptr;
   shared_constants_mapped_ = nullptr;
   vb_mapped_ = nullptr;
-  vs_constants_addr_ = 0;
-  ps_constants_addr_ = 0;
-  shared_constants_addr_ = 0;
+  constants_set_.reset();
   vs_constants_.reset();
   ps_constants_.reset();
   shared_constants_.reset();
@@ -2290,8 +2287,23 @@ bool PlumeDrawContext::Initialize(plume::RenderDevice* device) {
   }
   layout_builder.addDescriptorSet(sampler_set_builder);
 
-  layout_builder.addPushConstant(0, 4, kPushConstantBytes,
-                                 plume::RenderShaderStageFlag::VERTEX | plume::RenderShaderStageFlag::PIXEL);
+  // Set 4: the draw's vertex, pixel and shared constants, three uniform buffers
+  // bound at each draw's slot by dynamic offsets (shader_common.h) - plain
+  // Vulkan, where the shaders used to read them through buffer device
+  // addresses passed as push constants.
+  plume::RenderDescriptorSetBuilder constants_set_builder;
+  constants_set_builder.begin();
+  constants_set_builder.addConstantBufferDynamic(0);
+  constants_set_builder.addConstantBufferDynamic(1);
+  constants_set_builder.addConstantBufferDynamic(2);
+  constants_set_builder.end();
+  constants_set_ = constants_set_builder.create(device_);
+  if (!constants_set_) {
+    REXLOG_ERROR("plume: draw constants descriptor set failed");
+    Shutdown();
+    return false;
+  }
+  layout_builder.addDescriptorSet(constants_set_builder);
   layout_builder.end();
   pipeline_layout_ = layout_builder.create(device_);
   if (!pipeline_layout_) {
@@ -2415,7 +2427,7 @@ bool PlumeDrawContext::Initialize(plume::RenderDevice* device) {
 
   auto make_cb = [&](uint64_t size, const char* tag) -> std::unique_ptr<plume::RenderBuffer> {
     auto buffer = device_->createBuffer(plume::RenderBufferDesc::UploadBuffer(
-        size, plume::RenderBufferFlag::CONSTANT | plume::RenderBufferFlag::DEVICE_ADDRESSABLE));
+        size, plume::RenderBufferFlag::CONSTANT));
     if (!buffer || !VulkanBufferOk(buffer.get())) {
       REXLOG_ERROR("plume: draw {} buffer failed", tag);
       return nullptr;
@@ -2441,9 +2453,9 @@ bool PlumeDrawContext::Initialize(plume::RenderDevice* device) {
   std::memset(vs_constants_mapped_, 0, size_t(kVsSlotBytes) * kCbSlots);
   std::memset(ps_constants_mapped_, 0, size_t(kPsSlotBytes) * kCbSlots);
   std::memset(shared_constants_mapped_, 0, size_t(kSharedSlotBytes) * kCbSlots);
-  vs_constants_addr_ = vs_constants_->getDeviceAddress();
-  ps_constants_addr_ = ps_constants_->getDeviceAddress();
-  shared_constants_addr_ = shared_constants_->getDeviceAddress();
+  constants_set_->setBuffer(0, vs_constants_.get(), kVsConstantBytes);
+  constants_set_->setBuffer(1, ps_constants_.get(), kPsConstantBytes);
+  constants_set_->setBuffer(2, shared_constants_.get(), kSharedConstantBytes);
 
   dummy_vb_ = device_->createBuffer(plume::RenderBufferDesc::VertexBuffer(
       uint64_t(kDummyVertexCount) * kVertexStrideBytes, plume::RenderHeapType::UPLOAD));
@@ -6700,10 +6712,9 @@ void PlumeDrawContext::EncodeDraws(plume::RenderCommandList* list,
     }
     EncodeStage("recording the draw");
 
-    const uint64_t push[3] = {vs_constants_addr_ + vs_slot * kVsSlotBytes,
-                              ps_constants_addr_ + ps_slot * kPsSlotBytes,
-                              shared_constants_addr_ + shared_slot * kSharedSlotBytes};
-    list->setGraphicsPushConstants(0, push, 0, kPushConstantBytes);
+    const uint32_t constant_offsets[3] = {vs_slot * kVsSlotBytes, ps_slot * kPsSlotBytes,
+                                          shared_slot * kSharedSlotBytes};
+    list->setGraphicsDescriptorSetDynamic(constants_set_.get(), 4, constant_offsets, 3);
     if (pipeline != bound_pipeline) {
       list->setPipeline(pipeline);
       bound_pipeline = pipeline;
