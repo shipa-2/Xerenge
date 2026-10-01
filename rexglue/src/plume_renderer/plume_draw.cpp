@@ -661,6 +661,13 @@ bool VulkanBufferOk(const plume::RenderBuffer* buffer) {
   return vk_buffer && vk_buffer->vk != VK_NULL_HANDLE;
 }
 
+// plume hands back a texture object even when the image could not be made (an
+// unsupported format, say): only its handle tells.
+bool VulkanTextureOk(const plume::RenderTexture* texture) {
+  const auto* vk_texture = static_cast<const plume::VulkanTexture*>(texture);
+  return vk_texture && vk_texture->vk != VK_NULL_HANDLE;
+}
+
 uint32_t LoadBeU32(const uint8_t* bytes) {
   return (uint32_t(bytes[0]) << 24) | (uint32_t(bytes[1]) << 16) | (uint32_t(bytes[2]) << 8) |
          uint32_t(bytes[3]);
@@ -2326,6 +2333,17 @@ bool PlumeDrawContext::Initialize(plume::RenderDevice* device) {
   for (uint32_t i = 0; i < kBindlessTextureCount; ++i) {
     texture_set_->setTexture(i, null_texture_.get(), plume::RenderTextureLayout::SHADER_READ,
                              null_texture_view_.get());
+  }
+
+  // BC (DXT) textures, which the title keeps most of its own in: desktop GPUs
+  // and Adreno take them, Mali and others do not.
+  {
+    const auto probe = device_->createTexture(
+        plume::RenderTextureDesc::Texture2D(4, 4, 1, plume::RenderFormat::BC1_UNORM));
+    bc_supported_ = probe && VulkanTextureOk(probe.get());
+    if (!bc_supported_) {
+      REXLOG_INFO("plume: this GPU has no BC (DXT) textures; they are decoded to RGBA8 on the processor");
+    }
   }
 
   if (volume_set_) {
@@ -4889,7 +4907,7 @@ bool PlumeDrawContext::UploadHostTexture(plume::RenderCommandList* list, uint64_
         plume::RenderTextureDesc::Texture2D(width, height, levels, host_format);
     tex_desc.committed = true;
     created->texture = device_->createTexture(tex_desc);
-    if (!created->texture) {
+    if (!created->texture || !VulkanTextureOk(created->texture.get())) {
       return false;
     }
     created->view =
@@ -4956,7 +4974,10 @@ bool PlumeDrawContext::HoldsThinFrame(const std::vector<GuestDrawSnapshot>& draw
     copies += d.is_resolve ? 1 : 0;
     d3d += (!d.is_clear && !d.is_resolve && d.d3d_vertex_buffer != 0) ? 1 : 0;
   }
-  const bool hold = d3d == 0 && copies == 0 && hold_average_ >= 50.0;
+  // 8, not 50: the title screen draws some 45 a frame over its video, and on a
+  // phone its bare video frames came through (the logo and frame blinking out).
+  // Video alone averages one draw and is still shown.
+  const bool hold = d3d == 0 && copies == 0 && hold_average_ >= 8.0;
   hold_average_ = hold_average_ * 0.9 + double(d3d) * 0.1;
   if (hold) {
     static std::atomic<uint32_t> held{0};
@@ -5133,6 +5154,40 @@ void PlumeDrawContext::ResolveRenderTarget(plume::RenderCommandList* list,
       plume::RenderTextureBarrier(color, plume::RenderTextureLayout::COPY_SOURCE),
       plume::RenderTextureBarrier(target.texture.get(), plume::RenderTextureLayout::COPY_DEST)};
   list->barriers(plume::RenderBarrierStage::COPY, nullptr, 0, to_copy, 2);
+  // XERENGE_FRAME_PROBE: the middle of what this copies from, as drawn - read
+  // back four frames on, by when the GPU is done with it.
+  static const bool probe = std::getenv("XERENGE_FRAME_PROBE") != nullptr;
+  if (probe && !region && !cube && width >= 64 && height >= 64) {
+    if (resolve_probe_pending_ && frame_serial_ >= resolve_probe_frame_ + 4) {
+      resolve_probe_pending_ = false;
+      const auto* px = static_cast<const uint8_t*>(resolve_probe_mapped_);
+      uint64_t sum = 0;
+      for (uint32_t i = 0; i < 64 * 64; ++i) {
+        sum += uint32_t(px[i * 4]) + px[i * 4 + 1] + px[i * 4 + 2];
+      }
+      static uint32_t shown = 0;
+      if (shown++ < 12 || (shown % 120) == 0) {
+        REXLOG_INFO("plume: resolve probe - middle of the copied target {}x{} brightness {:.3f}",
+                    width, height, double(sum) / (64.0 * 64.0 * 3.0 * 255.0));
+      }
+    }
+    if (!resolve_probe_pending_) {
+      if (!resolve_probe_) {
+        resolve_probe_ = device_->createBuffer(plume::RenderBufferDesc::ReadbackBuffer(64 * 64 * 4));
+        resolve_probe_mapped_ = resolve_probe_ ? resolve_probe_->map() : nullptr;
+      }
+      if (resolve_probe_mapped_) {
+        const plume::RenderBox box(int32_t(width / 2 - 32), int32_t(height / 2 - 32),
+                                   int32_t(width / 2 + 32), int32_t(height / 2 + 32));
+        list->copyTextureRegion(
+            plume::RenderTextureCopyLocation::PlacedFootprint(resolve_probe_.get(), kColorTargetFormat, 64,
+                                                              64, 1, 64, 0),
+            plume::RenderTextureCopyLocation::Subresource(color, 0, 0), 0, 0, 0, &box);
+        resolve_probe_pending_ = true;
+        resolve_probe_frame_ = frame_serial_;
+      }
+    }
+  }
   // The whole frame, one to one: source and destination are the same size, so
   // nothing is cropped and nothing is rescaled. A target drawn at its own size
   // copies its corner instead, into its face when it is a cube map.
@@ -5834,6 +5889,29 @@ void PlumeDrawContext::BindGuestTextures(plume::RenderCommandList* list,
             DumpTextureToPng(mip_path, mip.pixels.data(), mip.width, mip.height,
                              mip.row_texels * 4);
           }
+        }
+      }
+      // A GPU without BC (DXT) textures - Mali, and most phones' drivers: the
+      // blocks are decoded here into RGBA8, every mip with them.
+      if (!bc_supported_ && (host_format == plume::RenderFormat::BC1_UNORM ||
+                             host_format == plume::RenderFormat::BC2_UNORM ||
+                             host_format == plume::RenderFormat::BC3_UNORM)) {
+        const uint32_t block_bytes = base_fmt == TextureFormat::k_DXT1 ? 8u : 16u;
+        std::vector<uint8_t> decoded;
+        if (DecodeCompressedForDump(base_fmt, pixels, row_bytes, width, height, &decoded)) {
+          pixels = std::move(decoded);
+          row_bytes = width * 4;
+          row_texels = width;
+          for (HostMipLevel& mip : mip_levels) {
+            std::vector<uint8_t> level;
+            if (mip.width != 0 && mip.height != 0 &&
+                DecodeCompressedForDump(base_fmt, mip.pixels, mip.row_texels / 4 * block_bytes,
+                                        mip.width, mip.height, &level)) {
+              mip.pixels = std::move(level);
+              mip.row_texels = mip.width;
+            }
+          }
+          host_format = plume::RenderFormat::R8G8B8A8_UNORM;
         }
       }
       if (!UploadHostTexture(list, key, width, height, host_format, pixels, row_texels,

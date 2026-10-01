@@ -393,7 +393,7 @@ class PlumeDrawContext {
   // `color` once the pass is closed; does nothing if there was no such copy.
   // Whether to show the last picture again instead of this frame: it holds no
   // Direct3D draw and no copy - a clear, perhaps a menu video frame - while the
-  // frames around it draw hundreds (the menus over their background video on a
+  // frames around it draw dozens or more (the menus over their background video on a
   // slow device: every other present was the bare video, and the menu blinked).
   // Pure video, with no interface drawn at all, brings the average down within
   // half a second and is shown again. Call once per frame.
@@ -536,6 +536,14 @@ class PlumeDrawContext {
   plume::RenderDevice* device_ = nullptr;
   bool ready_ = false;
   bool null_texture_uploaded_ = false;
+  // Whether the GPU takes BC (DXT) textures; without, they are decoded to RGBA8.
+  bool bc_supported_ = true;
+  // XERENGE_FRAME_PROBE: the middle of what a resolve copies from, read back a few
+  // frames later - whether the draws themselves came out black (ResolveRenderTarget).
+  std::unique_ptr<plume::RenderBuffer> resolve_probe_;
+  void* resolve_probe_mapped_ = nullptr;
+  uint64_t resolve_probe_frame_ = 0;
+  bool resolve_probe_pending_ = false;
   bool last_fill_passthrough_ = false;
 
   std::unique_ptr<plume::RenderPipelineLayout> pipeline_layout_;

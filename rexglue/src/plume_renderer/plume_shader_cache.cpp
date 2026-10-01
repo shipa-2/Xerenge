@@ -5,6 +5,9 @@
 #include "plume_renderer/plume_shader_cache.h"
 
 #include <algorithm>
+#include <unordered_map>
+#include <unordered_set>
+#include <vector>
 
 #include <plume_render_interface.h>
 #include <smolv.h>
@@ -113,6 +116,111 @@ bool IsExtraEntry(const ShaderCacheEntry& entry) {
 bool IsBootstrapEntry(const ShaderCacheEntry& entry) {
   return BootstrapAvailable() &&
          EntryIn(entry, g_shaderCacheEntriesBootstrap, g_shaderCacheEntryCountBootstrap);
+}
+
+// The translated vertex shaders write SV_ClipDistance for the title's clip
+// plane. A GPU without shaderClipDistance (Mali) must not see it at all - its
+// compiler crashed on such a shader and the frame never came. So for those the
+// clip and cull distance outputs become private variables: still written, read
+// by nothing, with the capability, their decorations and their place in the
+// entry point's interface gone. Returns false when there was nothing to do.
+bool StripClipDistance(const uint32_t* words, size_t count, std::vector<uint32_t>* out) {
+  constexpr uint32_t kOpCapability = 17, kOpEntryPoint = 15, kOpDecorate = 71, kOpTypePointer = 32,
+                     kOpVariable = 59, kOpAccessChain = 65, kOpInBoundsAccessChain = 66;
+  constexpr uint32_t kCapClipDistance = 32, kCapCullDistance = 33, kDecorationBuiltIn = 11,
+                     kBuiltInClipDistance = 3, kBuiltInCullDistance = 4, kStorageOutput = 3,
+                     kStoragePrivate = 6;
+  if (count < 5 || words[0] != 0x07230203u) {
+    return false;
+  }
+  const auto each = [&](auto&& fn) {
+    for (size_t i = 5; i < count;) {
+      const uint32_t n = words[i] >> 16;
+      if (n == 0 || i + n > count) {
+        return false;
+      }
+      fn(i, words[i] & 0xFFFFu, n);
+      i += n;
+    }
+    return true;
+  };
+  // The clip/cull variables, and the access chains into them.
+  std::unordered_set<uint32_t> vars;
+  if (!each([&](size_t i, uint32_t op, uint32_t n) {
+        if (op == kOpDecorate && n >= 4 && words[i + 2] == kDecorationBuiltIn &&
+            (words[i + 3] == kBuiltInClipDistance || words[i + 3] == kBuiltInCullDistance)) {
+          vars.insert(words[i + 1]);
+        }
+      })) {
+    return false;
+  }
+  if (vars.empty()) {
+    return false;
+  }
+  std::unordered_set<uint32_t> chains;          // access chain results based on them
+  std::unordered_set<uint32_t> output_pointers;  // the Output pointer types those use
+  each([&](size_t i, uint32_t op, uint32_t n) {
+    if (op == kOpVariable && n >= 4 && vars.count(words[i + 2])) {
+      output_pointers.insert(words[i + 1]);
+    } else if ((op == kOpAccessChain || op == kOpInBoundsAccessChain) && n >= 4 &&
+               (vars.count(words[i + 3]) || chains.count(words[i + 3]))) {
+      chains.insert(words[i + 2]);
+      output_pointers.insert(words[i + 1]);
+    }
+  });
+  // A Private twin for each of those pointer types, declared right after it.
+  uint32_t bound = words[3];
+  std::unordered_map<uint32_t, uint32_t> private_of;
+  for (uint32_t p : output_pointers) {
+    private_of[p] = bound++;
+  }
+  out->assign(words, words + 5);
+  (*out)[3] = bound;
+  each([&](size_t i, uint32_t op, uint32_t n) {
+    const uint32_t* w = words + i;
+    if (op == kOpCapability && n == 2 && (w[1] == kCapClipDistance || w[1] == kCapCullDistance)) {
+      return;
+    }
+    if (op == kOpDecorate && n >= 3 && vars.count(w[1])) {
+      return;
+    }
+    if (op == kOpEntryPoint && n >= 4) {
+      // Model, function, the name (a string padded to whole words), then the interface.
+      size_t at = 3;
+      while (at < n) {
+        const uint32_t word = w[at++];
+        if ((word & 0xFF000000u) == 0 || (word & 0xFF0000u) == 0 || (word & 0xFF00u) == 0 ||
+            (word & 0xFFu) == 0) {
+          break;
+        }
+      }
+      std::vector<uint32_t> inst(w, w + at);
+      for (size_t k = at; k < n; ++k) {
+        if (!vars.count(w[k])) {
+          inst.push_back(w[k]);
+        }
+      }
+      inst[0] = (uint32_t(inst.size()) << 16) | kOpEntryPoint;
+      out->insert(out->end(), inst.begin(), inst.end());
+      return;
+    }
+    if (op == kOpVariable && n >= 4 && vars.count(w[2])) {
+      out->insert(out->end(), w, w + n);
+      out->at(out->size() - n + 1) = private_of[w[1]];
+      out->at(out->size() - n + 3) = kStoragePrivate;
+      return;
+    }
+    if ((op == kOpAccessChain || op == kOpInBoundsAccessChain) && n >= 4 && chains.count(w[2])) {
+      out->insert(out->end(), w, w + n);
+      out->at(out->size() - n + 1) = private_of[w[1]];
+      return;
+    }
+    out->insert(out->end(), w, w + n);
+    if (op == kOpTypePointer && n == 4 && private_of.count(w[1])) {
+      out->insert(out->end(), {(4u << 16) | kOpTypePointer, private_of[w[1]], kStoragePrivate, w[3]});
+    }
+  });
+  return true;
 }
 
 }  // namespace
@@ -370,6 +478,12 @@ plume::RenderShader* PlumeShaderCache::GetOrCreateShader(uint64_t hash) {
     return nullptr;
   }
 
+  // No SV_ClipDistance for a GPU that cannot take it (see StripClipDistance).
+  std::vector<uint32_t> stripped;
+  if (!device_->getCapabilities().clipDistance && StripClipDistance(words, word_count, &stripped)) {
+    words = stripped.data();
+    word_count = stripped.size();
+  }
   std::unique_ptr<plume::RenderShader> shader = device_->createShader(
       words, word_count * sizeof(uint32_t), "shaderMain", plume::RenderShaderFormat::SPIRV);
   if (!shader) {
