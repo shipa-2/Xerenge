@@ -4,13 +4,17 @@
 # of function boundaries it cannot see - the ones reached only through a vtable
 # slot - from functions.toml.
 #
-#   ./scripts/build.sh [--game <game directory>]
+#   ./scripts/build.sh [--game <game directory>] [--generate-only]
+#
+# --generate-only stops after the code and the shaders are generated: what a
+# cross build (the Android one) needs from this machine, without the host game.
 set -e
 root=$(cd "$(dirname "$0")/.." && pwd)
 . "$root/scripts/platform.sh"
 project="$root/rexglue"
 sdk="$root/rexglue-sdk"
 game=
+generate_only=
 
 if [ ! -x "$root/tools/bin/patch_burnout_manifest" ]; then
     "$root/scripts/build-tools.sh"
@@ -19,6 +23,7 @@ fi
 while [ $# -gt 0 ]; do
     case "$1" in
         --game) game=$2; shift 2 ;;
+        --generate-only) generate_only=1; shift ;;
         *) echo "unknown option: $1" >&2; exit 1 ;;
     esac
 done
@@ -82,6 +87,11 @@ if [ ! -s "$project/generated/shader_cache_runtime.cpp" ]; then
     (cd "$project" && XENOSRECOMP="$root/XenosRecomp/build/XenosRecomp/XenosRecomp$XR_EXE" \
         XENOSRECOMP_HEADER="$root/XenosRecomp/XenosRecomp/shader_common.h" \
         ./tools/translate_runtime_shaders.sh --from-disc)
+fi
+
+if [ -n "$generate_only" ]; then
+    echo "== generated: $project/generated"
+    exit 0
 fi
 
 echo "== configuring"

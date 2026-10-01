@@ -205,6 +205,112 @@ jobs:
           retention-days: 7
           if-no-files-found: error
 
+  # Android (arm64, a phone with an Adreno GPU): the code and the shaders are
+  # generated on the runner as for Linux, then the game is cross-built with the
+  # NDK and packed into an APK by scripts/build-android-apk.sh (no Gradle). The
+  # APK is signed with the ANDROID_KEYSTORE_B64 secret (a base64 keystore, alias
+  # xerenge, password android) when it is set, so it installs over the last one;
+  # without it a key made for this run signs it, and an installed copy has to be
+  # removed first.
+  android-arm64:
+    runs-on: ubuntu-24.04
+    env:
+      CC: clang
+      CXX: clang++
+      CMAKE_C_COMPILER_LAUNCHER: sccache
+      CMAKE_CXX_COMPILER_LAUNCHER: sccache
+      NDK_VERSION: 30.0.16248370
+    steps:
+      - uses: actions/checkout@v6
+
+      - name: libadrenotools
+        run: git submodule update --init --recursive --depth 1 rexglue/android/thirdparty/libadrenotools
+
+      - name: Install clang 20
+        run: |
+          wget -qO llvm.sh https://apt.llvm.org/llvm.sh
+          chmod +x llvm.sh
+          sudo ./llvm.sh 20
+          sudo apt-get install -y clang-20 lld-20
+          sudo update-alternatives --install /usr/bin/clang clang /usr/bin/clang-20 200
+          sudo update-alternatives --install /usr/bin/clang++ clang++ /usr/bin/clang++-20 200
+
+      - name: Install build dependencies
+        run: |
+          wget -qO- https://packages.lunarg.com/lunarg-signing-key-pub.asc | sudo tee /etc/apt/trusted.gpg.d/lunarg.asc
+          sudo wget -qO /etc/apt/sources.list.d/lunarg-vulkan-noble.list https://packages.lunarg.com/vulkan/lunarg-vulkan-noble.list
+          sudo apt-get update
+          sudo apt-get install -y cmake ninja-build pkg-config git curl unzip zip autoconf \
+            vulkan-sdk \
+            libgtk-3-dev libx11-dev libx11-xcb-dev libxcb1-dev libxss-dev \
+            libwayland-dev libwayland-bin wayland-protocols libxkbcommon-dev libdecor-0-dev \
+            libasound2-dev libpulse-dev libpipewire-0.3-dev
+
+      - name: Android NDK
+        run: |
+          yes | "$ANDROID_HOME/cmdline-tools/latest/bin/sdkmanager" --install "ndk;$NDK_VERSION" > /dev/null
+          echo "ANDROID_NDK_HOME=$ANDROID_HOME/ndk/$NDK_VERSION" >> "$GITHUB_ENV"
+          ls "$ANDROID_HOME/build-tools" "$ANDROID_HOME/platforms"
+
+      - name: Set up sccache
+        uses: hendrikmuhs/ccache-action@v1.2.22
+        with:
+          variant: sccache
+          key: android-arm64
+
+      - name: Fetch the build inputs (private)
+        env:
+          ASSETS_TOKEN: ${{ secrets.ASSETS_TOKEN }}
+        run: |
+          if [ -z "$ASSETS_TOKEN" ]; then
+            echo "::error::ASSETS_TOKEN is not set"; exit 1
+          fi
+          git clone --depth 1 "https://x-access-token:${ASSETS_TOKEN}@github.com/shipa-2/xerenge-assets.git" "$RUNNER_TEMP/assets"
+          git -C "$RUNNER_TEMP/assets" remote set-url origin https://github.com/shipa-2/xerenge-assets.git
+
+      - name: SDK
+        run: ./scripts/setup-sdk.sh
+
+      - name: plume and XenosRecomp
+        run: ./scripts/setup-deps.sh
+
+      - name: Generate the code and the shaders
+        run: ./scripts/build.sh --game "$RUNNER_TEMP/assets/game" --generate-only
+
+      - name: Build for Android
+        run: |
+          cmake -S rexglue -B rexglue/build-android -G Ninja \
+            -DREXSDK_DIR="$PWD/rexglue-sdk" -DCMAKE_BUILD_TYPE=Release \
+            -DCMAKE_TOOLCHAIN_FILE="$ANDROID_NDK_HOME/build/cmake/android.toolchain.cmake" \
+            -DANDROID_ABI=arm64-v8a -DANDROID_PLATFORM=android-29 -DANDROID_STL=c++_shared \
+            -DREXGLUE_CODEGEN="$PWD/rexglue-sdk/out/linux-amd64/Release/rexglue"
+          cmake --build rexglue/build-android -j"$(nproc)"
+
+      - name: sccache stats
+        if: always()
+        run: sccache --show-stats || true
+
+      - name: APK
+        env:
+          ANDROID_KEYSTORE_B64: ${{ secrets.ANDROID_KEYSTORE_B64 }}
+        run: |
+          if [ -n "$ANDROID_KEYSTORE_B64" ]; then
+            mkdir -p "$HOME/.android"
+            printf '%s' "$ANDROID_KEYSTORE_B64" | base64 -d > "$HOME/.android/xerenge-debug.keystore"
+          else
+            echo "::warning::ANDROID_KEYSTORE_B64 is not set: this APK is signed with a key of its own and will not install over an earlier one"
+          fi
+          ./scripts/build-android-apk.sh
+          mkdir -p "$RUNNER_TEMP/apk"
+          cp rexglue/build-android/burnout.apk "$RUNNER_TEMP/apk/Burnout_Revenge-android-arm64.apk"
+
+      - uses: actions/upload-artifact@v6
+        with:
+          name: burnout-revenge-android-arm64
+          path: ${{ runner.temp }}/apk/Burnout_Revenge-android-arm64.apk
+          retention-days: 7
+          if-no-files-found: error
+
   # The lobby server for a self-hosted online game (rexglue/lobby.sh builds the
   # same thing by hand): three source files and no dependencies, so it needs
   # neither the private build inputs nor the game. One artifact carries the
@@ -249,7 +355,7 @@ jobs:
   # that raises VERSION publishes the installers and the lobby server as the
   # latest release.
   release:
-    needs: [linux-amd64, win-amd64, lobby-server]
+    needs: [linux-amd64, win-amd64, android-arm64, lobby-server]
     if: github.ref == 'refs/heads/main'
     runs-on: ubuntu-24.04
     permissions:
@@ -297,11 +403,14 @@ jobs:
 
           Run the installer again over an installed copy to update it; your settings are kept.
 
+          **Android** (arm64, Adreno GPU): install `Burnout_Revenge-android-arm64.apk`. It opens as the installer: pick your disc image, and on a phone whose stock driver is older than Vulkan 1.2 load a Mesa Turnip driver .zip as well.
+
           **Your own online server:** `ealobby-linux-amd64` or `ealobby-win-amd64.exe` is a lobby server for the online mode. Run it on a machine whose TCP ports 31860 and 31861 the players can reach, and start each game with `--lobby-server=<that machine>`. Without it, the copies on one LAN find each other's games with no server at all.
           EOF
           gh release create "v$VERSION" --title "$VERSION" --latest --target "$GITHUB_SHA" \
             --notes-file notes.md \
             artifacts/Burnout_Revenge_Installer-x86_64.AppImage \
             artifacts/Burnout_Revenge_Installer-win-amd64.exe \
+            artifacts/Burnout_Revenge-android-arm64.apk \
             artifacts/ealobby-linux-amd64 \
             artifacts/ealobby-win-amd64.exe
