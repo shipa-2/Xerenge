@@ -8,6 +8,9 @@
 #include <mutex>
 #include <thread>
 #include <vector>
+#ifdef __linux__
+#include <unistd.h>
+#endif
 
 namespace rex::plume_renderer {
 
@@ -24,6 +27,12 @@ class WorkerPool {
   }
 
   size_t threads() const { return workers_.size() + 1; }
+
+  // The workers' kernel thread ids (Linux), for handing to the scheduler.
+  std::vector<int> thread_ids() {
+    std::lock_guard lock(mutex_);
+    return thread_ids_;
+  }
 
   // fn(i) for every i in [0, count), in any order, on any thread.
   void ParallelFor(size_t count, const std::function<void(size_t)>& fn) {
@@ -93,6 +102,12 @@ class WorkerPool {
 
   void Loop() {
     uint64_t seen = 0;
+#ifdef __linux__
+    {
+      std::lock_guard lock(mutex_);
+      thread_ids_.push_back(int(gettid()));
+    }
+#endif
     for (;;) {
       const std::function<void(size_t)>* job = nullptr;
       size_t count = 0;
@@ -119,6 +134,7 @@ class WorkerPool {
   }
 
   std::vector<std::thread> workers_;
+  std::vector<int> thread_ids_;
   std::mutex mutex_;
   std::condition_variable wake_;
   std::condition_variable finished_;

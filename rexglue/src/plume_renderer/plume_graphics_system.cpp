@@ -35,12 +35,14 @@
 #include "frame_clock_provider.h"
 #include "plume_renderer/plume_draw.h"
 #include "plume_renderer/plume_interp.h"
+#include "plume_renderer/plume_parallel.h"
 #include "plume_renderer/plume_shader_cache.h"
 #include "plume_renderer/plume_swapchain.h"
 #include "shader_cache.h"
 
 #if defined(__ANDROID__)
 #include <dlfcn.h>
+#include <unistd.h>
 
 #include <adrenotools/driver.h>
 #endif
@@ -50,6 +52,78 @@ namespace rex::plume_renderer {
 namespace {
 // Encoding time of the present being made on this thread, for its breakdown.
 thread_local uint64_t g_present_encode_us = 0;
+
+#if defined(__ANDROID__)
+// The title's thread (the one that calls VdSwap), for the frame hint below.
+std::atomic<int> g_title_tid{0};
+
+// Android's performance hints (ADPF, Android 13 on): a session naming the
+// threads a frame is made on and how long a frame may take, told every frame
+// how long the last one did. Without it the scheduler kept the title's and the
+// present thread on the Pixel's middle cores at their own pace - the frame
+// took 55 ms with neither thread busy half the time. Looked up at run time,
+// so the APK still starts on Android 10; XERENGE_NO_PERF_HINT=1 leaves it off.
+class FrameHint {
+ public:
+  void Report(int present_tid, int64_t took_ns) {
+    if (failed_) {
+      return;
+    }
+    if (!session_ && !Start(present_tid)) {
+      return;
+    }
+    report_(session_, took_ns);
+  }
+
+ private:
+  using GetManager = void* (*)();
+  using CreateSession = void* (*)(void*, const int32_t*, size_t, int64_t);
+  using ReportDuration = int (*)(void*, int64_t);
+
+  bool Start(int present_tid) {
+    const int title_tid = g_title_tid.load(std::memory_order_relaxed);
+    if (title_tid == 0) {
+      return false;  // not until the title has swapped once
+    }
+    failed_ = true;
+    if (std::getenv("XERENGE_NO_PERF_HINT") != nullptr) {
+      return false;
+    }
+    void* android = dlopen("libandroid.so", RTLD_NOW | RTLD_LOCAL);
+    const auto get_manager =
+        android ? reinterpret_cast<GetManager>(dlsym(android, "APerformanceHint_getManager")) : nullptr;
+    const auto create = android ? reinterpret_cast<CreateSession>(
+                                      dlsym(android, "APerformanceHint_createSession"))
+                                : nullptr;
+    report_ = android ? reinterpret_cast<ReportDuration>(
+                            dlsym(android, "APerformanceHint_reportActualWorkDuration"))
+                      : nullptr;
+    void* manager = get_manager ? get_manager() : nullptr;
+    if (!manager || !create || !report_) {
+      REXLOG_INFO("plume: no performance hints on this system (Android 13 has them)");
+      return false;
+    }
+    std::vector<int32_t> tids = {present_tid, title_tid};
+    for (const int worker : WorkerPool::Get().thread_ids()) {
+      tids.push_back(worker);
+    }
+    constexpr int64_t kFrameNs = 16666667;  // the title's 60 Hz
+    session_ = create(manager, tids.data(), tids.size(), kFrameNs);
+    if (!session_) {
+      REXLOG_WARN("plume: performance hint session refused for {} threads", tids.size());
+      return false;
+    }
+    failed_ = false;
+    REXLOG_INFO("plume: performance hints on for {} threads (present, title, {} workers)",
+                tids.size(), tids.size() - 2);
+    return true;
+  }
+
+  void* session_ = nullptr;
+  ReportDuration report_ = nullptr;
+  bool failed_ = false;
+};
+#endif
 // Per-present accounting for the overlay ring. All four are read and written
 // only under snapshot_mutex_.
 // A short history of what the command processor last did, so a stall can be
@@ -800,7 +874,17 @@ void PlumeGraphicsSystem::StartPresentWorker() {
         h = present_request_height_;
         present_request_pending_ = false;
       }
+#if defined(__ANDROID__)
+      static FrameHint frame_hint;
+      const auto work_started = std::chrono::steady_clock::now();
+#endif
       PresentClearColorOnUiThread(w, h);
+#if defined(__ANDROID__)
+      frame_hint.Report(int(gettid()),
+                        std::chrono::duration_cast<std::chrono::nanoseconds>(
+                            std::chrono::steady_clock::now() - work_started)
+                            .count());
+#endif
       {
         std::lock_guard lock(present_flight_mutex_);
         present_in_flight_ = false;
@@ -1520,6 +1604,9 @@ void PlumeGraphicsSystem::PresentGuestFrame(uint32_t width, uint32_t height) {
   if (!app_context_ || !swapchain_ || !swapchain_->IsReady()) {
     return;
   }
+#if defined(__ANDROID__)
+  g_title_tid.store(int(gettid()), std::memory_order_relaxed);
+#endif
   PaceSwapToVblank();
   last_present_ms_.store(static_cast<uint64_t>(
                              std::chrono::duration_cast<std::chrono::milliseconds>(

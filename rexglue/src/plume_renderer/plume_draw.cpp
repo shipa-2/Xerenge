@@ -5,6 +5,9 @@
 #include <dlfcn.h>
 #include <execinfo.h>
 #endif
+#ifdef __ANDROID__
+#include <malloc.h>
+#endif
 #include <thread>
 /**
  * @file        plume_renderer/plume_draw.cpp
@@ -2365,6 +2368,13 @@ bool PlumeDrawContext::Initialize(plume::RenderDevice* device) {
     return false;
   }
   device_ = device;
+#ifdef __ANDROID__
+  // Every frame frees a few thousand snapshots' constant blocks and allocates
+  // as many again. Android's allocator gave the memory back to the system
+  // (madvise) as it was freed - a tenth of the present thread on the Pixel;
+  // with a decay time it keeps it a while for the next frame to reuse.
+  mallopt(M_DECAY_TIME, 1);
+#endif
 
   plume::RenderPipelineLayoutBuilder layout_builder;
   layout_builder.begin(false, true);
@@ -6966,10 +6976,11 @@ void PlumeDrawContext::EncodeDraws(plume::RenderCommandList* list,
     uint32_t vs_slot = slot_base + encoded;
     uint32_t ps_slot = slot_base + encoded;
     uint32_t shared_slot = slot_base + encoded;
-    // Snapshots share their constant words (SharedWords): the same block is
-    // known equal without reading its 4 KB.
-    if (last_vs && (last_vs == snap.vs_constants.data() ||
-                    std::memcmp(last_vs, snap.vs_constants.data(), kVsConstantBytes) == 0)) {
+    // Snapshots share their constant words (SharedWords), and the title's
+    // thread already gives a draw the last one's block when the words are the
+    // same (AssignShared): another block is all but always different, and
+    // comparing its 4 KB to find that out cost more than writing it.
+    if (last_vs && last_vs == snap.vs_constants.data()) {
       vs_slot = last_vs_slot;
     } else {
       std::memcpy(static_cast<uint8_t*>(vs_constants_mapped_) + vs_slot * kVsSlotBytes,
@@ -6977,8 +6988,7 @@ void PlumeDrawContext::EncodeDraws(plume::RenderCommandList* list,
       last_vs = snap.vs_constants.data();
       last_vs_slot = vs_slot;
     }
-    if (last_ps && (last_ps == snap.ps_constants.data() ||
-                    std::memcmp(last_ps, snap.ps_constants.data(), kPsConstantBytes) == 0)) {
+    if (last_ps && last_ps == snap.ps_constants.data()) {
       ps_slot = last_ps_slot;
     } else {
       std::memcpy(static_cast<uint8_t*>(ps_constants_mapped_) + ps_slot * kPsSlotBytes,
