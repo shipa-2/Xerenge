@@ -14,6 +14,7 @@
 #include "plume_renderer/plume_parallel.h"
 
 #include <algorithm>
+#include <bit>
 #include <map>
 #include <set>
 #include <cstring>
@@ -3148,6 +3149,35 @@ bool PlumeDrawContext::AllocateCacheRegion(uint32_t count, uint32_t* offset) {
   return false;
 }
 
+// With XERENGE_VERTEX_TRACE a hit reads back the first packed vec4 of the
+// mesh's first and last vertex from the cache buffer - two small reads from an
+// upload heap, slow enough to keep out of normal play - and compares them with
+// what was stored. A difference means something wrote over the place while the
+// entry still named it: the vertices drawn would be someone else's.
+bool PlumeDrawContext::CacheHoldsMesh(uint64_t key, const CachedMesh& entry) const {
+  static const bool trace = std::getenv("XERENGE_VERTEX_TRACE") != nullptr;
+  if (!trace || entry.packed_floats == 0 || entry.count == 0 || cache_mapped_ == nullptr) {
+    return true;
+  }
+  const float* base = cache_mapped_ + size_t(entry.offset) * kFloatsPerVert;
+  float found[8];
+  std::memcpy(found, base, 16);
+  std::memcpy(found + 4, base + size_t(entry.count - 1) * entry.packed_floats, 16);
+  if (std::memcmp(found, entry.fingerprint.data(), sizeof(found)) == 0) {
+    return true;
+  }
+  static std::atomic<uint32_t> logged{0};
+  if (logged.fetch_add(1, std::memory_order_relaxed) < 16) {
+    REXLOG_WARN("plume: vertex cache: mesh {:016X} at {} ({} vertices, {} floats each) holds ({},{},{},{}) .. "
+                "({},{},{},{}), stored ({},{},{},{}) .. ({},{},{},{})",
+                key, entry.offset, entry.count, entry.packed_floats, found[0], found[1], found[2], found[3],
+                found[4], found[5], found[6], found[7], entry.fingerprint[0], entry.fingerprint[1],
+                entry.fingerprint[2], entry.fingerprint[3], entry.fingerprint[4], entry.fingerprint[5],
+                entry.fingerprint[6], entry.fingerprint[7]);
+  }
+  return false;
+}
+
 // Whether a draw's vertices can be cached, under which key, and whether the
 // cached copy still matches the title's buffers. Only the scene's draws with
 // the title's own shaders qualify - nothing afterwards rewrites their
@@ -3220,6 +3250,23 @@ PlumeDrawContext::MeshCheck PlumeDrawContext::CheckMeshCache(
     data_hash = XXH3_64bits_withSeed(host, end - start, data_hash);
   }
   if (data_hash == it->second.data_hash) {
+    // The place must still be this mesh's: an entry whose place was given to
+    // other meshes draws their vertices with this mesh's pipeline - triangles
+    // burst into black slabs across the road (capture new6, frame 9855: a
+    // truck's 1295 vertices read from another mesh's 64-byte records).
+    const auto owner = cache_by_offset_.find(it->second.offset);
+    const bool owned = owner != cache_by_offset_.end() && owner->second == check.key;
+    if (!owned || !CacheHoldsMesh(check.key, it->second)) {
+      static std::atomic<uint32_t> stale{0};
+      const uint32_t n = stale.fetch_add(1, std::memory_order_relaxed) + 1;
+      if (n <= 16 || (n & (n - 1)) == 0) {
+        REXLOG_WARN("plume: vertex cache: mesh {:016X} (vs={:016X}, {} vertices at {}) {} - drawn from the "
+                    "title's buffers instead ({} so far)",
+                    check.key, snap.vs_hash, it->second.count, it->second.offset,
+                    owned ? "was written over" : "lost its place to another mesh", n);
+      }
+      return check;
+    }
     check.hit = true;
     check.offset = it->second.offset;
     check.count = it->second.count;
@@ -4354,9 +4401,22 @@ uint32_t PlumeDrawContext::FillVertices(const GuestDrawSnapshot& snap, memory::M
         retired_cache_regions_.push_back(
             {old_entry->second.offset, old_entry->second.count, old_entry->second.last_used});
       }
+      // The entry gives up its place at once. It used to keep it until the
+      // new one was stored, so when no room was found (or a read range had no
+      // host page) it went on naming a place the retired list soon handed to
+      // other meshes, and the vertices it had held earlier - a car's undamaged
+      // shape again after a reset or a replay - hit it.
+      old_entry->second.count = 0;
     }
     if (!AllocateCacheRegion(draw_count, &cache_offset)) {
       cache_eligible = false;
+      static std::atomic<uint32_t> no_room{0};
+      const uint32_t n = no_room.fetch_add(1, std::memory_order_relaxed) + 1;
+      if (n <= 4 || (n & (n - 1)) == 0) {
+        REXLOG_INFO("plume: vertex cache: no room for {} vertices (head {}, {} meshes, {} retired places), "
+                    "drawn uncached ({} so far)",
+                    draw_count, cache_used_, mesh_cache_.size(), retired_cache_regions_.size(), n);
+      }
     }
   }
   if (cache_eligible && draw_count != 0) {
@@ -4389,6 +4449,13 @@ uint32_t PlumeDrawContext::FillVertices(const GuestDrawSnapshot& snap, memory::M
       entry.ranges = std::move(merged);
       cache_by_offset_[cache_offset] = cache_key;
       CopyVerticesOut(cache_mapped_ + size_t(cache_offset) * kFloatsPerVert, staged, draw_count);
+      if (const uint32_t layout = fill_layout_mask_; layout != 0) {
+        const uint32_t first_loc = uint32_t(std::countr_zero(layout));
+        std::memcpy(entry.fingerprint.data(), staged + first_loc * 4, 16);
+        entry.packed_floats = uint32_t(std::popcount(layout)) * 4;
+        std::memcpy(entry.fingerprint.data() + 4,
+                    staged + size_t(draw_count - 1) * kFloatsPerVert + first_loc * 4, 16);
+      }
       last_fill_cache_offset_ = cache_offset;
       FillPhase(3, fill_mark);
       return draw_count;

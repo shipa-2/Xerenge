@@ -623,7 +623,14 @@ class PlumeDrawContext {
     uint32_t changes = 0;
     uint64_t last_used = 0;  // frame_serial_ of the last frame that drew it
     std::vector<std::pair<uint32_t, uint32_t>> ranges;  // physical byte [start, end)
+    // The first packed vec4 of the first and the last vertex as stored, read
+    // back on a hit with XERENGE_VERTEX_TRACE to catch a place someone else
+    // wrote over (see CacheHoldsMesh).
+    std::array<float, 8> fingerprint{};
+    uint32_t packed_floats = 0;  // floats per stored vertex
   };
+  // Whether the cache buffer at a mesh's place still holds what was stored there.
+  bool CacheHoldsMesh(uint64_t key, const CachedMesh& entry) const;
   std::unordered_map<uint64_t, CachedMesh> mesh_cache_;
   // The cache buffer is a ring: new meshes go at cache_used_ and push out the
   // ones stored there longest ago, never one drawn in the frame being
