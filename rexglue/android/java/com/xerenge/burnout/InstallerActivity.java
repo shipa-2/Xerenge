@@ -53,10 +53,11 @@ import org.json.JSONObject;
  * When the game is installed and the GPU driver will do, it starts the game
  * at once instead; a long press on the icon (Setup) brings it back.
  *
- * On top of the desktop one, the graphics driver: the shaders need Vulkan 1.2,
- * and stock Adreno 6xx drivers report 1.1. Such a phone gets Mesa Turnip from
- * a driver package (a .zip with meta.json, as the emulators use), copied into
- * internal storage and opened by the game through libadrenotools.
+ * On top of the desktop one, the graphics driver: the game needs Vulkan 1.1,
+ * which the stock drivers of the phones it targets report. A phone without it,
+ * or a player who prefers it, can load Mesa Turnip from a driver package (a
+ * .zip with meta.json, as the emulators use), copied into internal storage and
+ * opened by the game through libadrenotools.
  */
 public class InstallerActivity extends Activity {
     static final String PREFS = "installer";
@@ -65,7 +66,7 @@ public class InstallerActivity extends Activity {
     private static final int PICK_DRIVER = 1;
     private static final int PICK_IMAGE = 2;
     // FEATURE_VULKAN_HARDWARE_VERSION encodes versions like VK_MAKE_VERSION.
-    private static final int VULKAN_1_2 = (1 << 22) | (2 << 12);
+    private static final int VULKAN_1_1 = (1 << 22) | (1 << 12);
     // Files the retail image holds, for the extraction's progress.
     private static final int IMAGE_FILES = 832;
 
@@ -120,7 +121,7 @@ public class InstallerActivity extends Activity {
     // --- when the game starts at once ------------------------------------
 
     private boolean vulkanIsEnough() {
-        return getPackageManager().hasSystemFeature(PackageManager.FEATURE_VULKAN_HARDWARE_VERSION, VULKAN_1_2);
+        return getPackageManager().hasSystemFeature(PackageManager.FEATURE_VULKAN_HARDWARE_VERSION, VULKAN_1_1);
     }
 
     private String installedDriver() {

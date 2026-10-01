@@ -33,8 +33,8 @@
     <string name="fps_counter_tip">Кадры в секунду в левом верхнем углу.</string>
     <string name="install_path">Путь установки</string>
     <string name="section_gpu">Графический драйвер</string>
-    <string name="gpu_ok">Системный драйвер Vulkan достаточно новый (1.2 или выше).</string>
-    <string name="gpu_too_old">Системный драйвер Vulkan ниже 1.2, а игре нужен 1.2. Загрузите пакет драйвера Mesa Turnip (.zip, такой же, как для эмуляторов).</string>
+    <string name="gpu_ok">Системный драйвер Vulkan достаточно новый (1.1 или выше).</string>
+    <string name="gpu_too_old">Системный драйвер Vulkan ниже 1.1, а игре нужен 1.1. Загрузите пакет драйвера Mesa Turnip (.zip, такой же, как для эмуляторов).</string>
     <string name="gpu_custom">Используется загруженный драйвер: %1$s</string>
     <string name="pick_driver">Загрузить драйвер Turnip (.zip)…</string>
     <string name="use_system_driver">Вернуть системный драйвер</string>

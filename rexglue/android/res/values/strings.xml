@@ -34,8 +34,8 @@
     <string name="fps_counter_tip">Frames per second in the top left corner.</string>
     <string name="install_path">Install path</string>
     <string name="section_gpu">Graphics driver</string>
-    <string name="gpu_ok">The system Vulkan driver is recent enough (1.2 or newer).</string>
-    <string name="gpu_too_old">The system Vulkan driver is below 1.2, which the game needs. Load a Mesa Turnip driver package (.zip, the kind emulators use).</string>
+    <string name="gpu_ok">The system Vulkan driver is recent enough (1.1 or newer).</string>
+    <string name="gpu_too_old">The system Vulkan driver is below 1.1, which the game needs. Load a Mesa Turnip driver package (.zip, the kind emulators use).</string>
     <string name="gpu_custom">Using the loaded driver: %1$s</string>
     <string name="pick_driver">Load a Turnip driver (.zip)…</string>
     <string name="use_system_driver">Use the system driver again</string>
