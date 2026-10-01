@@ -28,6 +28,9 @@
         android:theme="@style/AppTheme"
         android:hardwareAccelerated="true">
 
+        <!-- simpleperf from adb may sample the game (a release build otherwise refuses it). -->
+        <profileable android:shell="true" />
+
         <!-- The installer opens first; it starts the game at once when the game
              is installed and the GPU driver will do. -->
         <activity android:name="com.xerenge.burnout.InstallerActivity"
