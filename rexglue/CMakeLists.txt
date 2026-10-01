@@ -199,6 +199,11 @@ add_library(xerenge-etcpak STATIC
     thirdparty/etcpak/Dither.cpp)
 set_target_properties(xerenge-etcpak PROPERTIES POSITION_INDEPENDENT_CODE ON)
 target_include_directories(xerenge-etcpak PUBLIC thirdparty/etcpak)
+if(WIN32)
+    # ProcessRGB.cpp includes <Windows.h> under _MSC_VER: its min/max macros
+    # break std::numeric_limits<int>::max().
+    target_compile_definitions(xerenge-etcpak PRIVATE NOMINMAX WIN32_LEAN_AND_MEAN)
+endif()
 if(CMAKE_SYSTEM_PROCESSOR MATCHES "x86_64|AMD64")
     target_compile_options(xerenge-etcpak PRIVATE -msse4.1)
 endif()
