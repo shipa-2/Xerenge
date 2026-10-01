@@ -18,6 +18,7 @@
 
 #include <plume_render_interface.h>
 #include <plume_render_interface_types.h>
+#include <plume_render_interface_builders.h>
 
 namespace rex::memory {
 class Memory;
@@ -297,6 +298,54 @@ struct HostMipLevel {
   uint32_t row_texels = 0;
 };
 
+// What used to be a bindless descriptor set: the textures (or samplers) the
+// draws refer to by index, kept on the processor. Indices stay what the rest
+// of the renderer hands out; each draw gets a small descriptor set of its own
+// holding just its slots (PlumeDrawContext::DrawSetFor), which needs no
+// descriptor indexing - the stock Vulkan 1.1 drivers of most phones lack it.
+// Every change of an entry bumps its version, so a cached set that held the
+// old one is never bound again.
+class BindlessTable {
+ public:
+  struct Entry {
+    const plume::RenderTexture* texture = nullptr;
+    const plume::RenderTextureView* view = nullptr;
+    plume::RenderTextureLayout layout = plume::RenderTextureLayout::SHADER_READ;
+    const plume::RenderSampler* sampler = nullptr;
+    uint32_t version = 0;
+  };
+  explicit BindlessTable(uint32_t count) : entries_(count) {}
+  void setTexture(uint32_t index, const plume::RenderTexture* texture, plume::RenderTextureLayout layout,
+                  const plume::RenderTextureView* view = nullptr) {
+    if (index < entries_.size()) {
+      Entry& e = entries_[index];
+      // The same texture registered again (a video plane or a copy refreshed in
+      // place each frame) keeps its version: the sets holding it stay good.
+      if (e.texture == texture && e.view == view && e.layout == layout && e.version != 0) {
+        return;
+      }
+      e.texture = texture;
+      e.layout = layout;
+      e.view = view;
+      e.version = ++next_version_;
+    }
+  }
+  void setSampler(uint32_t index, const plume::RenderSampler* sampler) {
+    if (index < entries_.size()) {
+      if (entries_[index].sampler == sampler && entries_[index].version != 0) {
+        return;
+      }
+      entries_[index].sampler = sampler;
+      entries_[index].version = ++next_version_;
+    }
+  }
+  const Entry& at(uint32_t index) const { return entries_[index < entries_.size() ? index : 0]; }
+
+ private:
+  std::vector<Entry> entries_;
+  uint32_t next_version_ = 0;
+};
+
 class PlumeDrawContext {
  public:
   PlumeDrawContext() = default;
@@ -490,8 +539,8 @@ class PlumeDrawContext {
   bool last_fill_passthrough_ = false;
 
   std::unique_ptr<plume::RenderPipelineLayout> pipeline_layout_;
-  std::unique_ptr<plume::RenderDescriptorSet> texture_set_;
-  std::unique_ptr<plume::RenderDescriptorSet> sampler_set_;
+  std::unique_ptr<BindlessTable> texture_set_;
+  std::unique_ptr<BindlessTable> sampler_set_;
   std::unique_ptr<plume::RenderSampler> sampler_;
   std::unique_ptr<plume::RenderTexture> null_texture_;
   std::unique_ptr<plume::RenderTextureView> null_texture_view_;
@@ -500,7 +549,7 @@ class PlumeDrawContext {
   // two-dimensional arrays. Until the title's own are uploaded, every slot
   // holds an identity colour table - the 3D frame's final pass grades its
   // colour through one, and with nothing there it came out black.
-  std::unique_ptr<plume::RenderDescriptorSet> volume_set_;
+  std::unique_ptr<BindlessTable> volume_set_;
   // Samplers built from the guest's fetch constants: address modes and
   // filters. Every texture was sampled with one nearest/clamp sampler, so a
   // texture meant to repeat - the road, the wheel rims - showed its edge
@@ -566,7 +615,7 @@ class PlumeDrawContext {
   // Descriptor set 2: cube maps. Every slot holds a black cube until a copy
   // fills one - sampling the 2D set's views as cubes read garbage, which is
   // what the car's reflections were.
-  std::unique_ptr<plume::RenderDescriptorSet> cube_set_;
+  std::unique_ptr<BindlessTable> cube_set_;
   std::unique_ptr<plume::RenderTexture> null_cube_;
   std::unique_ptr<plume::RenderTextureView> null_cube_view_;
   std::unique_ptr<plume::RenderTexture> identity_lut_;
@@ -735,8 +784,25 @@ class PlumeDrawContext {
   void* ps_constants_mapped_ = nullptr;
   void* shared_constants_mapped_ = nullptr;
   float* vb_mapped_ = nullptr;
-  // The three constant buffers, bound as set 4 with each draw's offsets.
-  std::unique_ptr<plume::RenderDescriptorSet> constants_set_;
+  // The one descriptor set every pipeline reads (set 0): bindings 0-2 the
+  // vertex, pixel and shared constants (uniform buffers at each draw's dynamic
+  // offsets), 3-5 sixteen 2D, layered and cube textures, 6 sixteen samplers -
+  // the shader's sampler slots. One per distinct set of slots, cached.
+  plume::RenderDescriptorSetBuilder draw_set_builder_;
+  struct DrawBindings {
+    uint32_t tex2d[16] = {};
+    uint32_t layered[16] = {};
+    uint32_t cube[16] = {};
+    uint32_t sampler[16] = {};
+  };
+  struct DrawSet {
+    std::unique_ptr<plume::RenderDescriptorSet> set;
+    uint64_t last_used = 0;
+  };
+  std::unordered_map<uint64_t, DrawSet> draw_sets_;
+  uint64_t draw_sets_made_ = 0;
+  plume::RenderDescriptorSet* DrawSetFor(const DrawBindings& bindings);
+  void TrimDrawSets();
 
   std::array<plume::RenderInputSlot, 1> input_slots_{};
   std::array<plume::RenderInputElement, 32> input_elements_{};

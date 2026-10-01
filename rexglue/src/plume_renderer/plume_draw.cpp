@@ -299,6 +299,8 @@ bool DecodeCompressedForDump(rex::graphics::xenos::TextureFormat base_fmt,
 constexpr uint32_t kBindlessTextureCount = 4096;
 constexpr uint32_t kIdentityLutSize = 64;
 constexpr uint32_t kBindlessSamplerCount = 64;
+// The sampler slots a draw has: Xenos's sixteen texture fetch slots.
+constexpr uint32_t kDrawSlots = 16;
 constexpr uint32_t kVsConstantBytes = 256 * 16;
 constexpr uint32_t kPsConstantBytes = 256 * 16;
 constexpr uint32_t kSharedConstantBytes = 512;
@@ -2214,7 +2216,7 @@ void PlumeDrawContext::Shutdown() {
   ps_constants_mapped_ = nullptr;
   shared_constants_mapped_ = nullptr;
   vb_mapped_ = nullptr;
-  constants_set_.reset();
+  draw_sets_.clear();
   vs_constants_.reset();
   ps_constants_.reset();
   shared_constants_.reset();
@@ -2258,52 +2260,28 @@ bool PlumeDrawContext::Initialize(plume::RenderDevice* device) {
   plume::RenderPipelineLayoutBuilder layout_builder;
   layout_builder.begin(false, true);
 
-  plume::RenderDescriptorSetBuilder tex_set_builder;
-  tex_set_builder.begin();
-  tex_set_builder.addTexture(0, kBindlessTextureCount);
-  tex_set_builder.end(true, kBindlessTextureCount);
-  texture_set_ = tex_set_builder.create(device_);
-  if (!texture_set_) {
-    REXLOG_ERROR("plume: draw texture descriptor set failed");
-    Shutdown();
-    return false;
-  }
+  // The textures and samplers the draws refer to by index, kept on the
+  // processor (BindlessTable): 2D, layered, cube.
+  texture_set_ = std::make_unique<BindlessTable>(kBindlessTextureCount);
+  volume_set_ = std::make_unique<BindlessTable>(kBindlessTextureCount);
+  cube_set_ = std::make_unique<BindlessTable>(kBindlessTextureCount);
+  sampler_set_ = std::make_unique<BindlessTable>(kBindlessSamplerCount);
 
-  layout_builder.addDescriptorSet(tex_set_builder);
-  layout_builder.addDescriptorSet(tex_set_builder);
-  layout_builder.addDescriptorSet(tex_set_builder);
-  volume_set_ = tex_set_builder.create(device_);
-  cube_set_ = tex_set_builder.create(device_);
-
-  plume::RenderDescriptorSetBuilder sampler_set_builder;
-  sampler_set_builder.begin();
-  sampler_set_builder.addSampler(0, kBindlessSamplerCount);
-  sampler_set_builder.end(true, kBindlessSamplerCount);
-  sampler_set_ = sampler_set_builder.create(device_);
-  if (!sampler_set_) {
-    REXLOG_ERROR("plume: draw sampler descriptor set failed");
-    Shutdown();
-    return false;
-  }
-  layout_builder.addDescriptorSet(sampler_set_builder);
-
-  // Set 4: the draw's vertex, pixel and shared constants, three uniform buffers
-  // bound at each draw's slot by dynamic offsets (shader_common.h) - plain
-  // Vulkan, where the shaders used to read them through buffer device
-  // addresses passed as push constants.
-  plume::RenderDescriptorSetBuilder constants_set_builder;
-  constants_set_builder.begin();
-  constants_set_builder.addConstantBufferDynamic(0);
-  constants_set_builder.addConstantBufferDynamic(1);
-  constants_set_builder.addConstantBufferDynamic(2);
-  constants_set_builder.end();
-  constants_set_ = constants_set_builder.create(device_);
-  if (!constants_set_) {
-    REXLOG_ERROR("plume: draw constants descriptor set failed");
-    Shutdown();
-    return false;
-  }
-  layout_builder.addDescriptorSet(constants_set_builder);
+  // Set 0, the only one (a phone's driver may allow no more than four): the
+  // draw's vertex, pixel and shared constants as uniform buffers bound at its
+  // slots by dynamic offsets, then its sampler slots - sixteen 2D, layered and
+  // cube textures and sixteen samplers (shader_common.h). Plain Vulkan 1.0:
+  // no buffer device address, no descriptor indexing.
+  draw_set_builder_.begin();
+  draw_set_builder_.addConstantBufferDynamic(0);
+  draw_set_builder_.addConstantBufferDynamic(1);
+  draw_set_builder_.addConstantBufferDynamic(2);
+  draw_set_builder_.addTexture(3, kDrawSlots);
+  draw_set_builder_.addTexture(4, kDrawSlots);
+  draw_set_builder_.addTexture(5, kDrawSlots);
+  draw_set_builder_.addSampler(6, kDrawSlots);
+  draw_set_builder_.end();
+  layout_builder.addDescriptorSet(draw_set_builder_);
   layout_builder.end();
   pipeline_layout_ = layout_builder.create(device_);
   if (!pipeline_layout_) {
@@ -2453,9 +2431,6 @@ bool PlumeDrawContext::Initialize(plume::RenderDevice* device) {
   std::memset(vs_constants_mapped_, 0, size_t(kVsSlotBytes) * kCbSlots);
   std::memset(ps_constants_mapped_, 0, size_t(kPsSlotBytes) * kCbSlots);
   std::memset(shared_constants_mapped_, 0, size_t(kSharedSlotBytes) * kCbSlots);
-  constants_set_->setBuffer(0, vs_constants_.get(), kVsConstantBytes);
-  constants_set_->setBuffer(1, ps_constants_.get(), kPsConstantBytes);
-  constants_set_->setBuffer(2, shared_constants_.get(), kSharedConstantBytes);
 
   dummy_vb_ = device_->createBuffer(plume::RenderBufferDesc::VertexBuffer(
       uint64_t(kDummyVertexCount) * kVertexStrideBytes, plume::RenderHeapType::UPLOAD));
@@ -3159,6 +3134,82 @@ bool PlumeDrawContext::AllocateCacheRegion(uint32_t count, uint32_t* offset) {
     return true;
   }
   return false;
+}
+
+// The draw's own descriptor set: its constants and its sixteen sampler slots.
+// Sets are kept by what they hold - the index of each slot and the version of
+// the entry there - and never written again once made: a set may still be in
+// a frame on the GPU, and without descriptor indexing (update after bind) a
+// set in use must not change. A slot's entry replaced gives a new key.
+plume::RenderDescriptorSet* PlumeDrawContext::DrawSetFor(const DrawBindings& bindings) {
+  struct KeyEntry {
+    uint32_t index;
+    uint32_t version;
+  };
+  std::array<KeyEntry, kDrawSlots * 4> key{};
+  const auto version = [](const BindlessTable* table, uint32_t index) {
+    return table ? table->at(index).version : 0u;
+  };
+  for (uint32_t s = 0; s < kDrawSlots; ++s) {
+    key[s] = {bindings.tex2d[s], version(texture_set_.get(), bindings.tex2d[s])};
+    key[16 + s] = {bindings.layered[s], version(volume_set_.get(), bindings.layered[s])};
+    key[32 + s] = {bindings.cube[s], version(cube_set_.get(), bindings.cube[s])};
+    key[48 + s] = {bindings.sampler[s], version(sampler_set_.get(), bindings.sampler[s])};
+  }
+  const uint64_t hash = XXH3_64bits(key.data(), sizeof(key));
+  auto it = draw_sets_.find(hash);
+  if (it == draw_sets_.end()) {
+    DrawSet made;
+    made.set = draw_set_builder_.create(device_);
+    if (!made.set) {
+      static std::atomic<uint32_t> failed{0};
+      if (failed.fetch_add(1, std::memory_order_relaxed) < 4) {
+        REXLOG_ERROR("plume: a draw's descriptor set could not be made ({} cached)", draw_sets_.size());
+      }
+      return nullptr;
+    }
+    made.set->setBuffer(0, vs_constants_.get(), kVsConstantBytes);
+    made.set->setBuffer(1, ps_constants_.get(), kPsConstantBytes);
+    made.set->setBuffer(2, shared_constants_.get(), kSharedConstantBytes);
+    // Flattened descriptor indices: the three buffers, then each binding's sixteen.
+    const auto texture = [&](uint32_t descriptor, const BindlessTable* table, uint32_t index) {
+      if (!table) {
+        return;
+      }
+      const BindlessTable::Entry& e = table->at(index);
+      if (e.texture) {
+        made.set->setTexture(descriptor, e.texture, e.layout, e.view);
+      }
+    };
+    for (uint32_t s = 0; s < kDrawSlots; ++s) {
+      texture(3 + s, texture_set_.get(), bindings.tex2d[s]);
+      texture(3 + kDrawSlots + s, volume_set_.get(), bindings.layered[s]);
+      texture(3 + 2 * kDrawSlots + s, cube_set_.get(), bindings.cube[s]);
+      const plume::RenderSampler* sampler = sampler_set_ ? sampler_set_->at(bindings.sampler[s]).sampler : nullptr;
+      made.set->setSampler(3 + 3 * kDrawSlots + s, sampler ? sampler : sampler_.get());
+    }
+    ++draw_sets_made_;
+    it = draw_sets_.emplace(hash, std::move(made)).first;
+  }
+  it->second.last_used = frame_serial_;
+  return it->second.set.get();
+}
+
+// Sets not used for a few frames are dropped once there are many; the frames
+// that may still be on the GPU are the last two.
+void PlumeDrawContext::TrimDrawSets() {
+  static std::atomic<uint64_t> last_report_ms{0};
+  const uint64_t now = uint64_t(std::chrono::duration_cast<std::chrono::milliseconds>(
+                                    std::chrono::steady_clock::now().time_since_epoch())
+                                    .count());
+  if (now - last_report_ms.load(std::memory_order_relaxed) >= 10000) {
+    last_report_ms.store(now, std::memory_order_relaxed);
+    REXLOG_INFO("plume: draw descriptor sets: {} cached, {} made so far", draw_sets_.size(), draw_sets_made_);
+  }
+  if (draw_sets_.size() <= 6144) {
+    return;
+  }
+  std::erase_if(draw_sets_, [&](const auto& kv) { return kv.second.last_used + 3 < frame_serial_; });
 }
 
 // With XERENGE_VERTEX_TRACE a hit reads back the first packed vec4 of the
@@ -4691,6 +4742,10 @@ uint32_t PlumeDrawContext::AcquireTextureSlot() {
     REXLOG_INFO("plume: texture slots full - evicting {:016X} (unused {} frames), {} evictions",
                 stalest->first, frame_serial_ - stalest->second->last_used, n + 1);
   }
+  // Back to the empty texture before the new one takes the slot: a texture made
+  // at the freed one's address must not look like the same entry (DrawSetFor).
+  texture_set_->setTexture(slot, null_texture_.get(), plume::RenderTextureLayout::SHADER_READ,
+                           null_texture_view_.get());
   guest_textures_.erase(stalest);
   return slot;
 }
@@ -5368,6 +5423,7 @@ void PlumeDrawContext::BindGuestTextures(plume::RenderCommandList* list,
     cache_by_offset_.clear();
     cache_used_ = 0;
   }
+  TrimDrawSets();
   ++frame_serial_;
   size_t last_video = draws.size();
   for (size_t i = 0; i < draws.size(); ++i) {
@@ -5519,6 +5575,8 @@ void PlumeDrawContext::BindGuestTextures(plume::RenderCommandList* list,
             it != guest_textures_.end() && it->second &&
             (it->second->width != PackedPlaneWidth(width, bytes_per_sample) ||
              it->second->height != height)) {
+          texture_set_->setTexture(it->second->bindless, null_texture_.get(),
+                                   plume::RenderTextureLayout::SHADER_READ, null_texture_view_.get());
           guest_textures_.erase(it);
         }
         const bool ok = UploadHostTexture(list, PackedPlaneKey(key),
@@ -6237,10 +6295,6 @@ void PlumeDrawContext::EncodeDraws(plume::RenderCommandList* list,
   }
 
   list->setGraphicsPipelineLayout(pipeline_layout_.get());
-  list->setGraphicsDescriptorSet(texture_set_.get(), 0);
-  list->setGraphicsDescriptorSet(volume_set_ ? volume_set_.get() : texture_set_.get(), 1);
-  list->setGraphicsDescriptorSet(cube_set_ ? cube_set_.get() : texture_set_.get(), 2);
-  list->setGraphicsDescriptorSet(sampler_set_.get(), 3);
 
   uint32_t encoded = 0;
   // Frames alternate between two halves of the vertex and constant buffers:
@@ -6587,11 +6641,13 @@ void PlumeDrawContext::EncodeDraws(plume::RenderCommandList* list,
     }
     // XERENGE_VIDEO_GPU: from stage 1 the video pipeline is built for a video
     // frame's state, and from stage 3 it draws the frame.
+    bool video_pipeline = false;
     if (!pipeline && snap.has_video_frame() && VideoGpuStage() >= 1) {
       plume::RenderPipeline* video =
           VideoPipelineFor(topology, blend_control, draw_color_mask, snap.depth_control);
       if (UsesVideoPipeline(snap)) {
         pipeline = video;
+        video_pipeline = video != nullptr;
       }
     }
     if (!pipeline) {
@@ -6714,7 +6770,33 @@ void PlumeDrawContext::EncodeDraws(plume::RenderCommandList* list,
 
     const uint32_t constant_offsets[3] = {vs_slot * kVsSlotBytes, ps_slot * kPsSlotBytes,
                                           shared_slot * kSharedSlotBytes};
-    list->setGraphicsDescriptorSetDynamic(constants_set_.get(), 4, constant_offsets, 3);
+    // The draw's sampler slots. The title's shaders read slot n for their sampler
+    // register n (the indices FillSharedConstants worked out); the passthrough
+    // shader reads its one texture from slot 0, the video shader its planes from
+    // slots 0-2.
+    DrawBindings bindings;
+    if (video_pipeline) {
+      const uint32_t u = VideoPlaneSlot(snap.video_u_key);
+      bindings.tex2d[0] = VideoPlaneSlot(snap.video_key);
+      bindings.tex2d[1] = u;
+      bindings.tex2d[2] = snap.video_packed_uv ? u : VideoPlaneSlot(snap.video_v_key);
+    } else if (passthrough) {
+      bindings.tex2d[0] = BindlessForTexture(snap);
+    } else {
+      const auto* words = reinterpret_cast<const uint32_t*>(shared);
+      for (uint32_t s = 0; s < kDrawSlots; ++s) {
+        bindings.tex2d[s] = words[s];
+        bindings.layered[s] = words[16 + s];
+        bindings.cube[s] = words[32 + s];
+        bindings.sampler[s] = words[48 + s];
+      }
+    }
+    plume::RenderDescriptorSet* draw_set = DrawSetFor(bindings);
+    if (!draw_set) {
+      note_skip("no descriptor set");
+      return;
+    }
+    list->setGraphicsDescriptorSetDynamic(draw_set, 0, constant_offsets, 3);
     if (pipeline != bound_pipeline) {
       list->setPipeline(pipeline);
       bound_pipeline = pipeline;

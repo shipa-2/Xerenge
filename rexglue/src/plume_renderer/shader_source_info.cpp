@@ -129,13 +129,16 @@ ShaderSourceInfo ParseShaderSource(std::string_view src) {
   }
   info.writes_oc1 = src.find("output.oC1") != std::string_view::npos;
   static constexpr std::string_view kSamplerKey =
-      "_Texture2DDescriptorIndex XENOS_SHARED_UINT(";
+      "_Texture2DDescriptorIndex ";  // followed by the sampler register: the slot
   for (size_t at = src.find(kSamplerKey); at != std::string_view::npos;
        at = src.find(kSamplerKey, at + 1)) {
     const std::string digits(src.substr(at + kSamplerKey.size(), 12));
-    const uint32_t offset = uint32_t(std::strtoul(digits.c_str(), nullptr, 10));
-    if (offset < 64) {
-      info.sampler_slots |= 1u << (offset / 4);
+    if (digits.empty() || digits[0] < '0' || digits[0] > '9') {
+      continue;  // the Metal half's define, not a number
+    }
+    const uint32_t slot = uint32_t(std::strtoul(digits.c_str(), nullptr, 10));
+    if (slot < 16) {
+      info.sampler_slots |= 1u << slot;
     }
   }
   info.consumed_locations = ParseConsumedLocations(src);
