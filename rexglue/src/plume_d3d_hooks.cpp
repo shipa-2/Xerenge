@@ -3,6 +3,7 @@
  * @brief       Guest D3D hooks for the plume backend (phase 3).
  */
 #include <cmath>
+#include "diagnostics.h"
 #include "plume_d3d.h"
 
 #include <atomic>
@@ -147,7 +148,9 @@ struct BlockTimer {
   std::chrono::steady_clock::time_point started;
   size_t index;
   explicit BlockTimer(size_t which)
-      : started(std::chrono::steady_clock::now()), index(which) {}
+      : started(xerenge::Diagnostics() ? std::chrono::steady_clock::now()
+                                        : std::chrono::steady_clock::time_point{}),
+        index(which) {}
   ~BlockTimer();
 };
 
@@ -159,6 +162,9 @@ const char* const g_block_names[5] = {"SecondaryPosition", "PrimaryRange", "Fenc
 }  // namespace
 
 BlockTimer::~BlockTimer() {
+  if (!xerenge::Diagnostics()) {
+    return;
+  }
   const uint64_t took = static_cast<uint64_t>(
       std::chrono::duration_cast<std::chrono::nanoseconds>(
           std::chrono::steady_clock::now() - started)
@@ -704,12 +710,20 @@ const char* const g_d3d_names[] = {
     "CreateVertexBuffer", "CreateIndexBuffer"};
 
 void NoteD3D(size_t which, PPCContext& ctx) {
+  if (!xerenge::Diagnostics()) {
+    return;
+  }
   const uint64_t n = g_d3d_counts[which].fetch_add(1, std::memory_order_relaxed);
   if (n == 0) {
     REXLOG_INFO("plume: D3D {} first call r3={:08X} r4={:08X} r5={:08X}", g_d3d_names[which],
                 ctx.r3.u32, ctx.r4.u32, ctx.r5.u32);
   }
   static std::atomic<uint64_t> last_ms{0};
+  // The clock only now and then: read on every call it was a twentieth of the
+  // title's thread on the Pixel.
+  if ((n & 1023u) != 0) {
+    return;
+  }
   const uint64_t now = static_cast<uint64_t>(
       std::chrono::duration_cast<std::chrono::milliseconds>(
           std::chrono::steady_clock::now().time_since_epoch()).count());
@@ -761,13 +775,19 @@ D3DRenderState g_state;
 // and that is the one the scene is most likely to use.
 void CountDrawPath(const char* what, uint32_t count) {
   static std::mutex mutex;
-  static std::map<std::string, std::pair<uint64_t, uint64_t>> totals;
+  // Keyed by the literal itself: a std::string made per draw, under a lock,
+  // cost more than the draw's bookkeeping is worth.
+  static std::map<const char*, std::pair<uint64_t, uint64_t>> totals;
   static std::atomic<uint64_t> last_ms{0};
+  static std::atomic<uint32_t> calls{0};
   {
     std::lock_guard lock(mutex);
     auto& entry = totals[what];
     entry.first += 1;
     entry.second += count;
+  }
+  if ((calls.fetch_add(1, std::memory_order_relaxed) & 255u) != 0) {
+    return;
   }
   const uint64_t now = static_cast<uint64_t>(
       std::chrono::duration_cast<std::chrono::milliseconds>(
@@ -911,10 +931,17 @@ bool InterfaceFromDirect3D() {
 }
 
 void CountFrameRouting(bool into_frame) {
+  if (!xerenge::Diagnostics()) {
+    return;
+  }
   static std::atomic<uint64_t> kept{0};
   static std::atomic<uint64_t> elsewhere{0};
   static std::atomic<uint64_t> last_ms{0};
-  (into_frame ? kept : elsewhere).fetch_add(1, std::memory_order_relaxed);
+  const uint64_t counted =
+      (into_frame ? kept : elsewhere).fetch_add(1, std::memory_order_relaxed);
+  if ((counted & 255u) != 0) {
+    return;
+  }
   const uint64_t now = static_cast<uint64_t>(
       std::chrono::duration_cast<std::chrono::milliseconds>(
           std::chrono::steady_clock::now().time_since_epoch())
@@ -928,6 +955,9 @@ void CountFrameRouting(bool into_frame) {
 
 void DescribeDraw(const char* what, uint32_t prim_type, uint32_t base_vertex, uint32_t start_index,
                   uint32_t primitive_count) {
+  if (!xerenge::Diagnostics()) {
+    return;
+  }
   CountDrawPath(what, primitive_count);
   // Count the big draws apart from the small ones. One shared allowance is
   // spent entirely on the interface's three-index draws before a scene is ever

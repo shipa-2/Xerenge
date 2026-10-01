@@ -7,6 +7,7 @@
 #include <unordered_set>
 
 #include <array>
+#include <cstring>
 #include <cstdint>
 #include <map>
 #include <memory>
@@ -49,6 +50,21 @@ class SharedWords {
     return *this;
   }
   operator Words() const { return *words_; }
+
+  // The words at src - as last's block when they are the same, which they
+  // mostly are from one draw to the next; last then follows the new block.
+  // A fresh 9 KB copy per draw was a quarter of the title's thread on the
+  // Pixel, the allocator returning the memory included.
+  void AssignShared(const uint32_t* src, SharedWords& last) {
+    if (last.words_ != Zeroes() && std::memcmp(last.words_->data(), src, sizeof(Words)) == 0) {
+      words_ = last.words_;
+      return;
+    }
+    auto fresh = std::make_shared<Words>();
+    std::memcpy(fresh->data(), src, sizeof(Words));
+    words_ = fresh;
+    last.words_ = std::move(fresh);
+  }
 
   static constexpr size_t size() { return N; }
   const uint32_t* data() const { return words_->data(); }
@@ -538,8 +554,10 @@ class PlumeDrawContext {
   plume::RenderDevice* device_ = nullptr;
   bool ready_ = false;
   bool null_texture_uploaded_ = false;
-  // Whether the GPU takes BC (DXT) textures; without, they are decoded to RGBA8.
+  // Whether the GPU takes BC (DXT) textures; without, they become ETC2 where
+  // it takes that (TranscodeBcToEtc2), RGBA8 otherwise.
   bool bc_supported_ = true;
+  bool etc2_supported_ = false;
   // XERENGE_FRAME_PROBE: the middle of what a resolve copies from, read back a few
   // frames later - whether the draws themselves came out black (ResolveRenderTarget).
   std::unique_ptr<plume::RenderBuffer> resolve_probe_;

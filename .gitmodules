@@ -1,3 +1,6 @@
 [submodule "rexglue/android/thirdparty/libadrenotools"]
 	path = rexglue/android/thirdparty/libadrenotools
 	url = https://github.com/bylaws/libadrenotools.git
+[submodule "rexglue/thirdparty/etcpak"]
+	path = rexglue/thirdparty/etcpak
+	url = https://github.com/wolfpld/etcpak.git

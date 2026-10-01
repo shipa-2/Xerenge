@@ -248,6 +248,8 @@ final class Settings {
         if (!"false".equals(value("aspect_16_9"))) env("XERENGE_ASPECT_16_9", "1");
         if ("true".equals(value("fps_counter"))) env("XERENGE_FPS_SHOW", "1");
         if ("true".equals(value("debug"))) {
+            // The renderer's own counting and timing, per draw: debug mode only.
+            env("XERENGE_DEBUG", "1");
             if ("true".equals(value("debug_gpu_trace"))) env("XERENGE_GPU_TRACE", "1");
             if ("true".equals(value("debug_movie_trace"))) env("XERENGE_MOVIE_TRACE", "1");
             if ("true".equals(value("debug_pipeline_log"))) env("XERENGE_PIPELINE_LOG", "1");

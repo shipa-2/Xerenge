@@ -4,6 +4,7 @@
  */
 #include <set>
 #include "plume_renderer/plume_graphics_system.h"
+#include "diagnostics.h"
 
 #include <cmath>
 #include <cstdio>
@@ -480,22 +481,29 @@ void PlumeGraphicsSystem::NoteGuestDraw(uint32_t primitive_type, uint32_t index_
   // This runs on the title's own thread, once per draw. Entering a scene the
   // title slows to about two frames a second while issuing thousands of these,
   // so what it costs has to be known rather than assumed.
-  const auto note_started = std::chrono::steady_clock::now();
+  // One draw in sixteen is timed and counted sixteen times: reading the clock
+  // on every one was itself an eighth of the title's thread on the Pixel.
+  static thread_local uint32_t note_tick = 0;
+  const bool timed = xerenge::Diagnostics() && (++note_tick & 15u) == 0;
+  const auto note_started =
+      timed ? std::chrono::steady_clock::now() : std::chrono::steady_clock::time_point{};
   struct NoteTimer {
     std::chrono::steady_clock::time_point started;
+    bool timed;
     ~NoteTimer() {
       static std::atomic<uint64_t> total_ns{0};
       static std::atomic<uint64_t> calls{0};
       static std::atomic<uint64_t> last_ms{0};
-      const uint64_t took = static_cast<uint64_t>(
-          std::chrono::duration_cast<std::chrono::nanoseconds>(
-              std::chrono::steady_clock::now() - started)
-              .count());
-      total_ns.fetch_add(took, std::memory_order_relaxed);
       const uint64_t n = calls.fetch_add(1, std::memory_order_relaxed) + 1;
+      if (!timed) {
+        return;
+      }
+      const auto finished = std::chrono::steady_clock::now();
+      const uint64_t took = static_cast<uint64_t>(
+          std::chrono::duration_cast<std::chrono::nanoseconds>(finished - started).count());
+      total_ns.fetch_add(took * 16, std::memory_order_relaxed);
       const uint64_t now = static_cast<uint64_t>(
-          std::chrono::duration_cast<std::chrono::milliseconds>(
-              std::chrono::steady_clock::now().time_since_epoch())
+          std::chrono::duration_cast<std::chrono::milliseconds>(finished.time_since_epoch())
               .count());
       uint64_t was = last_ms.load(std::memory_order_relaxed);
       if (now - was >= 2000 && last_ms.compare_exchange_strong(was, now)) {
@@ -504,7 +512,7 @@ void PlumeGraphicsSystem::NoteGuestDraw(uint32_t primitive_type, uint32_t index_
                     total / (n ? n : 1) / 1000, total / 1000000);
       }
     }
-  } note_timer{note_started};
+  } note_timer{note_started, timed};
   // Draw it here. Waiting for the ring's own draw packet to arrive and joining
   // the two halves there worked for the menu but not for the scene: inside a
   // tiled pass the title issues hundreds of these and the ring carries none of
@@ -818,28 +826,38 @@ void PlumeGraphicsSystem::PublishDrawSnapshot(uint32_t prim_type, uint32_t sourc
   // 2240 constants out of guest memory with a byte swap on every one, and the
   // snapshot then carries its own 9 KB copy of them. A scene frame issues
   // ~175 draws, so measure the two separately before assuming which dominates.
-  const auto snapshot_started = std::chrono::steady_clock::now();
+  // Timed one draw in sixteen and counted sixteen times, as NoteGuestDraw.
+  static thread_local uint32_t snapshot_tick = 0;
+  const bool timed = xerenge::Diagnostics() && (++snapshot_tick & 15u) == 0;
+  const auto clock_now = [timed] {
+    return timed ? std::chrono::steady_clock::now() : std::chrono::steady_clock::time_point{};
+  };
+  const auto snapshot_started = clock_now();
   const uint32_t device = FindD3DDevice();
   if (device) {
     PullDeviceConstants(device);
   }
-  const auto pull_done = std::chrono::steady_clock::now();
+  const auto pull_done = clock_now();
   struct PhaseTimer {
     std::chrono::steady_clock::time_point started, pull_done;
+    bool timed;
     std::atomic<uint64_t>* pull_us;
     std::atomic<uint64_t>* copy_us;
     std::atomic<uint64_t>* draws;
     ~PhaseTimer() {
+      draws->fetch_add(1, std::memory_order_relaxed);
+      if (!timed) {
+        return;
+      }
       const auto now = std::chrono::steady_clock::now();
       pull_us->fetch_add(
-          std::chrono::duration_cast<std::chrono::nanoseconds>(pull_done - started).count(),
+          16 * std::chrono::duration_cast<std::chrono::nanoseconds>(pull_done - started).count(),
           std::memory_order_relaxed);
       copy_us->fetch_add(
-          std::chrono::duration_cast<std::chrono::nanoseconds>(now - pull_done).count(),
+          16 * std::chrono::duration_cast<std::chrono::nanoseconds>(now - pull_done).count(),
           std::memory_order_relaxed);
-      draws->fetch_add(1, std::memory_order_relaxed);
     }
-  } phase_timer{snapshot_started, pull_done, &snapshot_pull_ns_, &snapshot_copy_ns_,
+  } phase_timer{snapshot_started, pull_done, timed, &snapshot_pull_ns_, &snapshot_copy_ns_,
                 &snapshot_draws_};
 
   GuestDrawSnapshot snap;
@@ -875,12 +893,9 @@ void PlumeGraphicsSystem::PublishDrawSnapshot(uint32_t prim_type, uint32_t sourc
   snap.prim_type = prim_type;
   snap.source_select = source_select;
   snap.num_indices = num_indices;
-  std::memcpy(snap.vs_constants.data(), &gpu_registers_[0x4000],
-              snap.vs_constants.size() * sizeof(uint32_t));
-  std::memcpy(snap.ps_constants.data(), &gpu_registers_[0x4400],
-              snap.ps_constants.size() * sizeof(uint32_t));
-  std::memcpy(snap.fetch_constants.data(), &gpu_registers_[0x4800],
-              snap.fetch_constants.size() * sizeof(uint32_t));
+  snap.vs_constants.AssignShared(&gpu_registers_[0x4000], last_vs_constants_);
+  snap.ps_constants.AssignShared(&gpu_registers_[0x4400], last_ps_constants_);
+  snap.fetch_constants.AssignShared(&gpu_registers_[0x4800], last_fetch_constants_);
   // A draw built from the Direct3D calls has no constants in the register
   // file: this path never receives a SET_CONSTANT packet, so what the ring
   // left there belongs to the interface. The title's own copy does have them,
@@ -943,7 +958,9 @@ void PlumeGraphicsSystem::PublishDrawSnapshot(uint32_t prim_type, uint32_t sourc
         REXLOG_INFO("plume: texture slot 0 base word - device {:08X}, object {:08X}",
                     from_device[1], object_word1);
       }
-      snap.fetch_constants = from_device;
+      if (d3d_device != device) {
+        snap.fetch_constants = from_device;
+      }
       fetch_from_device = true;
     }
   }
@@ -1104,7 +1121,7 @@ void PlumeGraphicsSystem::PublishDrawSnapshot(uint32_t prim_type, uint32_t sourc
   snap.valid = snap.vs_hash != 0 && snap.ps_hash != 0 && snap.num_indices != 0;
 
   uint64_t video_key = 0;
-  const auto fill_done = std::chrono::steady_clock::now();
+  const auto fill_done = clock_now();
   // The video path captures a frame and then keeps presenting it until told
   // otherwise, which is right for a menu backdrop and wrong the moment the
   // title moves on to something not recognised as a new frame - the stale
@@ -1113,14 +1130,16 @@ void PlumeGraphicsSystem::PublishDrawSnapshot(uint32_t prim_type, uint32_t sourc
   static const bool video_disabled = std::getenv("XERENGE_NO_VIDEO") != nullptr;
   const bool is_video =
       !video_disabled && snap.valid && IsGuestVideoBlit(snap, &video_key);
-  snapshot_classify_ns_.fetch_add(
-      std::chrono::duration_cast<std::chrono::nanoseconds>(std::chrono::steady_clock::now() -
-                                                           fill_done)
-          .count(),
-      std::memory_order_relaxed);
-  snapshot_fill_ns_.fetch_add(
-      std::chrono::duration_cast<std::chrono::nanoseconds>(fill_done - pull_done).count(),
-      std::memory_order_relaxed);
+  if (timed) {
+    snapshot_classify_ns_.fetch_add(
+        16 * std::chrono::duration_cast<std::chrono::nanoseconds>(
+                 std::chrono::steady_clock::now() - fill_done)
+                 .count(),
+        std::memory_order_relaxed);
+    snapshot_fill_ns_.fetch_add(
+        16 * std::chrono::duration_cast<std::chrono::nanoseconds>(fill_done - pull_done).count(),
+        std::memory_order_relaxed);
+  }
   if (is_video && memory_) {
     const auto now = std::chrono::steady_clock::now();
     // Decoding the same frame again produces the same bytes, so the only thing
@@ -1825,8 +1844,16 @@ void PlumeGraphicsSystem::PresentClearColorOnUiThread(uint32_t guest_width,
     } else {
       ++no_video_presents_;
     }
+    // Only a short list is ever used again (below), so only a short one is
+    // kept: copying the whole frame here - two thousand snapshots in a race,
+    // constants and all - was a tenth of the present thread's time on the
+    // Pixel, and as much again freeing it.
     if (!overlays.empty()) {
-      last_overlays_ = overlays;
+      if (overlays.size() < 16) {
+        last_overlays_ = overlays;
+      } else {
+        last_overlays_.clear();
+      }
     } else if (pending_video_.has_video_frame() && last_overlays_.size() < 16) {
       overlays = last_overlays_;
     }
@@ -1871,7 +1898,12 @@ void PlumeGraphicsSystem::PresentClearColorOnUiThread(uint32_t guest_width,
     if (!video_placed && (!targets_followed || !has_3d) && pending_video_.has_video_frame()) {
       batch.push_back(pending_video_);
     }
-    batch.insert(batch.end(), overlays.begin(), overlays.end());
+    if (batch.empty()) {
+      batch = std::move(overlays);
+    } else {
+      batch.insert(batch.end(), std::make_move_iterator(overlays.begin()),
+                   std::make_move_iterator(overlays.end()));
+    }
     InterpolateFrame(batch);
     if (batch.empty()) {
       bool has_resolves = false;

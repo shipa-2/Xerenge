@@ -190,6 +190,19 @@ if(NOT TARGET libzstd)
     add_subdirectory("${XENON_RECOMP_ROOT}/thirdparty/zstd/build/cmake" xenos-zstd)
 endif()
 target_link_libraries(rexgpu-plume PRIVATE plume rex::runtime libzstd xxHash::xxhash)
+# etcpak's ETC2 encoder: on a GPU without BC textures (most phones) the title's
+# DXT textures are re-encoded to ETC2 rather than left four to eight times
+# larger as RGBA8. Just the encoder, not its tool.
+add_library(xerenge-etcpak STATIC
+    thirdparty/etcpak/ProcessRGB.cpp
+    thirdparty/etcpak/Tables.cpp
+    thirdparty/etcpak/Dither.cpp)
+set_target_properties(xerenge-etcpak PROPERTIES POSITION_INDEPENDENT_CODE ON)
+target_include_directories(xerenge-etcpak PUBLIC thirdparty/etcpak)
+if(CMAKE_SYSTEM_PROCESSOR MATCHES "x86_64|AMD64")
+    target_compile_options(xerenge-etcpak PRIVATE -msse4.1)
+endif()
+target_link_libraries(rexgpu-plume PRIVATE xerenge-etcpak)
 if(ANDROID)
     # libadrenotools opens a Vulkan driver the app ships (Mesa Turnip) in place
     # of the system one; its hook libraries go into the APK beside it.

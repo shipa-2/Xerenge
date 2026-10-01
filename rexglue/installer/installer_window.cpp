@@ -127,6 +127,7 @@ level=info
 if [ "$(value debug)" = true ]; then
     level=$(value debug_log_level)
     [ -n "$level" ] || level=debug
+    export XERENGE_DEBUG=1
     [ "$(value debug_gpu_trace)" = true ] && export XERENGE_GPU_TRACE=1
     [ "$(value debug_movie_trace)" = true ] && export XERENGE_MOVIE_TRACE=1
     [ "$(value debug_pipeline_log)" = true ] && export XERENGE_PIPELINE_LOG=1
@@ -222,6 +223,7 @@ set "level=info"
 if /i not "%debug%"=="true" goto :debug_done
 set "level=debug"
 if defined debug_log_level set "level=%debug_log_level%"
+set "XERENGE_DEBUG=1"
 if /i "%debug_gpu_trace%"=="true" set "XERENGE_GPU_TRACE=1"
 if /i "%debug_movie_trace%"=="true" set "XERENGE_MOVIE_TRACE=1"
 if /i "%debug_pipeline_log%"=="true" set "XERENGE_PIPELINE_LOG=1"

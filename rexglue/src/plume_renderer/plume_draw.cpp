@@ -11,9 +11,11 @@
  * @brief       Guest DRAW_INDX_2 → plume graphics pipeline (present thread).
  */
 #include "plume_renderer/plume_draw.h"
+#include "diagnostics.h"
 #include "plume_renderer/plume_parallel.h"
 
 #include <algorithm>
+#include <functional>
 #include <bit>
 #include <map>
 #include <set>
@@ -44,6 +46,8 @@
 #include "plume_renderer/shader_source_info.h"
 
 #include <xxhash.h>
+
+#include <ProcessRGB.hpp>
 
 #include <cstdio>
 #include <fstream>
@@ -293,6 +297,104 @@ bool DecodeCompressedForDump(rex::graphics::xenos::TextureFormat base_fmt,
       }
     }
   }
+  return true;
+}
+
+// BC1/BC2/BC3 blocks re-encoded as ETC2, for GPUs that take ETC2 and not BC
+// (Mali): RGBA8 instead cost eight times the memory and bandwidth of the
+// 4-bit formats and made the Pixel's frames slow enough to show half-drawn
+// ones. Each block is decoded into a BGRA image padded to whole blocks (the
+// order etcpak reads), which etcpak encodes - ETC2 RGB for opaque textures,
+// ETC2 RGBA (EAC alpha) otherwise. *alpha comes in as the format chosen for the
+// texture's base level, or as -1 to choose it here: from the format, or for
+// BC1 from whether any texel is transparent. row_texels is the padded width.
+bool TranscodeBcToEtc2(rex::graphics::xenos::TextureFormat base_fmt,
+                       const std::vector<uint8_t>& blocks, uint32_t block_row_bytes,
+                       uint32_t width, uint32_t height, int* alpha, std::vector<uint8_t>* out,
+                       uint32_t* row_texels) {
+  using rex::graphics::xenos::TextureFormat;
+  int bpb = 0;
+  switch (base_fmt) {
+    case TextureFormat::k_DXT1:
+      bpb = 8;
+      break;
+    case TextureFormat::k_DXT2_3:
+    case TextureFormat::k_DXT4_5:
+      bpb = 16;
+      break;
+    default:
+      return false;
+  }
+  const uint32_t block_w = (width + 3) / 4;
+  const uint32_t block_h = (height + 3) / 4;
+  const uint32_t padded_w = block_w * 4;
+  std::vector<uint32_t> bgra(size_t(padded_w) * block_h * 4, 0xFF000000u);
+  std::atomic<bool> transparent{false};
+  const auto decode_rows = [&](uint32_t by_begin, uint32_t by_end) {
+    bool seen_transparent = false;
+    for (uint32_t by = by_begin; by < by_end; ++by) {
+      for (uint32_t bx = 0; bx < block_w; ++bx) {
+        const size_t off = size_t(by) * block_row_bytes + size_t(bx) * bpb;
+        if (off + size_t(bpb) > blocks.size()) {
+          continue;
+        }
+        const uint8_t* block = blocks.data() + off;
+        uint8_t texel[16 * 4];
+        if (base_fmt == TextureFormat::k_DXT2_3) {
+          DecodeBc1ColorBlock(block + 8, /*explicit_alpha=*/true, texel);
+          DecodeBc2AlphaBlock(block, texel);
+        } else if (base_fmt == TextureFormat::k_DXT4_5) {
+          DecodeBc1ColorBlock(block + 8, /*explicit_alpha=*/true, texel);
+          DecodeBc3AlphaBlock(block, texel);
+        } else {
+          DecodeBc1ColorBlock(block, /*explicit_alpha=*/false, texel);
+        }
+        for (uint32_t ty = 0; ty < 4; ++ty) {
+          uint32_t* row = bgra.data() + size_t(by * 4 + ty) * padded_w + bx * 4;
+          for (uint32_t tx = 0; tx < 4; ++tx) {
+            const uint8_t* s = texel + (ty * 4 + tx) * 4;
+            row[tx] = uint32_t(s[2]) | (uint32_t(s[1]) << 8) | (uint32_t(s[0]) << 16) |
+                      (uint32_t(s[3]) << 24);
+            seen_transparent |= s[3] != 0xFF;
+          }
+        }
+      }
+    }
+    if (seen_transparent) {
+      transparent.store(true, std::memory_order_relaxed);
+    }
+  };
+  // Bands of block rows on the worker threads once a texture is big enough
+  // for it to pay (256x256 and up).
+  constexpr uint32_t kBandRows = 16;
+  const uint32_t bands = (block_h + kBandRows - 1) / kBandRows;
+  const auto run_bands = [&](const std::function<void(uint32_t, uint32_t)>& band) {
+    if (bands <= 1 || block_w * block_h < 4096) {
+      band(0, block_h);
+      return;
+    }
+    WorkerPool::Get().ParallelFor(bands, [&](size_t i) {
+      const uint32_t begin = uint32_t(i) * kBandRows;
+      band(begin, std::min(block_h, begin + kBandRows));
+    });
+  };
+  run_bands(decode_rows);
+  if (*alpha < 0) {
+    *alpha = base_fmt != TextureFormat::k_DXT1 || transparent.load() ? 1 : 0;
+  }
+  const uint32_t block_bytes = *alpha ? 16u : 8u;
+  out->assign(size_t(block_w) * block_h * block_bytes, 0);
+  run_bands([&](uint32_t by_begin, uint32_t by_end) {
+    const uint32_t* src = bgra.data() + size_t(by_begin) * 4 * padded_w;
+    auto* dst = reinterpret_cast<uint64_t*>(out->data() + size_t(by_begin) * block_w * block_bytes);
+    const uint32_t count = (by_end - by_begin) * block_w;
+    if (*alpha) {
+      CompressEtc2Rgba(src, dst, count, padded_w, true);
+    } else {
+      CompressEtc2Rgb(src, dst, count, padded_w, true);
+    }
+  });
+  *row_texels = padded_w;
   return true;
 }
 
@@ -2342,7 +2444,15 @@ bool PlumeDrawContext::Initialize(plume::RenderDevice* device) {
         plume::RenderTextureDesc::Texture2D(4, 4, 1, plume::RenderFormat::BC1_UNORM));
     bc_supported_ = probe && VulkanTextureOk(probe.get());
     if (!bc_supported_) {
-      REXLOG_INFO("plume: this GPU has no BC (DXT) textures; they are decoded to RGBA8 on the processor");
+      // Phones take ETC2 instead: re-encoded on the processor, still 4 bits a texel.
+      // XERENGE_NO_ETC2=1 keeps the RGBA8 fallback, for comparing the two.
+      const auto etc2 = std::getenv("XERENGE_NO_ETC2") == nullptr
+                            ? device_->createTexture(plume::RenderTextureDesc::Texture2D(
+                                  4, 4, 1, plume::RenderFormat::ETC2_RGBA8_UNORM))
+                            : nullptr;
+      etc2_supported_ = etc2 && VulkanTextureOk(etc2.get());
+      REXLOG_INFO("plume: this GPU has no BC (DXT) textures; they are {} on the processor",
+                  etc2_supported_ ? "re-encoded as ETC2" : "decoded to RGBA8");
     }
   }
 
@@ -5901,7 +6011,27 @@ void PlumeDrawContext::BindGuestTextures(plume::RenderCommandList* list,
                              host_format == plume::RenderFormat::BC3_UNORM)) {
         const uint32_t block_bytes = base_fmt == TextureFormat::k_DXT1 ? 8u : 16u;
         std::vector<uint8_t> decoded;
-        if (DecodeCompressedForDump(base_fmt, pixels, row_bytes, width, height, &decoded)) {
+        int etc2_alpha = -1;
+        uint32_t etc2_row = 0;
+        if (etc2_supported_ && TranscodeBcToEtc2(base_fmt, pixels, row_bytes, width, height,
+                                                 &etc2_alpha, &decoded, &etc2_row)) {
+          // Every level in the base level's format: one image, one format.
+          pixels = std::move(decoded);
+          row_texels = etc2_row;
+          row_bytes = etc2_row / 4 * (etc2_alpha ? 16u : 8u);
+          for (HostMipLevel& mip : mip_levels) {
+            std::vector<uint8_t> level;
+            uint32_t level_row = 0;
+            if (mip.width != 0 && mip.height != 0 &&
+                TranscodeBcToEtc2(base_fmt, mip.pixels, mip.row_texels / 4 * block_bytes,
+                                  mip.width, mip.height, &etc2_alpha, &level, &level_row)) {
+              mip.pixels = std::move(level);
+              mip.row_texels = level_row;
+            }
+          }
+          host_format = etc2_alpha ? plume::RenderFormat::ETC2_RGBA8_UNORM
+                                   : plume::RenderFormat::ETC2_RGB8_UNORM;
+        } else if (DecodeCompressedForDump(base_fmt, pixels, row_bytes, width, height, &decoded)) {
           pixels = std::move(decoded);
           row_bytes = width * 4;
           row_texels = width;
@@ -6226,6 +6356,12 @@ void AccountEncodeStage(const char* next) {
 }
 
 void EncodeStage(const char* stage, const GuestDrawSnapshot* snap) {
+  // Per draw, so only in debug mode: the stage times and the stuck-encoder
+  // watchdog (which ignores a stage with no time, as here) both read the clock.
+  if (!xerenge::Diagnostics()) {
+    g_encode_stage.store(stage, std::memory_order_release);
+    return;
+  }
   AccountEncodeStage(stage);
   if (snap) {
     g_encode_vs.store(snap->vs_hash, std::memory_order_relaxed);
@@ -7337,7 +7473,7 @@ void PlumeDrawContext::EncodeDraws(plume::RenderCommandList* list,
     }
   }
   frame_encoded_draws_ = encoded;
-  {
+  if (xerenge::Diagnostics()) {
     // A frame with far fewer draws than the ones around it: the black flashes
     // the user sees now and then. Say what it held.
     static double average = 0.0;
