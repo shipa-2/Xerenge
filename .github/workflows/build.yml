@@ -32,6 +32,9 @@ jobs:
     steps:
       - uses: actions/checkout@v6
 
+      - name: etcpak
+        run: git submodule update --init --depth 1 rexglue/thirdparty/etcpak
+
       - name: Install clang 20
         run: |
           wget -qO llvm.sh https://apt.llvm.org/llvm.sh
@@ -128,6 +131,9 @@ jobs:
     steps:
       - uses: actions/checkout@v6
 
+      - name: etcpak
+        run: git submodule update --init --depth 1 rexglue/thirdparty/etcpak
+
       - name: Install LLVM, CMake, Ninja
         shell: pwsh
         run: choco install llvm cmake ninja -y
@@ -223,8 +229,8 @@ jobs:
     steps:
       - uses: actions/checkout@v6
 
-      - name: libadrenotools
-        run: git submodule update --init --recursive --depth 1 rexglue/android/thirdparty/libadrenotools
+      - name: libadrenotools and etcpak
+        run: git submodule update --init --recursive --depth 1 rexglue/android/thirdparty/libadrenotools rexglue/thirdparty/etcpak
 
       - name: Install clang 20
         run: |
@@ -404,9 +410,11 @@ jobs:
 
           Run the installer again over an installed copy to update it; your settings are kept.
 
-          **Android** (arm64, Adreno GPU): install `Burnout_Revenge-android-arm64.apk`. It opens as the installer: pick your disc image, and on a phone whose stock driver is older than Vulkan 1.2 load a Mesa Turnip driver .zip as well.
+          **Android** (arm64, a Vulkan 1.1 GPU - Adreno or Mali): install `Burnout_Revenge-android-arm64.apk`. It opens as the installer: pick your disc image. A Mesa Turnip driver .zip is optional, for Adreno phones whose own driver misbehaves.
 
           **Your own online server:** `ealobby-linux-amd64` or `ealobby-win-amd64.exe` is a lobby server for the online mode. Run it on a machine whose TCP ports 31860 and 31861 the players can reach, and start each game with `--lobby-server=<that machine>`. Without it, the copies on one LAN find each other's games with no server at all.
+
+          Players are told apart by their whole gamertag now, not its first four letters: use a lobby server of this release with games of this release.
           EOF
           gh release create "v$VERSION" --title "$VERSION" --latest --target "$GITHUB_SHA" \
             --notes-file notes.md \
