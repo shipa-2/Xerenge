@@ -4550,7 +4550,10 @@ uint32_t PlumeDrawContext::FillVertices(const GuestDrawSnapshot& snap, memory::M
 }
 
 bool PlumeSecondTargetEnabled() {
-  static const bool on = std::getenv("XERENGE_D3D_TARGETS") != nullptr;
+  // XERENGE_NO_SECOND_TARGET: no render target 1 (motion vectors, read only by
+  // the motion blur) - on a phone's tiled GPU every pixel was written twice.
+  static const bool on = std::getenv("XERENGE_D3D_TARGETS") != nullptr &&
+                         std::getenv("XERENGE_NO_SECOND_TARGET") == nullptr;
   return on;
 }
 
@@ -6494,6 +6497,17 @@ void PlumeDrawContext::EncodeDraws(plume::RenderCommandList* list,
   // What is bound, so that a draw repeating it does not bind it again. A
   // pass break (around a copy) forgets both.
   plume::RenderPipeline* bound_pipeline = nullptr;
+  // The last draw's slots and set, and what is bound: neighbouring draws often
+  // share textures, and then the set is neither looked up nor bound again.
+  DrawBindings last_bindings;
+  plume::RenderDescriptorSet* last_draw_set = nullptr;
+  uint64_t last_tables_changes = ~0ull;
+  plume::RenderDescriptorSet* bound_draw_set = nullptr;
+  uint32_t bound_offsets[3] = {~0u, ~0u, ~0u};
+  const auto tables_changes = [&] {
+    const auto changes = [](const std::unique_ptr<BindlessTable>& t) { return t ? uint64_t(t->changes()) : 0; };
+    return changes(texture_set_) + changes(volume_set_) + changes(cube_set_) + changes(sampler_set_);
+  };
   int bound_vertex_buffer = 0;  // 1 the frame's buffer, 2 the vertex cache
   // The constant blocks the last draw wrote, for reuse by the next.
   const uint32_t* last_vs = nullptr;
@@ -6816,7 +6830,10 @@ void PlumeDrawContext::EncodeDraws(plume::RenderCommandList* list,
     uint32_t vs_slot = slot_base + encoded;
     uint32_t ps_slot = slot_base + encoded;
     uint32_t shared_slot = slot_base + encoded;
-    if (last_vs && std::memcmp(last_vs, snap.vs_constants.data(), kVsConstantBytes) == 0) {
+    // Snapshots share their constant words (SharedWords): the same block is
+    // known equal without reading its 4 KB.
+    if (last_vs && (last_vs == snap.vs_constants.data() ||
+                    std::memcmp(last_vs, snap.vs_constants.data(), kVsConstantBytes) == 0)) {
       vs_slot = last_vs_slot;
     } else {
       std::memcpy(static_cast<uint8_t*>(vs_constants_mapped_) + vs_slot * kVsSlotBytes,
@@ -6824,7 +6841,8 @@ void PlumeDrawContext::EncodeDraws(plume::RenderCommandList* list,
       last_vs = snap.vs_constants.data();
       last_vs_slot = vs_slot;
     }
-    if (last_ps && std::memcmp(last_ps, snap.ps_constants.data(), kPsConstantBytes) == 0) {
+    if (last_ps && (last_ps == snap.ps_constants.data() ||
+                    std::memcmp(last_ps, snap.ps_constants.data(), kPsConstantBytes) == 0)) {
       ps_slot = last_ps_slot;
     } else {
       std::memcpy(static_cast<uint8_t*>(ps_constants_mapped_) + ps_slot * kPsSlotBytes,
@@ -6869,12 +6887,26 @@ void PlumeDrawContext::EncodeDraws(plume::RenderCommandList* list,
         bindings.sampler[s] = words[48 + s];
       }
     }
-    plume::RenderDescriptorSet* draw_set = DrawSetFor(bindings);
+    const uint64_t changes_now = tables_changes();
+    plume::RenderDescriptorSet* draw_set = nullptr;
+    if (last_draw_set && changes_now == last_tables_changes &&
+        std::memcmp(&bindings, &last_bindings, sizeof(bindings)) == 0) {
+      draw_set = last_draw_set;
+    } else {
+      draw_set = DrawSetFor(bindings);
+      last_bindings = bindings;
+      last_draw_set = draw_set;
+      last_tables_changes = changes_now;
+    }
     if (!draw_set) {
       note_skip("no descriptor set");
       return;
     }
-    list->setGraphicsDescriptorSetDynamic(draw_set, 0, constant_offsets, 3);
+    if (draw_set != bound_draw_set || std::memcmp(constant_offsets, bound_offsets, sizeof(bound_offsets)) != 0) {
+      list->setGraphicsDescriptorSetDynamic(draw_set, 0, constant_offsets, 3);
+      bound_draw_set = draw_set;
+      std::memcpy(bound_offsets, constant_offsets, sizeof(bound_offsets));
+    }
     if (pipeline != bound_pipeline) {
       list->setPipeline(pipeline);
       bound_pipeline = pipeline;
@@ -7144,8 +7176,22 @@ void PlumeDrawContext::EncodeDraws(plume::RenderCommandList* list,
       static const bool copy_in_order = std::getenv("XERENGE_COPY_IN_ORDER") != nullptr ||
                                         std::getenv("XERENGE_D3D_TARGETS") != nullptr;
       if (video_since_clear) {
-        video_copy_dests_.insert(snap.resolve_dest);
-      } else if (video_copy_dests_.count(snap.resolve_dest) != 0) {
+        video_copy_dests_[snap.resolve_dest] = frame_serial_;
+      } else if (const auto vd = video_copy_dests_.find(snap.resolve_dest);
+                 vd != video_copy_dests_.end() && frame_serial_ - vd->second <= 8) {
+        // Skipped, and that copy - the last frame with its video - is what is
+        // shown when it is the front buffer. Shown from the target instead,
+        // the menus blinked between frames with and without their video.
+        const uint32_t rw = snap.resolve_width ? snap.resolve_width : width;
+        const uint32_t rh = snap.resolve_height ? snap.resolve_height : height;
+        if (!snap.resolve_cube && (IsKnownFrontBuffer(snap.resolve_dest) || (rw >= 1280 && rh >= 720)) &&
+            resolved_targets_.count(snap.resolve_dest) != 0) {
+          frame_output_dest_ = snap.resolve_dest;
+          // What was drawn before it is in that copy's place now, as far as the
+          // frame goes: without this the end of the frame showed the target again.
+          drawn_since_copy = false;
+          last_resolve_dest_ = snap.resolve_dest;
+        }
         continue;
       }
       if (copy_in_order && pass && pass->end && pass->begin && colour_target) {
@@ -7177,6 +7223,7 @@ void PlumeDrawContext::EncodeDraws(plume::RenderCommandList* list,
                             region_h, snap.resolve_face, snap.resolve_cube);
         pass->begin(pass->context);
         bound_pipeline = nullptr;
+        bound_draw_set = nullptr;
         bound_vertex_buffer = 0;
         last_resolve_dest_ = snap.resolve_dest;
         const uint32_t rw = snap.resolve_width ? snap.resolve_width : width;

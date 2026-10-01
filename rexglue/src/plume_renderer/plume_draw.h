@@ -340,6 +340,8 @@ class BindlessTable {
     }
   }
   const Entry& at(uint32_t index) const { return entries_[index < entries_.size() ? index : 0]; }
+  // Grows with every change of an entry: equal means nothing changed since.
+  uint32_t changes() const { return next_version_; }
 
  private:
   std::vector<Entry> entries_;
@@ -574,7 +576,10 @@ class PlumeDrawContext {
   // Where the title copies its video frame to (resolves made right after the
   // video was drawn). A later copy there with no video drawn since the last
   // clear would copy a cleared target, so it is skipped and the last frame kept.
-  std::unordered_set<uint32_t> video_copy_dests_;
+  // Only while the video is playing: the frame serial of the last copy with video
+  // into each. A loading screen with no video at all must copy normally - kept
+  // forever, every other frame there showed an old copy and the bar jumped back.
+  std::unordered_map<uint32_t, uint64_t> video_copy_dests_;
   // Whether a pixel shader writes its second colour output (oC1), from its
   // generated source. One that does not must not have render target 1
   // enabled: Vulkan leaves an unwritten output undefined, and undefined
