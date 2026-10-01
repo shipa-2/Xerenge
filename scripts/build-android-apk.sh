@@ -8,6 +8,8 @@
 #
 # ANDROID_HOME (default /opt/android-sdk) needs build-tools and a platform;
 # ANDROID_NDK_HOME (default /opt/android-ndk) gives libc++_shared.so.
+# VALIDATION_LAYER, the path to an arm64 libVkLayer_khronos_validation.so, packs
+# Khronos' validation layer in too (switched on by env.PLUME_VALIDATION = 1).
 set -e
 root=$(cd "$(dirname "$0")/.." && pwd)
 project="$root/rexglue"
@@ -60,6 +62,9 @@ for lib in "$build/libxerenge_installer.so" \
     cp "$lib" "$out/pack/lib/arm64-v8a/"
 done
 [ -f "$runtime_libs/libTracyClient.so" ] && cp "$runtime_libs/libTracyClient.so" "$out/pack/lib/arm64-v8a/"
+if [ -n "$VALIDATION_LAYER" ]; then
+    cp "$VALIDATION_LAYER" "$out/pack/lib/arm64-v8a/libVkLayer_khronos_validation.so"
+fi
 "$ndk/toolchains/llvm/prebuilt/linux-x86_64/bin/llvm-strip" --strip-unneeded "$out/pack/lib/arm64-v8a/"*.so
 
 echo "== packing"

@@ -76,12 +76,17 @@ class PlumeSwapchain {
  private:
   void CreateFramebuffers();
   void ResizeIfNeeded();
+  // Android: the window's surface goes when the app goes to the background and
+  // comes back as another one; false while there is none to present to.
+  bool FollowAndroidWindow();
   // The drawable size in pixels.
   void WindowPixelSize(uint32_t* width, uint32_t* height) const;
 
   plume::RenderDevice* device_ = nullptr;
   SDL_Window* window_ = nullptr;
   void* native_window_ = nullptr;
+  // The ANativeWindow the swap chain was made on (Android).
+  void* android_window_ = nullptr;
 
   std::unique_ptr<plume::RenderCommandQueue> command_queue_;
   std::unique_ptr<plume::RenderCommandList> command_list_;
