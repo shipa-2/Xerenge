@@ -95,7 +95,7 @@ final class Settings {
                 int equals = line.indexOf('=');
                 if (equals > 0) {
                     settings.values.put(line.substring(0, equals).trim(), line.substring(equals + 1).trim());
-                    if (line.startsWith("debug_")) {
+                    if (line.startsWith("debug_") || line.startsWith("env.")) {
                         debugLines.append(line).append('\n');
                     }
                 }
@@ -190,7 +190,9 @@ final class Settings {
            .append("#   debug_vertex_trace: vertex attributes that come out as NaN or absurd, and then who writes those vertices (on unless false)\n")
            .append("#   debug_constant_trace: shader constants (object and bone matrices) that are NaN or absurd, and who writes them (off unless true)\n")
            .append("#   debug_video_gpu: 0 turns menu video into RGB on the CPU, 3 (the default) on the GPU; empty: the default\n")
-           .append("#   debug_noisy: the per-frame log lines as well (very large)\n");
+           .append("#   debug_noisy: the per-frame log lines as well (very large)\n")
+           .append("#   env.NAME = value: sets that environment variable for the game, debug mode or not\n")
+           .append("#     (experiments, e.g. env.XERENGE_PLUME_TIMING = 1)\n");
         if (!preservedDebug.isEmpty()) {
             out.append(preservedDebug);
         } else {
@@ -252,6 +254,11 @@ final class Settings {
             if (!"false".equals(value("debug_vertex_trace"))) env("XERENGE_VERTEX_TRACE", "1");
             if ("true".equals(value("debug_constant_trace"))) env("XERENGE_CONSTANT_TRACE", "1");
             if (!value("debug_video_gpu").isEmpty()) env("XERENGE_VIDEO_GPU", value("debug_video_gpu"));
+        }
+        // env.NAME = value lines: any variable the game or the renderer reads, for trying
+        // things out on the phone without a new APK.
+        for (Map.Entry<String, String> e : values.entrySet()) {
+            if (e.getKey().startsWith("env.") && e.getKey().length() > 4) env(e.getKey().substring(4), e.getValue());
         }
     }
 
