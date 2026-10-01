@@ -446,16 +446,17 @@ void PlumeSwapchain::ResizeIfNeeded() {
   // The targets about to be remade may still be drawn to by a frame in flight.
   WaitForFrames();
   framebuffers_.clear();
+  // A failure leaves no framebuffers, which skips the frame, and the size
+  // still differs next frame, so it is tried again. Not ready_ = false: the
+  // graphics system stops calling in for good once it is.
   if (!swap_chain_->resize()) {
     REXLOG_WARN("plume: swap chain resize failed");
-    ready_ = false;
     return;
   }
 
   last_width_ = width;
   last_height_ = height;
   CreateFramebuffers();
-  ready_ = !framebuffers_.empty();
   REXLOG_INFO("plume: swapchain resized to {}x{}", last_width_, last_height_);
 }
 
@@ -468,12 +469,14 @@ bool PlumeSwapchain::FollowAndroidWindow() {
   // away, and it comes back as a new ANativeWindow. Frames presented to the
   // old one never reach the screen (black after waking the phone), so the
   // swap chain is made again on the new one.
+  //
+  // ready_ is left alone meanwhile: the graphics system stops calling in at
+  // all once it is false, and nothing would then notice the window return.
   void* const current = NativeRenderWindow(window_, native_window_);
   if (current == android_window_) {
     return current != nullptr && swap_chain_ != nullptr;
   }
   WaitForFrames();
-  ready_ = false;
   framebuffers_.clear();
   release_semaphores_.clear();
   swap_chain_.reset();
@@ -484,26 +487,34 @@ bool PlumeSwapchain::FollowAndroidWindow() {
     REXLOG_INFO("plume: window surface gone (in the background); not presenting");
     return false;
   }
+  // A failure is tried again next frame (android_window_ cleared below).
+  static uint32_t failures = 0;
   swap_chain_ = command_queue_->createSwapChain(plume::RenderSwapChainDesc(
       static_cast<plume::RenderWindow>(current), kSwapchainFormat, kBufferCount));
-  if (!swap_chain_) {
-    REXLOG_ERROR("plume: could not make the swap chain again on the new window surface");
-    return false;
-  }
-  if (std::getenv("XERENGE_UNLOCK_FPS") != nullptr) {
+  if (swap_chain_ && std::getenv("XERENGE_UNLOCK_FPS") != nullptr) {
     swap_chain_->setVsyncEnabled(false);
   }
-  if (!swap_chain_->resize()) {
-    REXLOG_ERROR("plume: swap chain on the new window surface could not be sized");
+  if (!swap_chain_ || !swap_chain_->resize()) {
+    if (++failures <= 5) {
+      REXLOG_ERROR("plume: could not make the swap chain again on the new window surface");
+    }
     swap_chain_.reset();
+    android_window_ = nullptr;
     return false;
   }
   CreateFramebuffers();
   WindowPixelSize(&last_width_, &last_height_);
-  ready_ = !framebuffers_.empty();
+  if (framebuffers_.empty()) {
+    if (++failures <= 5) {
+      REXLOG_ERROR("plume: no framebuffers on the new window surface");
+    }
+    swap_chain_.reset();
+    android_window_ = nullptr;
+    return false;
+  }
   REXLOG_INFO("plume: swap chain made again on the new window surface ({}x{})", last_width_,
               last_height_);
-  return ready_;
+  return true;
 #else
   return true;
 #endif
