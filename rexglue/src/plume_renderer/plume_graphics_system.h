@@ -184,6 +184,9 @@ class PlumeGraphicsSystem final : public system::IGraphicsSystem {
   uint32_t video_frames_rejected_ = 0;
   bool video_seen_ = false;
   bool presented_once_ = false;
+  // Presents in a row that found no Swap of the title's in the ring (see
+  // PresentClearColorOnUiThread): a frame still being drawn is kept back.
+  uint32_t presents_without_frame_end_ = 0;
   // Menu frames issue upwards of 200 draws, ~160 of them valid overlays. At 96
   // this ring wrapped every frame and silently overwrote the draws issued
   // earliest - which is why rank badges and their labels went missing while

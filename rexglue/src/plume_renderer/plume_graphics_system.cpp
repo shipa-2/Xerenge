@@ -1732,11 +1732,26 @@ void PlumeGraphicsSystem::PresentClearColorOnUiThread(uint32_t guest_width,
         // and draws landed after this frame's final copy, the cleared target
         // was shown instead of the copy, and a black frame flashed up.
         uint32_t take = draw_ring_count_;
+        bool found_end = false;
         for (uint32_t i = draw_ring_count_; i-- > 0;) {
           if (draw_ring_[(start + i) % kDrawRingSize].is_frame_end) {
             take = i + 1;
+            found_end = true;
             break;
           }
+        }
+        // No Swap yet: the title is still drawing this frame. Taken anyway it
+        // was shown as two clears and a few dozen draws - the pause menu
+        // blinked to a black screen with a building or two on it, more often
+        // the slower the device. Left for the present that finds its Swap,
+        // unless the title is not swapping at all or the ring fills up.
+        static const bool frame_ends_marked = std::getenv("XERENGE_D3D_TARGETS") != nullptr;
+        if (found_end) {
+          presents_without_frame_end_ = 0;
+        } else if (frame_ends_marked && presents_without_frame_end_ < 8 &&
+                   draw_ring_count_ < kDrawRingSize / 2) {
+          ++presents_without_frame_end_;
+          take = 0;
         }
         overlays.reserve(take);
         for (uint32_t i = 0; i < take; ++i) {
