@@ -10,6 +10,8 @@
 # ANDROID_NDK_HOME (default /opt/android-ndk) gives libc++_shared.so.
 # VALIDATION_LAYER, the path to an arm64 libVkLayer_khronos_validation.so, packs
 # Khronos' validation layer in too (switched on by env.PLUME_VALIDATION = 1).
+# DEBUGGABLE=1 marks the app debuggable: what the GPU vendor's Perfetto counters
+# (debug.graphics.gpu.profiler.perfetto) need on a phone that is not rooted.
 set -e
 root=$(cd "$(dirname "$0")/.." && pwd)
 project="$root/rexglue"
@@ -34,6 +36,7 @@ echo "== resources and manifest ($(basename "$tools"), $(basename "$platform"))"
 "$tools/aapt2" compile --dir "$app/res" -o "$out/res.zip"
 "$tools/aapt2" link -o "$out/base.apk" -I "$android_jar" \
     --manifest "$app/AndroidManifest.xml" --java "$out/gen" \
+    ${DEBUGGABLE:+--debug-mode} \
     --min-sdk-version $min_sdk --target-sdk-version $target_sdk "$out/res.zip"
 
 echo "== java"
