@@ -1630,16 +1630,41 @@ bool UntileGuestTexture(const rex::graphics::TextureInfo& info, const uint8_t* s
   std::vector<uint8_t> blocks(size_t(row_bytes) * block_h, 0);
   if (info.is_tiled) {
     const uint32_t tiled_size = aligned_w * rex::align(block_h, 32u) * bpb;
+    // In the tiled layout a run of 16 bytes along x - eight blocks of one or
+    // two bytes, four of four, two of eight - from a multiple of its length
+    // lies in one piece (worked through the address formula for every block
+    // size). Copied as one, a block address and a copy call per byte were 20 ms
+    // of a 1280x720 video frame on the Pixel. Still checked by the run's last
+    // address rather than assumed; and only where swapping the run is the same
+    // as swapping each block - no swap, or blocks no smaller than its unit.
+    using rex::graphics::xenos::Endian;
+    const uint32_t swap_unit = info.endianness == Endian::k8in16 ? 2u
+                               : info.endianness == Endian::kNone ? 1u
+                                                                   : 4u;
+    const uint32_t run_blocks = std::min(8u, std::max(1u, 16u / bpb));
+    const bool runs = bpb >= swap_unit && run_blocks > 1;
     for (uint32_t by = 0; by < block_h; ++by) {
-      for (uint32_t bx = 0; bx < block_w; ++bx) {
-        const int32_t so = rex::graphics::texture_util::GetTiledOffset2D(
-            pack_x + int32_t(bx), pack_y + int32_t(by), aligned_w, bpb_log2);
-        if (so < 0 || uint32_t(so) + bpb > tiled_size) {
-          continue;
+      uint8_t* dst_row = blocks.data() + size_t(by) * row_bytes;
+      for (uint32_t bx = 0; bx < block_w;) {
+        const int32_t gx = pack_x + int32_t(bx);
+        const int32_t gy = pack_y + int32_t(by);
+        const int32_t so =
+            rex::graphics::texture_util::GetTiledOffset2D(gx, gy, aligned_w, bpb_log2);
+        uint32_t run = 1;
+        if (runs && (uint32_t(gx) % run_blocks) == 0 && bx + run_blocks <= block_w &&
+            rex::graphics::texture_util::GetTiledOffset2D(gx + int32_t(run_blocks) - 1, gy,
+                                                          aligned_w, bpb_log2) ==
+                so + int32_t((run_blocks - 1) * bpb)) {
+          run = run_blocks;
         }
-        rex::graphics::texture_conversion::CopySwapBlock(
-            info.endianness, blocks.data() + size_t(by) * row_bytes + size_t(bx) * bpb, src + so,
-            bpb);
+        if (run != 1 && (so < 0 || uint32_t(so) + run * bpb > tiled_size)) {
+          run = 1;  // at the end of the data: block by block, as before
+        }
+        if (so >= 0 && uint32_t(so) + run * bpb <= tiled_size) {
+          rex::graphics::texture_conversion::CopySwapBlock(
+              info.endianness, dst_row + size_t(bx) * bpb, src + so, size_t(run) * bpb);
+        }
+        bx += run;
       }
     }
   } else {
@@ -3968,6 +3993,7 @@ uint32_t PlumeDrawContext::FillVertices(const GuestDrawSnapshot& snap, memory::M
                                  : std::chrono::steady_clock::time_point{};
   last_fill_cache_offset_ = ~0u;
   last_fill_passthrough_ = passthrough;
+  last_fill_x_known_ = false;
   // Every path that refuses a draw says so once. A draw silently returning
   // zero vertices is indistinguishable on screen from one that rendered
   // wrong, and a whole row of UI can sit in a single draw.
@@ -4251,6 +4277,19 @@ uint32_t PlumeDrawContext::FillVertices(const GuestDrawSnapshot& snap, memory::M
       looks_pixel = true;
       break;
     }
+  }
+  // An interface draw's extent, for the edge its object is moved to on a
+  // screen wider than 16:9 (EncodeDraws).
+  if (looks_pixel && snap.interface_object != 0 && vertex_count != 0) {
+    float lo = vert(0)[0];
+    float hi = lo;
+    for (uint32_t vi = 1; vi < vertex_count; ++vi) {
+      lo = std::min(lo, vert(vi)[0]);
+      hi = std::max(hi, vert(vi)[0]);
+    }
+    last_fill_x_[0] = lo;
+    last_fill_x_[1] = hi;
+    last_fill_x_known_ = true;
   }
 
   if (passthrough && static_cast<PrimitiveType>(snap.prim_type) == PrimitiveType::kRectangleList &&
@@ -6607,8 +6646,22 @@ void PlumeDrawContext::EncodeDraws(plume::RenderCommandList* list,
   // keeps the ordinary one.
   bool viewport_flipped = false;
   int32_t scissor_now[4] = {0, 0, int32_t(width), int32_t(height)};
+  uint32_t viewport_x = 0;
   uint32_t viewport_w = width;
   uint32_t viewport_h = height;
+  // A screen wider than 16:9 (XERENGE_ASPECT_16_9 unset): the scene is drawn
+  // across all of it - widescreen.cpp widens the cameras to match - and the
+  // interface keeps the console's 16:9 box in the middle, or it would stretch.
+  static const bool widen_scene = std::getenv("XERENGE_ASPECT_16_9") == nullptr;
+  const uint32_t box_w = widen_scene && uint64_t(width) * 9 > uint64_t(height) * 16 + height
+                             ? std::min(width, (height * 16 / 9) & ~1u)
+                             : width;
+  const uint32_t box_x = (width - box_w) / 2;
+  // Where the current 2D object's box goes: against the screen's left or right
+  // edge for an object on that side of the 16:9 layout, centred otherwise -
+  // decided by the object's first draw with a known extent, kept for the rest.
+  uint32_t anchor_object = 0;
+  uint32_t anchor_x = box_x;
   // A render target smaller than the frame - a cube face, a post-processing
   // buffer - is drawn at its own size, in the corner of the one buffer, the
   // way it occupies a corner of EDRAM on the console; its resolve copies just
@@ -6625,19 +6678,20 @@ void PlumeDrawContext::EncodeDraws(plume::RenderCommandList* list,
       vh = std::min(th, height);
     }
   };
-  auto use_viewport = [&](bool flipped, uint32_t vw, uint32_t vh) {
-    if (flipped == viewport_flipped && vw == viewport_w && vh == viewport_h) {
+  auto use_viewport = [&](bool flipped, uint32_t vx, uint32_t vw, uint32_t vh) {
+    if (flipped == viewport_flipped && vx == viewport_x && vw == viewport_w && vh == viewport_h) {
       return;
     }
     viewport_flipped = flipped;
+    viewport_x = vx;
     viewport_w = vw;
     viewport_h = vh;
-    list->setViewports(plume::RenderViewport(0.0f, 0.0f, float(vw), float(vh),
+    list->setViewports(plume::RenderViewport(float(vx), 0.0f, float(vw), float(vh),
                                              flipped ? 1.0f : 0.0f, flipped ? 0.0f : 1.0f));
-    list->setScissors(plume::RenderRect(0, 0, int32_t(vw), int32_t(vh)));
-    scissor_now[0] = 0;
+    list->setScissors(plume::RenderRect(int32_t(vx), 0, int32_t(vx + vw), int32_t(vh)));
+    scissor_now[0] = int32_t(vx);
     scissor_now[1] = 0;
-    scissor_now[2] = int32_t(vw);
+    scissor_now[2] = int32_t(vx + vw);
     scissor_now[3] = int32_t(vh);
   };
   // What is bound, so that a draw repeating it does not bind it again. A
@@ -7071,16 +7125,53 @@ void PlumeDrawContext::EncodeDraws(plume::RenderCommandList* list,
       if (snap.d3d_vertex_buffer != 0) {
         native_extent(snap.d3d_target_width, snap.d3d_target_height, vw, vh);
       }
-      use_viewport(snap.d3d_vertex_buffer != 0, vw, vh);
+      // The interface - marked by the title's 2D layer, or from the ring (the
+      // menus) - in the 16:9 box when the frame is wider. And the video by what
+      // it carries: it comes through either path from frame to frame, and
+      // drawn by the other one it jumped between the box and the whole width.
+      const bool boxed = box_w != width && vw == width && vh == height &&
+                         (snap.interface_draw || snap.d3d_vertex_buffer == 0 ||
+                          snap.has_video_frame());
+      // The music player's panel keeps its box against the screen's left edge;
+      // the HUD's objects go to the edge of their side, each one whole.
+      uint32_t vx = 0;
+      if (boxed) {
+        vx = box_x;
+        if (snap.interface_left) {
+          vx = 0;
+        } else if (snap.interface_object != 0 && !snap.has_video_frame()) {
+          if (snap.interface_object != anchor_object && last_fill_x_known_) {
+            anchor_object = snap.interface_object;
+            const float guest_w =
+                snap.d3d_target_width != 0 ? float(snap.d3d_target_width) : 1280.0f;
+            const float lo = last_fill_x_[0] / guest_w;
+            const float hi = last_fill_x_[1] / guest_w;
+            const float mid = (lo + hi) * 0.5f;
+            anchor_x = hi - lo > 0.6f ? box_x
+                       : mid < 0.4f   ? 0
+                       : mid > 0.6f   ? width - box_w
+                                      : box_x;
+          }
+          if (snap.interface_object == anchor_object) {
+            vx = anchor_x;
+          }
+        }
+      }
+      if (boxed) {
+        vw = box_w;
+      }
+      use_viewport(snap.d3d_vertex_buffer != 0, vx, vw, vh);
       // The title's scissor, scaled from its render target's pixels to the
       // area that target is drawn over here.
-      int32_t sx0 = 0, sy0 = 0, sx1 = int32_t(vw), sy1 = int32_t(vh);
+      int32_t sx0 = int32_t(vx), sy0 = 0, sx1 = int32_t(vx + vw), sy1 = int32_t(vh);
       if (snap.scissor_enabled && snap.d3d_target_width != 0 && snap.d3d_target_height != 0) {
         const float kx = float(vw) / float(snap.d3d_target_width);
         const float ky = float(vh) / float(snap.d3d_target_height);
-        sx0 = std::clamp(int32_t(std::floor(snap.scissor_rect[0] * kx)), 0, int32_t(vw));
+        sx0 = std::clamp(int32_t(vx) + int32_t(std::floor(snap.scissor_rect[0] * kx)),
+                         int32_t(vx), int32_t(vx + vw));
         sy0 = std::clamp(int32_t(std::floor(snap.scissor_rect[1] * ky)), 0, int32_t(vh));
-        sx1 = std::clamp(int32_t(std::ceil(snap.scissor_rect[2] * kx)), sx0, int32_t(vw));
+        sx1 = std::clamp(int32_t(vx) + int32_t(std::ceil(snap.scissor_rect[2] * kx)), sx0,
+                         int32_t(vx + vw));
         sy1 = std::clamp(int32_t(std::ceil(snap.scissor_rect[3] * ky)), sy0, int32_t(vh));
       }
       if (sx0 != scissor_now[0] || sy0 != scissor_now[1] || sx1 != scissor_now[2] ||
@@ -7395,6 +7486,7 @@ void PlumeDrawContext::EncodeDraws(plume::RenderCommandList* list,
         scissor_now[1] = 0;
         scissor_now[2] = int32_t(width);
         scissor_now[3] = int32_t(height);
+        viewport_x = 0;
         viewport_w = width;
         viewport_h = height;
         ++resolved_in_place;

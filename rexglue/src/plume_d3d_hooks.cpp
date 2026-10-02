@@ -4,6 +4,7 @@
  */
 #include <cmath>
 #include "diagnostics.h"
+#include "widescreen.h"
 #include "plume_d3d.h"
 
 #include <atomic>
@@ -902,6 +903,9 @@ uint32_t GpuPhysical(uint32_t address) {
 // The state every Direct3D draw carries with it, whatever kind of draw it is:
 // the bound shader objects and textures.
 void TakeDrawState(rex::system::IGraphicsSystem::GuestDrawBuffers& buffers) {
+  buffers.interface = xerenge::DrawingInterface();
+  buffers.interface_left = xerenge::DrawingInterfaceLeft();
+  buffers.interface_object = xerenge::InterfaceObject();
   std::lock_guard lock(g_state_mutex);
   buffers.vertex_shader_object = g_state.vertex_shader;
   buffers.pixel_shader_object = g_state.pixel_shader;
@@ -1179,6 +1183,9 @@ REX_HOOK_RAW(D3DDevice_DrawIndexedVertices) {
     }
     buffers.base_vertex = ctx.r5.u32;
     buffers.start_index = ctx.r6.u32;
+    buffers.interface = xerenge::DrawingInterface();
+    buffers.interface_left = xerenge::DrawingInterfaceLeft();
+    buffers.interface_object = xerenge::InterfaceObject();
     {
       std::lock_guard lock(g_state_mutex);
       buffers.vertex_shader_object = g_state.vertex_shader;

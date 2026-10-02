@@ -954,6 +954,9 @@ void PlumeGraphicsSystem::PublishDrawSnapshot(uint32_t prim_type, uint32_t sourc
     snap.ps_hash = pending_d3d_shaders_[1];
   }
   snap.d3d_vertex_buffer = buffers.vertex_buffer;
+  snap.interface_draw = buffers.interface;
+  snap.interface_left = buffers.interface_left;
+  snap.interface_object = buffers.interface_object;
   snap.d3d_vertex_stride = buffers.vertex_stride;
   snap.d3d_index_buffer = buffers.index_buffer;
   snap.d3d_base_vertex = buffers.base_vertex;
@@ -1851,10 +1854,15 @@ void PlumeGraphicsSystem::PresentClearColorOnUiThread(uint32_t guest_width,
         // blinked to a black screen with a building or two on it, more often
         // the slower the device. Left for the present that finds its Swap,
         // unless the title is not swapping at all or the ring fills up.
+        //
+        // Twice in a row at most, and never with video playing: the intro and
+        // the title screen present without a Swap in the ring, and held back
+        // eight presents at a time their video started late and played in
+        // fits - the title screen stayed black behind its logo.
         static const bool frame_ends_marked = std::getenv("XERENGE_D3D_TARGETS") != nullptr;
         if (found_end) {
           presents_without_frame_end_ = 0;
-        } else if (frame_ends_marked && presents_without_frame_end_ < 8 &&
+        } else if (frame_ends_marked && presents_without_frame_end_ < 2 && !video_seen_ &&
                    draw_ring_count_ < kDrawRingSize / 2) {
           ++presents_without_frame_end_;
           take = 0;

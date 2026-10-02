@@ -202,6 +202,13 @@ struct GuestDrawSnapshot {
   uint32_t d3d_target_width = 0;
   // A second render target bound alongside the first (Direct3D draws).
   bool rt1_bound = false;
+  // Drawn by the title's 2D layer (GuestDrawBuffers::interface): kept in the
+  // 16:9 box on a wider screen.
+  bool interface_draw = false;
+  // ... with that box against the screen's left edge (the music player).
+  bool interface_left = false;
+  // The title's 2D object the draw belongs to (0: none), moved to an edge whole.
+  uint32_t interface_object = 0;
   // Alpha test (RB_COLORCONTROL, device + 0x2D7C) and its reference (device +
   // 0x2D44): the translated shaders discard below the threshold when the
   // pipeline's specialisation constant asks them to.
@@ -565,6 +572,10 @@ class PlumeDrawContext {
   uint64_t resolve_probe_frame_ = 0;
   bool resolve_probe_pending_ = false;
   bool last_fill_passthrough_ = false;
+  // The last filled draw's horizontal extent in its target's pixels, when its
+  // positions were pixels (an interface draw): which edge its object goes to.
+  bool last_fill_x_known_ = false;
+  float last_fill_x_[2] = {0.0f, 0.0f};
 
   std::unique_ptr<plume::RenderPipelineLayout> pipeline_layout_;
   std::unique_ptr<BindlessTable> texture_set_;

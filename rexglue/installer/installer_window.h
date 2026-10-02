@@ -80,6 +80,8 @@ class InstallerWindow : public QWidget {
   bool online_saved_ = false;  // the box as it was before a server address turned it off
   QComboBox* language_combo_ = nullptr;
   QCheckBox* windowed_box_ = nullptr;
+  // Keep 16:9: off, a wider screen is filled (widescreen.cpp) instead of barred.
+  QCheckBox* aspect_box_ = nullptr;
   // Debug mode: the launcher logs what the debug_* lines of xerenge.conf ask.
   QCheckBox* debug_box_ = nullptr;
   // Those lines as an installed copy had them, kept through an update.

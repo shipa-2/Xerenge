@@ -111,6 +111,7 @@ lang=$(value language)
 res=$(value render_resolution)
 [ -n "$res" ] && export XERENGE_RENDER_RESOLUTION="$res"
 [ "$(value fps_counter)" = true ] && export XERENGE_FPS_SHOW=1
+[ "$(value aspect_16_9)" = false ] || export XERENGE_ASPECT_16_9=1
 
 # Fullscreen unless windowed; the keyboard as a pad with its keybind_* lines.
 extra=--fullscreen
@@ -207,6 +208,7 @@ if /i "%packed_vertices%"=="false" set "XERENGE_FULL_VERTICES=1"
 if /i "%culling%"=="true" set "XERENGE_CULL=1"
 if defined render_resolution set "XERENGE_RENDER_RESOLUTION=%render_resolution%"
 if /i "%fps_counter%"=="true" set "XERENGE_FPS_SHOW=1"
+if /i not "%aspect_16_9%"=="false" set "XERENGE_ASPECT_16_9=1"
 
 rem Fullscreen unless windowed; the keyboard as a pad with its keybind_* lines.
 set "extra=--fullscreen"
@@ -453,6 +455,13 @@ InstallerWindow::InstallerWindow(QWidget* parent) : QWidget(parent) {
   windowed_box_ = new QCheckBox(tr("Windowed"));
   windowed_box_->setToolTip(tr("Run in a window. Fullscreen otherwise."));
   layout->addWidget(windowed_box_);
+  aspect_box_ = new QCheckBox(tr("Keep 16:9"));
+  aspect_box_->setToolTip(
+      tr("The frame keeps the console's 16:9 shape, with black bars on a wider screen. Off, the "
+         "game fills a wider screen: you see more to either side, with nothing stretched, and "
+         "the interface stays in the middle at 16:9."));
+  aspect_box_->setChecked(true);
+  layout->addWidget(aspect_box_);
   debug_box_ = new QCheckBox(tr("Debug mode"));
   debug_box_->setToolTip(tr("Detailed logs, for reporting a problem. What is logged is set by the "
                             "debug_* lines in xerenge.conf."));
@@ -781,6 +790,7 @@ void InstallerWindow::LoadSettings(const QString& path) {
     xenia_box_->setChecked(values.value("renderer") == "xenos");
   }
   flag("windowed", windowed_box_);
+  flag("aspect_16_9", aspect_box_);
   flag("debug", debug_box_);
   choice("language", language_combo_);
   if (values.contains("gamertag")) {
@@ -862,6 +872,8 @@ void InstallerWindow::StartInstall() {
     QTextStream out(&extra);
     out << "# Fullscreen unless true\n"
         << "windowed = " << (windowed_box_->isChecked() ? "true" : "false") << "\n"
+        << "# The console's 16:9 with black bars on a wider screen; false: the game widens to fill it\n"
+        << "aspect_16_9 = " << (aspect_box_->isChecked() ? "true" : "false") << "\n"
         << "# The name shown to others online (empty: Player)\n"
         << "gamertag = " << gamertag_edit_->text().trimmed() << "\n"
         << "# Local multiplayer: the copies on one network find each other's games\n"

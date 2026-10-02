@@ -29,7 +29,7 @@
     <string name="resolution_window">The device\'s</string>
     <string name="render_resolution_tip">Draw the frame at this size and scale it onto the screen. 720p is the size the game renders at on the console; lower is faster.</string>
     <string name="aspect_16_9">Keep 16:9</string>
-    <string name="aspect_16_9_tip">The frame keeps the console\'s 16:9 shape, with black bars on a wider screen. Off, it is stretched over the whole screen.</string>
+    <string name="aspect_16_9_tip">The frame keeps the console\'s 16:9 shape, with black bars on a wider screen. Off, the game fills a wider screen: you see more to either side, with nothing stretched, and the interface stays in the middle at 16:9.</string>
     <string name="fps_counter">Frame counter</string>
     <string name="fps_counter_tip">Frames per second in the top left corner.</string>
     <string name="install_path">Install path</string>

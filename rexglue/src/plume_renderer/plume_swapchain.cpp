@@ -326,10 +326,29 @@ void PlumeSwapchain::CreateFramebuffers() {
     requested_width = uint32_t(fit.right - fit.left);
     requested_height = uint32_t(fit.bottom - fit.top);
   }
+  // A screen wider than 16:9, not kept at 16:9: the frame takes the screen's
+  // shape at the height asked for - widescreen.cpp widens the cameras to it
+  // and the interface keeps a 16:9 box (EncodeDraws), so nothing stretches.
+  if (!FixedAspect() && requested_width != 0 && window_height != 0 &&
+      uint64_t(window_width) * 9 > uint64_t(window_height) * 16) {
+    requested_width =
+        uint32_t(uint64_t(requested_height) * window_width / window_height) & ~1u;
+  }
   const bool scaled = scene_wanted && requested_width != 0 &&
                       (requested_width != window_width || requested_height != window_height);
   const uint32_t width = scaled ? requested_width : window_width;
   const uint32_t height = scaled ? requested_height : window_height;
+  if (height != 0) {
+    // For the cameras (widescreen.cpp): the shape of the frame drawn.
+    char aspect[32];
+    std::snprintf(aspect, sizeof(aspect), "%.5f",
+                  FixedAspect() ? 16.0 / 9.0 : double(width) / double(height));
+#ifdef _WIN32
+    _putenv_s("XERENGE_SCREEN_ASPECT", aspect);
+#else
+    setenv("XERENGE_SCREEN_ASPECT", aspect, 1);
+#endif
+  }
   render_width_ = width;
   render_height_ = height;
   depth_texture_.reset();

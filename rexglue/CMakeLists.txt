@@ -22,6 +22,7 @@ set(BURNOUT_SOURCES
     src/online_lobby.cpp
     src/game_timing.cpp
     src/plume_d3d_hooks.cpp
+    src/widescreen.cpp
 )
 
 if(WIN32)

@@ -40,6 +40,7 @@
 
 #include "frame_clock_provider.h"
 #include "guest_memory.h"
+#include "widescreen.h"
 
 namespace {
 // What the timer returned last (the steps the coming frame runs), and the one
@@ -212,11 +213,23 @@ REX_HOOK_RAW(sub_8210B3C8) {
     --g_per_frame_depth;                                      \
   }
 
+// The same, for calls that draw interface: their draws also keep the 16:9 box
+// on a wider screen (widescreen.cpp).
+#define PER_FRAME_INTERFACE_HOOK(name)                             \
+  extern "C" void __imp__##name(PPCContext& __restrict, uint8_t*); \
+  REX_HOOK_RAW(name) {                                             \
+    ++g_per_frame_depth;                                           \
+    xerenge::EnterInterface();                                     \
+    __imp__##name(ctx, base);                                      \
+    xerenge::LeaveInterface();                                     \
+    --g_per_frame_depth;                                           \
+  }
+
 PER_FRAME_HOOK(sub_820EE348)  // CB4World::Render
 PER_FRAME_HOOK(sub_821632E0)  // CB4SparkArray::Render
 PER_FRAME_HOOK(sub_82182438)  // CB4PostProcessRenderer::Render
-PER_FRAME_HOOK(sub_820B4BC0)  // CB4FlashManager::Render
-PER_FRAME_HOOK(sub_821FF008)  // CB4CustomRevengeMeter::Render
+PER_FRAME_INTERFACE_HOOK(sub_820B4BC0)  // CB4FlashManager::Render
+PER_FRAME_INTERFACE_HOOK(sub_821FF008)  // CB4CustomRevengeMeter::Render
 PER_FRAME_HOOK(sub_822AE800)  // CB4SoundManager::Update
 
 // For the renderer (plume reads rex_frame_clock_provider): where the drawn state is
