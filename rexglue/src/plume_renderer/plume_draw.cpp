@@ -438,8 +438,6 @@ constexpr uint32_t kSharedConstantBytes = 512;
 // interface - was dropped, over a hundred thousand draws a run.
 constexpr uint32_t kDummyVertexCount = 1048576;
 constexpr uint32_t kVertsPerFrame = kDummyVertexCount / 2;
-// Indices of the draws drawn indexed (IndexPlan), per half like the vertices.
-constexpr uint32_t kIndicesPerFrame = 2u << 20;
 constexpr uint32_t kCacheVertexCount = 1048576;
 constexpr uint32_t kInputLocationCount = 20;
 constexpr uint32_t kVertexStrideBytes = kInputLocationCount * 16;
@@ -2360,8 +2358,6 @@ void PlumeDrawContext::Shutdown() {
   ps_constants_.reset();
   shared_constants_.reset();
   dummy_vb_.reset();
-  index_mapped_ = nullptr;
-  index_buffer_.reset();
   guest_textures_.clear();
   next_bindless_ = 1;
   null_texture_staging_.reset();
@@ -2613,15 +2609,6 @@ bool PlumeDrawContext::Initialize(plume::RenderDevice* device) {
     return false;
   }
   vb_view_ = plume::RenderVertexBufferView(dummy_vb_.get(), kDummyVertexCount * kVertexStrideBytes);
-  index_buffer_ = device_->createBuffer(plume::RenderBufferDesc::IndexBuffer(
-      uint64_t(kIndicesPerFrame) * 2 * sizeof(uint32_t), plume::RenderHeapType::UPLOAD));
-  if (index_buffer_ && VulkanBufferOk(index_buffer_.get())) {
-    index_mapped_ = static_cast<uint32_t*>(index_buffer_->map());
-  }
-  if (!index_mapped_) {
-    REXLOG_WARN("plume: index buffer unavailable, indexed draws unpacked one vertex an index");
-    index_buffer_.reset();
-  }
   if (std::getenv("XERENGE_NO_MESH_CACHE") == nullptr) {
     cache_vb_ = device_->createBuffer(plume::RenderBufferDesc::VertexBuffer(
         uint64_t(kCacheVertexCount) * kVertexStrideBytes, plume::RenderHeapType::UPLOAD));
@@ -3423,72 +3410,12 @@ bool PlumeDrawContext::CacheHoldsMesh(uint64_t key, const CachedMesh& entry) con
 // vertices - and not the passes over a copy, whose positions are converted
 // depending on whether the copy is this frame's. The hand-instanced props'
 // vertices also depend on their mesh size (c51), which goes into the key.
-PlumeDrawContext::IndexPlan PlumeDrawContext::PlanIndices(const GuestDrawSnapshot& snap,
-                                                          memory::Memory* memory) const {
-  // XERENGE_NO_INDEXED: every draw one unpacked vertex an index, as before.
-  static const bool off = std::getenv("XERENGE_NO_INDEXED") != nullptr;
-  using rex::graphics::xenos::PrimitiveType;
-  const auto prim = static_cast<PrimitiveType>(snap.prim_type);
-  if (off || memory == nullptr || index_mapped_ == nullptr || snap.d3d_vertex_buffer == 0 ||
-      snap.d3d_vertex_stride == 0 || snap.d3d_index_buffer == 0 || snap.num_indices < 3 ||
-      snap.has_video_frame() ||
-      (prim != PrimitiveType::kTriangleList && prim != PrimitiveType::kTriangleStrip)) {
-    return {};
-  }
-  // Hand-instanced shaders work out their vertex from the index itself.
-  const auto* vs_info = FindResolvedVfetch(snap.vs_hash);
-  if (!vs_info || vs_info->real_attrs.empty() || vs_info->is_index_instanced) {
-    return {};
-  }
-  const uint32_t guest = snap.d3d_index_buffer;
-  const uint32_t physical = (guest & 0x1FFFFFFFu) + (((guest >> 20) + 0x200u) & 0x1000u);
-  static const bool wide_indices = std::getenv("XERENGE_INDEX32") != nullptr;
-  const bool wide = wide_indices || snap.d3d_index_32bit;
-  const auto* base = memory->TranslatePhysical<const uint8_t*>(physical);
-  if (!base) {
-    return {};
-  }
-  uint32_t lo = ~0u;
-  uint32_t hi = 0;
-  if (wide) {
-    const auto* indices = reinterpret_cast<const uint32_t*>(base) + snap.d3d_start_index;
-    for (uint32_t i = 0; i < snap.num_indices; ++i) {
-      const uint32_t raw = indices[i];
-      const uint32_t v = (raw >> 24) | ((raw >> 8) & 0xFF00u) | ((raw << 8) & 0xFF0000u) | (raw << 24);
-      lo = std::min(lo, v);
-      hi = std::max(hi, v);
-    }
-    // A restart marker: drawn as before, where it is unrolled into a vertex.
-    if (hi == 0xFFFFFFFFu) {
-      return {};
-    }
-  } else {
-    const auto* indices = reinterpret_cast<const uint16_t*>(base) + snap.d3d_start_index;
-    for (uint32_t i = 0; i < snap.num_indices; ++i) {
-      const uint16_t raw = indices[i];
-      const uint32_t v = uint32_t((raw >> 8) | (raw << 8)) & 0xFFFFu;
-      lo = std::min(lo, v);
-      hi = std::max(hi, v);
-    }
-    if (hi == 0xFFFFu) {
-      return {};
-    }
-  }
-  // Only where it saves: indices spread over a buffer shared by many meshes
-  // would unpack vertices this draw never uses.
-  const uint32_t count = hi - lo + 1;
-  if (count > snap.num_indices) {
-    return {};
-  }
-  return {lo, count};
-}
-
 PlumeDrawContext::MeshCheck PlumeDrawContext::CheckMeshCache(
     const GuestDrawSnapshot& snap, const std::vector<VfetchAttr>& attrs, uint32_t vertex_count,
     memory::Memory* memory) const {
   MeshCheck check;
   if (cache_mapped_ == nullptr || memory == nullptr || snap.d3d_vertex_buffer == 0 ||
-      snap.d3d_vertex_stride == 0 || attrs.empty() || vertex_count != UnpackedCount(snap) ||
+      snap.d3d_vertex_stride == 0 || attrs.empty() || vertex_count != snap.num_indices ||
       vertex_count > kCacheVertexCount ||
       (snap.d3d_index_buffer == 0 && ReadsResolvedCopy(snap, false))) {
     return check;
@@ -3509,8 +3436,6 @@ PlumeDrawContext::MeshCheck PlumeDrawContext::CheckMeshCache(
   key[n++] = snap.d3d_vertex_buffer;
   key[n++] = snap.d3d_vertex_stride;
   key[n++] = snap.vs_constants[kNumVerticesRegister * 4];
-  // Drawn indexed or not: the same draw is a different set of vertices either way.
-  key[n++] = PlanFor(snap).count != 0 ? 1u : 0u;
   for (uint32_t i = 0; i < 4; ++i) {
     key[n++] = snap.d3d_stream_address[i];
     key[n++] = snap.d3d_stream_stride[i];
@@ -3626,8 +3551,7 @@ void PlumeDrawContext::UnpackVertices(const GuestDrawSnapshot& snap,
                                       memory::Memory* memory, float* staged,
                                       std::vector<uint32_t>& read_lo,
                                       std::vector<uint32_t>& read_hi, uint32_t& fetched,
-                                      uint32_t& fetch_addr, uint32_t& fetch_type,
-                                      uint32_t sequential_first) const {
+                                      uint32_t& fetch_addr, uint32_t& fetch_type) const {
   using rex::graphics::xenos::FetchConstantType;
   using rex::graphics::xenos::PrimitiveType;
   auto vert = [&](uint32_t i) { return staged + i * kFloatsPerVert; };
@@ -3772,11 +3696,7 @@ void PlumeDrawContext::UnpackVertices(const GuestDrawSnapshot& snap,
     // being added only on the indexed path, so every non-indexed draw read
     // from the start of the buffer instead of from its own place in it.
     uint32_t source_vertex = vi + snap.d3d_base_vertex;
-    if (sequential_first != ~0u) {
-      // Drawn indexed (IndexPlan): the vertices the indices reach, in order;
-      // the indices themselves go to the GPU.
-      source_vertex = vi + sequential_first + snap.d3d_base_vertex;
-    } else if (d3d_indices) {
+    if (d3d_indices) {
       // Index width was assumed, never checked. Thirty-two bit indices read as
       // sixteen give every other vertex a value built from two halves of
       // neighbouring indices, which folds the mesh into a wedge.
@@ -4106,53 +4026,10 @@ uint32_t PlumeDrawContext::FillVertices(const GuestDrawSnapshot& snap, memory::M
     }
     return 0;
   };
-  last_fill_index_count_ = 0;
   if (!vb_mapped_ || snap.num_indices == 0 || base_vertex >= vb_limit_) {
     return refuse("no vb / empty / base past end");
   }
-  // Drawn indexed when planned so (IndexPlan) and there is room for all of it.
-  IndexPlan plan = (passthrough || deindexed_retry_) ? IndexPlan{} : PlanFor(snap);
-  if (plan.count != 0 &&
-      (plan.count > vb_limit_ - base_vertex || index_limit_ - index_used_ < snap.num_indices)) {
-    plan = IndexPlan{};
-  }
-  // The cache was checked, and the draw unpacked ahead, for the plan as made;
-  // a draw that drops it here takes neither.
-  const bool as_planned = !deindexed_retry_ && (plan.count != 0) == (PlanFor(snap).count != 0);
-  const uint32_t vertex_count =
-      plan.count != 0 ? plan.count : std::min(snap.num_indices, vb_limit_ - base_vertex);
-  // The draw's indices, rebased onto its unpacked vertices, into this frame's
-  // part of the index buffer.
-  const auto write_indices = [&]() {
-    if (plan.count == 0 || !memory) {
-      return;
-    }
-    const uint32_t guest = snap.d3d_index_buffer;
-    const uint32_t physical = (guest & 0x1FFFFFFFu) + (((guest >> 20) + 0x200u) & 0x1000u);
-    const auto* base = memory->TranslatePhysical<const uint8_t*>(physical);
-    if (!base) {
-      return;
-    }
-    static const bool wide_indices = std::getenv("XERENGE_INDEX32") != nullptr;
-    uint32_t* const out = index_mapped_ + index_used_;
-    if (wide_indices || snap.d3d_index_32bit) {
-      const auto* in = reinterpret_cast<const uint32_t*>(base) + snap.d3d_start_index;
-      for (uint32_t i = 0; i < snap.num_indices; ++i) {
-        const uint32_t raw = in[i];
-        out[i] = ((raw >> 24) | ((raw >> 8) & 0xFF00u) | ((raw << 8) & 0xFF0000u) | (raw << 24)) -
-                 plan.first;
-      }
-    } else {
-      const auto* in = reinterpret_cast<const uint16_t*>(base) + snap.d3d_start_index;
-      for (uint32_t i = 0; i < snap.num_indices; ++i) {
-        const uint16_t raw = in[i];
-        out[i] = (uint32_t((raw >> 8) | (raw << 8)) & 0xFFFFu) - plan.first;
-      }
-    }
-    last_fill_index_first_ = index_used_;
-    last_fill_index_count_ = snap.num_indices;
-    index_used_ += snap.num_indices;
-  };
+  const uint32_t vertex_count = std::min(snap.num_indices, vb_limit_ - base_vertex);
 
   static const std::vector<VfetchAttr> kEmptyAttrs;
   const auto* vs_info = FindResolvedVfetch(snap.vs_hash);
@@ -4171,7 +4048,7 @@ uint32_t PlumeDrawContext::FillVertices(const GuestDrawSnapshot& snap, memory::M
   uint64_t index_hash = 0;
   // Cached vertices are kept in the layout of the title's own pipeline for the
   // shader; a draw falling back to another pipeline neither stores nor uses them.
-  if (!passthrough && as_planned && memory && fill_layout_mask_ == TitleVertexLayout(snap.vs_hash)) {
+  if (!passthrough && memory && fill_layout_mask_ == TitleVertexLayout(snap.vs_hash)) {
     MeshCheck check;
     if (auto found = mesh_checks_.find(&snap); found != mesh_checks_.end()) {
       check = found->second;
@@ -4180,7 +4057,7 @@ uint32_t PlumeDrawContext::FillVertices(const GuestDrawSnapshot& snap, memory::M
     }
     // A draw cut short by a nearly full frame buffer is not what the key
     // stands for; a hit is still good, as it comes from the cache.
-    if (check.eligible && (check.hit || vertex_count == UnpackedCount(snap))) {
+    if (check.eligible && (check.hit || vertex_count == snap.num_indices)) {
       cache_eligible = true;
       cache_key = check.key;
       index_hash = check.index_hash;
@@ -4191,7 +4068,6 @@ uint32_t PlumeDrawContext::FillVertices(const GuestDrawSnapshot& snap, memory::M
         }
         last_fill_cache_offset_ = check.offset;
         FillPhase(0, fill_mark);
-        write_indices();
         return check.count;
       }
       // A mesh whose vertices change from frame to frame - the wreck as it
@@ -4235,7 +4111,7 @@ uint32_t PlumeDrawContext::FillVertices(const GuestDrawSnapshot& snap, memory::M
   // vertices than they started with.
   // Unpacked already, on a worker thread, before the frame was encoded?
   const PreUnpacked* pre = nullptr;
-  if (!passthrough && as_planned) {
+  if (!passthrough) {
     if (auto found = pre_unpacked_.find(&snap);
         found != pre_unpacked_.end() && found->second.count == vertex_count) {
       pre = &found->second;
@@ -4368,24 +4244,10 @@ uint32_t PlumeDrawContext::FillVertices(const GuestDrawSnapshot& snap, memory::M
     fetch_type = pre->fetch_type;
   } else {
     UnpackVertices(snap, attrs, pos_fetch_const, pos_float, vertex_count, memory, staged, read_lo, read_hi,
-                   fetched, fetch_addr, fetch_type, plan.count != 0 ? plan.first : ~0u);
+                   fetched, fetch_addr, fetch_type);
   }
   FillPhase(1, fill_mark);
-  if (plan.count != 0 && !attrs.empty() && pos_float + 4 <= kFloatsPerVert &&
-      std::getenv("XERENGE_KEEP_BAD_VERTICES") == nullptr) {
-    // A vertex with a bad position takes its primitives with it, which
-    // CollapseBadPrimitives does for vertices one an index - so such a draw
-    // is drawn that way after all.
-    for (uint32_t vi = 0; vi < vertex_count; ++vi) {
-      if (BadPosition(vert(vi) + pos_float)) {
-        deindexed_retry_ = true;
-        const uint32_t filled = FillVertices(snap, memory, base_vertex, passthrough);
-        deindexed_retry_ = false;
-        return filled;
-      }
-    }
-  }
-  if (plan.count == 0 && !attrs.empty() && pos_float + 4 <= kFloatsPerVert) {
+  if (!attrs.empty() && pos_float + 4 <= kFloatsPerVert) {
     static const bool keep = std::getenv("XERENGE_KEEP_BAD_VERTICES") != nullptr;
     if (!keep) {
       if (const uint32_t bad = CollapseBadPrimitives(
@@ -4835,7 +4697,6 @@ uint32_t PlumeDrawContext::FillVertices(const GuestDrawSnapshot& snap, memory::M
                     staged + size_t(draw_count - 1) * kFloatsPerVert + first_loc * 4, 16);
       }
       last_fill_cache_offset_ = cache_offset;
-      write_indices();
       FillPhase(3, fill_mark);
       return draw_count;
     }
@@ -4843,7 +4704,6 @@ uint32_t PlumeDrawContext::FillVertices(const GuestDrawSnapshot& snap, memory::M
   // The one touch of the upload heap: a single sequential copy, which write
   // combined memory handles at full speed.
   CopyVerticesOut(vb_mapped_ + size_t(base_vertex) * kFloatsPerVert, staged, draw_count);
-  write_indices();
   FillPhase(3, fill_mark);
   return draw_count;
 }
@@ -6608,31 +6468,6 @@ void PlumeDrawContext::EncodeDraws(plume::RenderCommandList* list,
   // Every draw's vertex cache check at once, on the worker threads: hashing
   // index buffers and the vertex ranges they read is most of what a cached
   // draw costs, and none of it depends on the draws before.
-  // Which indexed draws are drawn indexed (IndexPlan), on the worker threads:
-  // decided before the cache checks and the unpacking ahead, which both
-  // depend on how many vertices a draw unpacks.
-  EncodeStage("index plans");
-  index_plans_.clear();
-  if (memory && index_mapped_) {
-    std::vector<const GuestDrawSnapshot*> indexed;
-    indexed.reserve(draws.size());
-    for (const GuestDrawSnapshot& snap : draws) {
-      if (snap.valid && !snap.is_clear && !snap.is_resolve && snap.d3d_vertex_buffer != 0 &&
-          snap.d3d_index_buffer != 0 && !snap.has_video_frame()) {
-        indexed.push_back(&snap);
-      }
-    }
-    std::vector<IndexPlan> plans(indexed.size());
-    WorkerPool::Get().ParallelFor(indexed.size(), [&](size_t i) {
-      plans[i] = PlanIndices(*indexed[i], memory);
-    });
-    index_plans_.reserve(indexed.size());
-    for (size_t i = 0; i < indexed.size(); ++i) {
-      if (plans[i].count != 0) {
-        index_plans_.emplace(indexed[i], plans[i]);
-      }
-    }
-  }
   EncodeStage("vertex cache checks");
   mesh_checks_.clear();
   if (cache_mapped_ && memory) {
@@ -6649,7 +6484,7 @@ void PlumeDrawContext::EncodeDraws(plume::RenderCommandList* list,
       const GuestDrawSnapshot& snap = *candidates[i];
       const auto* vs_info = FindResolvedVfetch(snap.vs_hash);
       if (vs_info && !vs_info->real_attrs.empty()) {
-        results[i] = CheckMeshCache(snap, vs_info->real_attrs, UnpackedCount(snap), memory);
+        results[i] = CheckMeshCache(snap, vs_info->real_attrs, snap.num_indices, memory);
       } else {
         results[i] = MeshCheck{};
       }
@@ -6679,7 +6514,6 @@ void PlumeDrawContext::EncodeDraws(plume::RenderCommandList* list,
       const std::vector<VfetchAttr>* attrs = nullptr;
       int32_t pos_fetch_const = -1;
       uint32_t pos_float = 0;
-      uint32_t sequential_first = ~0u;
       PreUnpacked result;
     };
     std::vector<Job> jobs;
@@ -6688,7 +6522,7 @@ void PlumeDrawContext::EncodeDraws(plume::RenderCommandList* list,
     for (const GuestDrawSnapshot& snap : draws) {
       if (!snap.valid || snap.is_clear || snap.is_resolve || snap.d3d_vertex_buffer == 0 ||
           snap.d3d_vertex_stride == 0 || snap.has_video_frame() || snap.num_indices == 0 ||
-          UnpackedCount(snap) > kVertsPerFrame) {
+          snap.num_indices > kVertsPerFrame) {
         continue;
       }
       if (auto check = mesh_checks_.find(&snap); check != mesh_checks_.end() && check->second.hit) {
@@ -6704,9 +6538,8 @@ void PlumeDrawContext::EncodeDraws(plume::RenderCommandList* list,
       job.pos_fetch_const = vs_info->real_pos_fetch_const;
       job.pos_float = vs_info->real_pos_float;
       job.result.offset = total;
-      job.result.count = UnpackedCount(snap);
-      job.sequential_first = PlanFor(snap).count != 0 ? PlanFor(snap).first : ~0u;
-      total += size_t(job.result.count) * kFloatsPerVert;
+      job.result.count = snap.num_indices;
+      total += size_t(snap.num_indices) * kFloatsPerVert;
       jobs.push_back(std::move(job));
     }
     // Bounded: an enormous frame is left to the ordinary path.
@@ -6722,7 +6555,7 @@ void PlumeDrawContext::EncodeDraws(plume::RenderCommandList* list,
         job.result.read_hi.assign(job.attrs->size(), 0u);
         UnpackVertices(*job.snap, *job.attrs, job.pos_fetch_const, job.pos_float, job.result.count, memory, out,
                        job.result.read_lo, job.result.read_hi, job.result.fetched,
-                       job.result.fetch_addr, job.result.fetch_type, job.sequential_first);
+                       job.result.fetch_addr, job.result.fetch_type);
       });
       pre_unpacked_.reserve(jobs.size());
       for (Job& job : jobs) {
@@ -6742,9 +6575,6 @@ void PlumeDrawContext::EncodeDraws(plume::RenderCommandList* list,
   const uint32_t slot_base = half * kSlotsPerFrame;
   uint32_t vb_used = vb_base;
   vb_limit_ = vb_base + kVertsPerFrame;
-  index_used_ = half * kIndicesPerFrame;
-  index_limit_ = index_used_ + kIndicesPerFrame;
-  bool index_buffer_bound = false;
   uint32_t guest_draws = 0;
   using rex::graphics::xenos::PrimitiveType;
   size_t last_video = draws.size();
@@ -7363,23 +7193,6 @@ void PlumeDrawContext::EncodeDraws(plume::RenderCommandList* list,
         scissor_now[3] = sy1;
       }
     }
-    // From `first` on in the bound vertex buffer: through the indices
-    // FillVertices wrote for a draw drawn indexed, in order otherwise.
-    const auto draw_vertices = [&](uint32_t first) {
-      if (last_fill_index_count_ != 0) {
-        if (!index_buffer_bound) {
-          const plume::RenderIndexBufferView view(
-              plume::RenderBufferReference(index_buffer_.get(), 0),
-              uint32_t(kIndicesPerFrame * 2 * sizeof(uint32_t)), plume::RenderFormat::R32_UINT);
-          list->setIndexBuffer(&view);
-          index_buffer_bound = true;
-        }
-        list->drawIndexedInstanced(last_fill_index_count_, 1, last_fill_index_first_,
-                                   int32_t(first), 0);
-      } else {
-        list->drawInstanced(vertex_count, 1, first, 0);
-      }
-    };
     if (fill_layout_mask_ != kFullLayoutMask) {
       // Packed: the draw's vertices start at the front of its room, and the
       // stride is the pipeline's, so the buffer is bound at that room.
@@ -7407,7 +7220,7 @@ void PlumeDrawContext::EncodeDraws(plume::RenderCommandList* list,
           }
         }
       }
-      draw_vertices(0);
+      list->drawInstanced(vertex_count, 1, 0, 0);
       if (!cached) {
         vb_used += vertex_count;
       }
@@ -7416,13 +7229,13 @@ void PlumeDrawContext::EncodeDraws(plume::RenderCommandList* list,
         list->setVertexBuffers(0, &cache_view_, 1, &input_slots_[0]);
         bound_vertex_buffer = 2;
       }
-      draw_vertices(last_fill_cache_offset_);
+      list->drawInstanced(vertex_count, 1, last_fill_cache_offset_, 0);
     } else {
       if (bound_vertex_buffer != 1) {
         list->setVertexBuffers(0, &vb_view_, 1, &input_slots_[0]);
         bound_vertex_buffer = 1;
       }
-      draw_vertices(vb_used);
+      list->drawInstanced(vertex_count, 1, vb_used, 0);
       vb_used += vertex_count;
     }
     ++encoded;
