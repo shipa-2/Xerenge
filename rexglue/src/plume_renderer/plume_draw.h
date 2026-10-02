@@ -137,6 +137,19 @@ struct ResolvedShaderVfetch {
   bool is_position_scaling = false;
 };
 
+// What a draw whose fragments are counted was (debug mode, see
+// RenderPassBreak::begin_fragment_count).
+struct FragmentCountLabel {
+  uint64_t vs_hash = 0;
+  uint64_t ps_hash = 0;
+  uint32_t pass = 0;  // which of the frame's passes, from 0
+  uint32_t vertices = 0;
+  uint32_t depth_control = 0;
+  uint32_t blend_control = 0;
+  uint32_t target_width = 0;
+  uint32_t target_height = 0;
+};
+
 // Lets whoever encodes a frame close the render pass and open it again. The
 // title copies its render target mid-frame and then draws over the top from
 // what it copied, and copying out of a target still bound for writing is
@@ -155,6 +168,10 @@ struct RenderPassBreak {
   // last pass, which the swapchain times itself. The swapchain reports what
   // the GPU spent between marks (PlumeSwapchain::MarkPass).
   void (*mark)(void*, uint32_t dest, uint32_t draws, uint32_t vertices, uint32_t binds) = nullptr;
+  // Debug mode: the fragments a draw shades, counted by the GPU around it.
+  // begin returns the query to end, ~0u when none is left this frame.
+  uint32_t (*begin_fragment_count)(void*, const FragmentCountLabel&) = nullptr;
+  void (*end_fragment_count)(void*, uint32_t query) = nullptr;
 };
 
 // Whether scene passes carry a second colour attachment - render target 1,

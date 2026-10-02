@@ -221,6 +221,12 @@ bool PlumeSwapchain::Initialize(plume::RenderDevice* device, SDL_Window* window,
   pass_timing_ = xerenge::Diagnostics();
   query_pool_ = device_->createQueryPool(pass_timing_ ? 2 + kPassMarks : 2);
   spare_query_pool_ = device_->createQueryPool(pass_timing_ ? 2 + kPassMarks : 2);
+  // Counted per draw only while one frame is on the GPU at a time: one pool.
+  if (pass_timing_ && std::getenv("XERENGE_ASYNC_PRESENT") == nullptr) {
+    fragment_pool_ = device_->createFragmentCountQueryPool(kFragmentCounts);
+    REXLOG_INFO("plume: fragments counted per draw: {}",
+                fragment_pool_ ? "yes" : "no (no pipeline statistics on this device)");
+  }
   if (!command_list_ || !submit_fence_ || !acquire_semaphore_ || !spare_command_list_ ||
       !spare_submit_fence_ || !spare_acquire_semaphore_) {
     REXLOG_ERROR("plume: failed to create swapchain sync objects");
@@ -245,6 +251,7 @@ bool PlumeSwapchain::Initialize(plume::RenderDevice* device, SDL_Window* window,
 }
 
 void PlumeSwapchain::ReadGpuTime() {
+  ReadFragmentCounts();
   if (!query_pool_ || !query_written_) {
     return;
   }
@@ -310,6 +317,75 @@ void PlumeSwapchain::MarkPass(plume::RenderCommandList* list, uint32_t dest, uin
   pass_marks_.push_back({dest, draws, vertices, binds});
 }
 
+
+uint32_t PlumeSwapchain::BeginFragmentCount(plume::RenderCommandList* list,
+                                            const FragmentCountLabel& label) {
+  if (!fragment_pool_ || fragment_labels_.size() >= kFragmentCounts) {
+    return ~0u;
+  }
+  const uint32_t query = uint32_t(fragment_labels_.size());
+  list->beginQuery(fragment_pool_.get(), query);
+  fragment_labels_.push_back(label);
+  return query;
+}
+
+void PlumeSwapchain::ReadFragmentCounts() {
+  if (!fragment_pool_ || fragment_labels_.empty()) {
+    return;
+  }
+  fragment_pool_->queryResults();
+  const uint64_t* counts = fragment_pool_->getResults();
+  std::vector<std::pair<uint64_t, FragmentCountLabel>> draws;
+  draws.reserve(fragment_labels_.size());
+  for (size_t i = 0; i < fragment_labels_.size(); ++i) {
+    const FragmentCountLabel& label = fragment_labels_[i];
+    if (fragments_by_pass_.size() <= label.pass) {
+      fragments_by_pass_.resize(label.pass + 1);
+    }
+    fragments_by_pass_[label.pass] += counts[i];
+    draws.emplace_back(counts[i], label);
+  }
+  ++fragment_frames_;
+  // The frame's heaviest draws, kept for the report.
+  const size_t keep = std::min<size_t>(12, draws.size());
+  std::partial_sort(draws.begin(), draws.begin() + keep, draws.end(),
+                    [](const auto& a, const auto& b) { return a.first > b.first; });
+  draws.resize(keep);
+  heaviest_draws_ = std::move(draws);
+  fragment_labels_.clear();
+}
+
+std::string PlumeSwapchain::TakeFragmentReport() {
+  if (fragment_frames_ == 0) {
+    return {};
+  }
+  // Each pass named as the pass report names it: by the copy that ended it.
+  uint64_t total = 0;
+  std::string passes;
+  for (size_t pass = 0; pass < fragments_by_pass_.size(); ++pass) {
+    const uint64_t frame = fragments_by_pass_[pass] / fragment_frames_;
+    total += frame;
+    if (frame < 50000) {
+      continue;
+    }
+    const std::string name = pass < pass_marks_.size() && pass_marks_[pass].dest != 0
+                                 ? fmt::format("{:08X}", pass_marks_[pass].dest)
+                                 : std::string("end");
+    passes += fmt::format(" | pass {} ({}) {:.2f}M", pass, name, double(frame) / 1e6);
+  }
+  std::string heaviest;
+  for (const auto& [count, label] : heaviest_draws_) {
+    heaviest += fmt::format(" | {:.2f}M pass {} vs={:016X} ps={:016X} {} verts depth={:08X} "
+                            "blend={:08X} target {}x{}",
+                            double(count) / 1e6, label.pass, label.vs_hash, label.ps_hash,
+                            label.vertices, label.depth_control, label.blend_control,
+                            label.target_width, label.target_height);
+  }
+  std::fill(fragments_by_pass_.begin(), fragments_by_pass_.end(), 0);
+  fragment_frames_ = 0;
+  return fmt::format("{:.2f}M a frame{}\n  heaviest draws of the last frame:{}",
+                     double(total) / 1e6, passes, heaviest);
+}
 std::string PlumeSwapchain::TakePassReport(uint64_t frames) {
   if (pass_times_.empty() || frames == 0) {
     return {};
@@ -378,6 +454,7 @@ void PlumeSwapchain::Shutdown() {
   spare_scene_fence_.reset();
   query_pool_.reset();
   spare_query_pool_.reset();
+  fragment_pool_.reset();
   query_written_ = spare_query_written_ = false;
   swap_chain_.reset();
   command_queue_.reset();
@@ -753,6 +830,10 @@ void PlumeSwapchain::ClearAndPresent(float r, float g, float b, float a, DrawEnc
   if (query_pool_) {
     command_list_->resetQueryPool(query_pool_.get(), 0, query_pool_->getCount());
     pass_marks_.clear();
+    if (fragment_pool_) {
+      command_list_->resetQueryPool(fragment_pool_.get(), 0, kFragmentCounts);
+      fragment_labels_.clear();
+    }
     command_list_->writeTimestamp(query_pool_.get(), 0);
   }
   // Both attachments, not just the colour one. A depth buffer that is never
@@ -815,6 +896,16 @@ void PlumeSwapchain::ClearAndPresent(float r, float g, float b, float a, DrawEnc
         auto* state = static_cast<PassState*>(raw);
         state->swapchain->MarkPass(state->list, dest, draws, vertices, binds);
       };
+      if (fragment_pool_) {
+        pass.begin_fragment_count = [](void* raw, const FragmentCountLabel& label) {
+          auto* state = static_cast<PassState*>(raw);
+          return state->swapchain->BeginFragmentCount(state->list, label);
+        };
+        pass.end_fragment_count = [](void* raw, uint32_t query) {
+          auto* state = static_cast<PassState*>(raw);
+          state->list->endQuery(state->swapchain->fragment_pool_.get(), query);
+        };
+      }
     }
     encode(encode_context, command_list_.get(), width, height, draw_target, pass);
   }
@@ -960,6 +1051,10 @@ void PlumeSwapchain::ClearAndPresent(float r, float g, float b, float a, DrawEnc
         const std::string passes = TakePassReport(gpu_busy_frames_);
         if (!passes.empty()) {
           REXLOG_INFO("plume: GPU passes, ended by the copy into: {}", passes);
+        }
+        const std::string fragments = TakeFragmentReport();
+        if (!fragments.empty()) {
+          REXLOG_INFO("plume: fragments shaded: {}", fragments);
         }
       }
       gpu_busy_ns_ = gpu_busy_frames_ = 0;

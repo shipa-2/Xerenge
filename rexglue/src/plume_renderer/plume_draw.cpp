@@ -6671,6 +6671,8 @@ void PlumeDrawContext::EncodeDraws(plume::RenderCommandList* list,
   // ... and the vertices those draws shade, and how often the pipeline changes.
   uint32_t segment_vertices = 0;
   uint32_t segment_binds = 0;
+  // Which of the frame's passes the draws go into (for the fragment counts).
+  uint32_t segment_index = 0;
   // A render target smaller than the frame - a cube face, a post-processing
   // buffer - is drawn at its own size, in the corner of the one buffer, the
   // way it occupies a corner of EDRAM on the console; its resolve copies just
@@ -7193,6 +7195,20 @@ void PlumeDrawContext::EncodeDraws(plume::RenderCommandList* list,
         scissor_now[3] = sy1;
       }
     }
+    // Debug mode: the fragments this draw shades, counted on the GPU.
+    uint32_t fragment_query = ~0u;
+    if (pass && pass->begin_fragment_count) {
+      FragmentCountLabel label;
+      label.vs_hash = snap.vs_hash;
+      label.ps_hash = snap.ps_hash;
+      label.pass = segment_index;
+      label.vertices = vertex_count;
+      label.depth_control = snap.depth_control;
+      label.blend_control = snap.blend_control;
+      label.target_width = snap.d3d_target_width;
+      label.target_height = snap.d3d_target_height;
+      fragment_query = pass->begin_fragment_count(pass->context, label);
+    }
     if (fill_layout_mask_ != kFullLayoutMask) {
       // Packed: the draw's vertices start at the front of its room, and the
       // stride is the pipeline's, so the buffer is bound at that room.
@@ -7237,6 +7253,9 @@ void PlumeDrawContext::EncodeDraws(plume::RenderCommandList* list,
       }
       list->drawInstanced(vertex_count, 1, vb_used, 0);
       vb_used += vertex_count;
+    }
+    if (fragment_query != ~0u) {
+      pass->end_fragment_count(pass->context, fragment_query);
     }
     ++encoded;
     segment_vertices += vertex_count;
@@ -7560,6 +7579,7 @@ void PlumeDrawContext::EncodeDraws(plume::RenderCommandList* list,
           segment_draws = 0;
           segment_vertices = 0;
           segment_binds = 0;
+          ++segment_index;
           bool known = false;
           for (FrameCopy& copy : frame_copies) {
             if (copy.dest == snap.resolve_dest && copy.source == snap.resolve_source &&
