@@ -122,6 +122,32 @@ class PlumeSwapchain {
   bool spare_query_written_ = false;
   uint64_t gpu_busy_ns_ = 0;
   uint64_t gpu_busy_frames_ = 0;
+  // Debug mode: a timestamp at every break between passes as well (the
+  // title's copies), labelled with the copy that ended the pass - what each
+  // pass costs the GPU, reported beside the host frame line. Indices 2 on.
+  static constexpr uint32_t kPassMarks = 62;
+  struct PassMark {
+    uint32_t dest;   // the copy that ended the pass; 0 for the frame's last
+    uint32_t draws;  // draws in the pass
+  };
+  bool pass_timing_ = false;
+  std::vector<PassMark> pass_marks_;
+  std::vector<PassMark> spare_pass_marks_;
+  // Per pass, over the report's frames: keyed by the copy and which of the
+  // frame's copies into that destination it is.
+  struct PassTime {
+    uint64_t ns = 0;
+    uint64_t draws = 0;
+    uint32_t frames = 0;
+    uint32_t order = 0;  // where in the frame it came, last seen
+  };
+  std::vector<std::pair<uint64_t, PassTime>> pass_times_;
+  void MarkPass(plume::RenderCommandList* list, uint32_t dest, uint32_t draws);
+  // The marks that wrote a timestamp: all but the frame's last pass.
+  uint32_t MarksWritten() const {
+    return uint32_t(pass_marks_.size()) - (!pass_marks_.empty() && pass_marks_.back().dest == 0);
+  }
+  std::string TakePassReport(uint64_t frames);
   // Reads the finished frame's timestamps, if this set wrote any.
   void ReadGpuTime();
   // Waits for every frame still on the GPU.

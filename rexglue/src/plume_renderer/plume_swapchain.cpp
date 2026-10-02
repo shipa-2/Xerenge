@@ -8,6 +8,8 @@
 #include <cstdlib>
 #include "plume_renderer/plume_swapchain.h"
 
+#include "diagnostics.h"
+
 #include <SDL3/SDL.h>
 #include <SDL3/SDL_vulkan.h>
 
@@ -216,8 +218,9 @@ bool PlumeSwapchain::Initialize(plume::RenderDevice* device, SDL_Window* window,
   spare_present_list_ = command_queue_->createCommandList();
   scene_fence_ = device_->createCommandFence();
   spare_scene_fence_ = device_->createCommandFence();
-  query_pool_ = device_->createQueryPool(2);
-  spare_query_pool_ = device_->createQueryPool(2);
+  pass_timing_ = xerenge::Diagnostics();
+  query_pool_ = device_->createQueryPool(pass_timing_ ? 2 + kPassMarks : 2);
+  spare_query_pool_ = device_->createQueryPool(pass_timing_ ? 2 + kPassMarks : 2);
   if (!command_list_ || !submit_fence_ || !acquire_semaphore_ || !spare_command_list_ ||
       !spare_submit_fence_ || !spare_acquire_semaphore_) {
     REXLOG_ERROR("plume: failed to create swapchain sync objects");
@@ -252,6 +255,82 @@ void PlumeSwapchain::ReadGpuTime() {
     gpu_busy_ns_ += results[1] - results[0];
     ++gpu_busy_frames_;
   }
+  if (!results || pass_marks_.empty()) {
+    return;
+  }
+  // Each pass runs from the mark before it (the frame's start for the first)
+  // to its own; the last, unmarked, to the frame's end - the copy onto the
+  // window included.
+  uint64_t start = results[0];
+  std::vector<std::pair<uint32_t, uint32_t>> seen;  // copy, passes it ended so far
+  for (size_t i = 0; i < pass_marks_.size(); ++i) {
+    const PassMark& mark = pass_marks_[i];
+    const uint64_t end = mark.dest != 0 ? results[2 + i] : results[1];
+    const uint64_t ns = end > start ? end - start : 0;
+    start = std::max(start, end);
+    // The same copy can end several passes in a frame (the reflection's
+    // faces): told apart by which of them it is.
+    uint32_t nth = 0;
+    if (auto s = std::find_if(seen.begin(), seen.end(),
+                              [&mark](const auto& e) { return e.first == mark.dest; });
+        s != seen.end()) {
+      nth = ++s->second;
+    } else {
+      seen.emplace_back(mark.dest, 0);
+    }
+    const uint64_t key = (uint64_t(mark.dest) << 8) | std::min(nth, 255u);
+    auto it = std::find_if(pass_times_.begin(), pass_times_.end(),
+                           [key](const auto& entry) { return entry.first == key; });
+    if (it == pass_times_.end()) {
+      if (pass_times_.size() >= 256) {
+        continue;
+      }
+      pass_times_.emplace_back(key, PassTime{});
+      it = pass_times_.end() - 1;
+    }
+    it->second.ns += ns;
+    it->second.draws += mark.draws;
+    ++it->second.frames;
+    it->second.order = uint32_t(i);
+  }
+}
+
+void PlumeSwapchain::MarkPass(plume::RenderCommandList* list, uint32_t dest, uint32_t draws) {
+  if (dest == 0) {
+    pass_marks_.push_back({0, draws});
+    return;
+  }
+  if (MarksWritten() >= kPassMarks) {
+    return;
+  }
+  list->writeTimestamp(query_pool_.get(), 2 + MarksWritten());
+  pass_marks_.push_back({dest, draws});
+}
+
+std::string PlumeSwapchain::TakePassReport(uint64_t frames) {
+  if (pass_times_.empty() || frames == 0) {
+    return {};
+  }
+  // In the frame's order; the passes that cost a tenth of a millisecond or
+  // more, each as copy (which of them), GPU time a frame, draws a frame.
+  std::sort(pass_times_.begin(), pass_times_.end(),
+            [](const auto& a, const auto& b) { return a.second.order < b.second.order; });
+  std::string report;
+  uint64_t total_ns = 0;
+  for (const auto& [key, time] : pass_times_) {
+    total_ns += time.ns;
+    const uint64_t ns = time.ns / frames;
+    if (ns < 100000) {
+      continue;
+    }
+    const uint32_t dest = uint32_t(key >> 8);
+    report += fmt::format(" | {}#{} {:.2f} ms {} draws",
+                          dest ? fmt::format("{:08X}", dest) : std::string("end"),
+                          uint32_t(key & 0xFF), double(ns) / 1e6,
+                          time.frames ? time.draws / time.frames : 0);
+  }
+  pass_times_.clear();
+  return fmt::format("{:.2f} ms a frame{}", double(total_ns / frames) / 1e6, report);
 }
 
 void PlumeSwapchain::WaitForFrames() {
@@ -594,6 +673,7 @@ void PlumeSwapchain::ClearAndPresent(float r, float g, float b, float a, DrawEnc
     std::swap(scene_fence_, spare_scene_fence_);
     std::swap(scene_pending_, spare_scene_pending_);
     std::swap(query_written_, spare_query_written_);
+    std::swap(pass_marks_, spare_pass_marks_);
   }
   // The frame that used this set first: this frame reuses its command list,
   // its acquire semaphore and the upload buffers it read from.
@@ -667,7 +747,8 @@ void PlumeSwapchain::ClearAndPresent(float r, float g, float b, float a, DrawEnc
   const auto record_started = std::chrono::steady_clock::now();
   command_list_->begin();
   if (query_pool_) {
-    command_list_->resetQueryPool(query_pool_.get(), 0, 2);
+    command_list_->resetQueryPool(query_pool_.get(), 0, query_pool_->getCount());
+    pass_marks_.clear();
     command_list_->writeTimestamp(query_pool_.get(), 0);
   }
   // Both attachments, not just the colour one. A depth buffer that is never
@@ -712,7 +793,8 @@ void PlumeSwapchain::ClearAndPresent(float r, float g, float b, float a, DrawEnc
       const plume::RenderFramebuffer* framebuffer;
       uint32_t width;
       uint32_t height;
-    } pass_state{command_list_.get(), draw_framebuffer, width, height};
+      PlumeSwapchain* swapchain;
+    } pass_state{command_list_.get(), draw_framebuffer, width, height, this};
     RenderPassBreak pass{
         &pass_state,
         [](void* raw) { static_cast<PassState*>(raw)->list->setFramebuffer(nullptr); },
@@ -724,6 +806,12 @@ void PlumeSwapchain::ClearAndPresent(float r, float g, float b, float a, DrawEnc
           state->list->setScissors(plume::RenderRect(0, 0, state->width, state->height));
         }};
     pass.second_target = second_target;
+    if (pass_timing_ && query_pool_) {
+      pass.mark = [](void* raw, uint32_t dest, uint32_t draws) {
+        auto* state = static_cast<PassState*>(raw);
+        state->swapchain->MarkPass(state->list, dest, draws);
+      };
+    }
     encode(encode_context, command_list_.get(), width, height, draw_target, pass);
   }
 
@@ -807,6 +895,11 @@ void PlumeSwapchain::ClearAndPresent(float r, float g, float b, float a, DrawEnc
                                             plume::RenderTextureLayout::PRESENT));
   if (query_pool_) {
     out->writeTimestamp(query_pool_.get(), 1);
+    // Every query read back has to have been written: the marks this frame
+    // did not use get the end.
+    for (uint32_t i = 2 + MarksWritten(); i < query_pool_->getCount(); ++i) {
+      out->writeTimestamp(query_pool_.get(), i);
+    }
     query_written_ = true;
   }
   out->end();
@@ -859,6 +952,12 @@ void PlumeSwapchain::ClearAndPresent(float r, float g, float b, float a, DrawEnc
                   frames, acquire_us / frames, record_us / frames, present_us / frames,
                   gpu_us / frames, fence_us / frames,
                   gpu_busy_frames_ ? gpu_busy_ns_ / gpu_busy_frames_ / 1000 : 0);
+      if (pass_timing_) {
+        const std::string passes = TakePassReport(gpu_busy_frames_);
+        if (!passes.empty()) {
+          REXLOG_INFO("plume: GPU passes, ended by the copy into: {}", passes);
+        }
+      }
       gpu_busy_ns_ = gpu_busy_frames_ = 0;
       acquire_us = record_us = present_us = gpu_us = fence_us = frames = 0;
       last_report = fence_done;

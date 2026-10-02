@@ -6666,6 +6666,8 @@ void PlumeDrawContext::EncodeDraws(plume::RenderCommandList* list,
   // decided by the object's first draw with a known extent, kept for the rest.
   uint32_t anchor_object = 0;
   uint32_t anchor_x = box_x;
+  // Draws encoded since the last copy (for the debug-mode pass timings).
+  uint32_t segment_draws = 0;
   // A render target smaller than the frame - a cube face, a post-processing
   // buffer - is drawn at its own size, in the corner of the one buffer, the
   // way it occupies a corner of EDRAM on the console; its resolve copies just
@@ -7463,6 +7465,10 @@ void PlumeDrawContext::EncodeDraws(plume::RenderCommandList* list,
                             snap.resolve_width ? snap.resolve_width : width,
                             snap.resolve_height ? snap.resolve_height : height, region_w,
                             region_h, snap.resolve_face, snap.resolve_cube);
+        if (pass->mark) {
+          pass->mark(pass->context, snap.resolve_dest, segment_draws);
+        }
+        segment_draws = 0;
         pass->begin(pass->context);
         // The part of the target the draws up to the next copy touch. The
         // garage's reflection faces and the post-processing buffers are drawn in
@@ -7553,6 +7559,7 @@ void PlumeDrawContext::EncodeDraws(plume::RenderCommandList* list,
     const uint32_t encoded_before = encoded;
     encode_one(snap);
     if (encoded != encoded_before) {
+      ++segment_draws;
       // Only a Direct3D draw paints over the picture. What arrives after a
       // frame's last copy through the ring alone - the rectangles of the next
       // frame's clears - or the next frame's video frame belongs to the frame
@@ -7617,6 +7624,9 @@ void PlumeDrawContext::EncodeDraws(plume::RenderCommandList* list,
           frame_serial_, draws.size(), encoded, d3d, video, clears, copies,
           drawn_since_copy ? "target" : "copy", frame_output_dest_, last_copy, draws.size(), tail);
     }
+  }
+  if (pass && pass->mark) {
+    pass->mark(pass->context, 0, segment_draws);
   }
   frame_encoded_draws_ = encoded;
   if (xerenge::Diagnostics()) {
