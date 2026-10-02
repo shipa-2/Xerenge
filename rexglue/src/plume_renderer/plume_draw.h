@@ -471,6 +471,39 @@ class PlumeDrawContext {
                                              uint32_t cull = 0);
   uint32_t FillVertices(const GuestDrawSnapshot& snap, memory::Memory* memory,
                         uint32_t base_vertex, bool passthrough);
+  // An indexed draw drawn indexed: the vertices its indices reach, `count`
+  // of them from `first` on, unpacked once each, and the indices rebased onto
+  // them - rather than one unpacked vertex per index, which shaded every
+  // vertex of a strip once for each triangle it is in. count 0: drawn the old
+  // way (no plan for the draw, or one it cannot take).
+  struct IndexPlan {
+    uint32_t first = 0;
+    uint32_t count = 0;
+  };
+  IndexPlan PlanIndices(const GuestDrawSnapshot& snap, memory::Memory* memory) const;
+  // This frame's plans, made before the cache checks and the unpacking ahead.
+  std::unordered_map<const GuestDrawSnapshot*, IndexPlan> index_plans_;
+  IndexPlan PlanFor(const GuestDrawSnapshot& snap) const {
+    const auto it = index_plans_.find(&snap);
+    return it != index_plans_.end() ? it->second : IndexPlan{};
+  }
+  // The vertices a draw unpacks: its plan's, or one an index.
+  uint32_t UnpackedCount(const GuestDrawSnapshot& snap) const {
+    const IndexPlan plan = PlanFor(snap);
+    return plan.count != 0 ? plan.count : snap.num_indices;
+  }
+  // The rebased indices, 32-bit, two halves like the vertex buffer.
+  std::unique_ptr<plume::RenderBuffer> index_buffer_;
+  uint32_t* index_mapped_ = nullptr;
+  uint32_t index_used_ = 0;
+  uint32_t index_limit_ = 0;
+  // Set by FillVertices for a draw it filled indexed: where its indices start
+  // in index_buffer_ and how many; count 0 for a draw to be drawn as before.
+  uint32_t last_fill_index_first_ = 0;
+  uint32_t last_fill_index_count_ = 0;
+  // FillVertices calling itself to draw a planned draw the old way after all
+  // (a vertex with a bad position): no plan, no cache, nothing unpacked ahead.
+  bool deindexed_retry_ = false;
   void UploadNullTexture(plume::RenderCommandList* list);
   bool UploadHostTexture(plume::RenderCommandList* list, uint64_t key, uint32_t width,
                          uint32_t height, plume::RenderFormat host_format,
@@ -781,7 +814,8 @@ class PlumeDrawContext {
   void UnpackVertices(const GuestDrawSnapshot& snap, const std::vector<VfetchAttr>& attrs,
                       int32_t pos_fetch_const, uint32_t pos_float, uint32_t vertex_count,
                       memory::Memory* memory, float* staged, std::vector<uint32_t>& read_lo, std::vector<uint32_t>& read_hi,
-                      uint32_t& fetched, uint32_t& fetch_addr, uint32_t& fetch_type) const;
+                      uint32_t& fetched, uint32_t& fetch_addr, uint32_t& fetch_type,
+                      uint32_t sequential_first = ~0u) const;
   // Draws of this frame unpacked before encoding, into pre_arena_ (kept
   // between frames so it is not reallocated every frame).
   struct PreUnpacked {
