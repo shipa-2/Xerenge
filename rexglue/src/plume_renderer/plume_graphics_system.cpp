@@ -2093,7 +2093,7 @@ void PlumeGraphicsSystem::PresentClearColorOnUiThread(uint32_t guest_width,
     // Show the front buffer, as the console does: the render target itself was
     // cleared for the next frame right after being resolved into it.
     encode_ctx->draw->PresentResolvedFrame(
-        list, color, encode_ctx->system->swap_frontbuffer_.load(std::memory_order_relaxed));
+        list, color, width, height, encode_ctx->system->swap_frontbuffer_.load(std::memory_order_relaxed));
   };
 
   const auto present_prepared = std::chrono::steady_clock::now();

@@ -5153,7 +5153,8 @@ bool PlumeDrawContext::HoldsThinFrame(const std::vector<GuestDrawSnapshot>& draw
 }
 
 void PlumeDrawContext::PresentResolvedFrame(plume::RenderCommandList* list,
-                                            plume::RenderTexture* color, uint32_t front_buffer) {
+                                            plume::RenderTexture* color, uint32_t width,
+                                            uint32_t height, uint32_t front_buffer) {
   // The front buffer the title swaps to wins; the frame's last copy is only a
   // fallback. A 3D frame copies into the front buffer, clears, and then makes
   // further copies of the cleared target - the last copy is black.
@@ -5224,7 +5225,10 @@ void PlumeDrawContext::PresentResolvedFrame(plume::RenderCommandList* list,
   if (it == resolved_targets_.end() || !it->second.texture) {
     return;
   }
-  if (it->second.cube || it->second.width < 1280 || it->second.height < 720) {
+  // Only a copy of the whole frame: a post-processing buffer or a cube face
+  // is no picture. The frame's own size, not the console's - drawn at 540p
+  // every copy was refused and the screen alternated with the bare target.
+  if (it->second.cube || it->second.width != width || it->second.height != height) {
     REXLOG_WARN("plume: refusing to present invalid/incompatible target {:08X} ({}x{}, cube={})",
                 frame_output_dest_, it->second.width, it->second.height, it->second.cube);
     return;
@@ -7419,8 +7423,9 @@ void PlumeDrawContext::EncodeDraws(plume::RenderCommandList* list,
         // Skipped, and that copy - the last frame with its video - is what is
         // shown when it is the front buffer. Shown from the target instead,
         // the menus blinked between frames with and without their video.
-        const uint32_t rw = snap.resolve_width ? snap.resolve_width : width;
-        const uint32_t rh = snap.resolve_height ? snap.resolve_height : height;
+        // No size given: the whole frame, whatever size it is drawn at.
+        const uint32_t rw = snap.resolve_width ? snap.resolve_width : 1280u;
+        const uint32_t rh = snap.resolve_height ? snap.resolve_height : 720u;
         if (!snap.resolve_cube && (IsKnownFrontBuffer(snap.resolve_dest) || (rw >= 1280 && rh >= 720)) &&
             resolved_targets_.count(snap.resolve_dest) != 0) {
           frame_output_dest_ = snap.resolve_dest;
@@ -7459,12 +7464,51 @@ void PlumeDrawContext::EncodeDraws(plume::RenderCommandList* list,
                             snap.resolve_height ? snap.resolve_height : height, region_w,
                             region_h, snap.resolve_face, snap.resolve_cube);
         pass->begin(pass->context);
+        // The part of the target the draws up to the next copy touch. The
+        // garage's reflection faces and the post-processing buffers are drawn in
+        // a corner, a 128x128 one each face; reopened over the whole target, a
+        // tiled GPU (the phones') loaded and stored all of it - colour, depth and
+        // the second target, some fifteen times a frame - for that corner. Only
+        // what a pass draws into is its area now; anything drawn whole, or
+        // unknown, keeps the whole target.
+        {
+          uint32_t area_w = 0;
+          uint32_t area_h = 0;
+          for (size_t j = snap_index + 1; j < draws.size(); ++j) {
+            if (j == hoisted_video) {
+              continue;
+            }
+            const GuestDrawSnapshot& next = draws[j];
+            if (next.is_resolve) {
+              break;
+            }
+            uint32_t ew = width;
+            uint32_t eh = height;
+            if (next.is_clear) {
+              if (next.clear_width != 0) {
+                native_extent(next.clear_width, next.clear_height, ew, eh);
+              }
+            } else if (next.d3d_vertex_buffer != 0 && !next.has_video_frame()) {
+              native_extent(next.d3d_target_width, next.d3d_target_height, ew, eh);
+            }
+            area_w = std::max(area_w, ew);
+            area_h = std::max(area_h, eh);
+            if (area_w >= width && area_h >= height) {
+              break;
+            }
+          }
+          if (area_w != 0 && (area_w < width || area_h < height)) {
+            const plume::RenderRect area(0, 0, int32_t(area_w), int32_t(area_h));
+            list->setRenderArea(&area);
+          }
+        }
         bound_pipeline = nullptr;
         bound_draw_set = nullptr;
         bound_vertex_buffer = 0;
         last_resolve_dest_ = snap.resolve_dest;
-        const uint32_t rw = snap.resolve_width ? snap.resolve_width : width;
-        const uint32_t rh = snap.resolve_height ? snap.resolve_height : height;
+        // No size given: the whole frame, whatever size it is drawn at.
+        const uint32_t rw = snap.resolve_width ? snap.resolve_width : 1280u;
+        const uint32_t rh = snap.resolve_height ? snap.resolve_height : 720u;
         const bool is_front =
             snap.is_end_tiling || IsKnownFrontBuffer(snap.resolve_dest) ||
             (!snap.resolve_cube && rw >= 1280 && rh >= 720 &&

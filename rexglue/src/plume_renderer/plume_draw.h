@@ -425,7 +425,7 @@ class PlumeDrawContext {
   bool HoldsThinFrame(const std::vector<GuestDrawSnapshot>& draws);
 
   void PresentResolvedFrame(plume::RenderCommandList* list, plume::RenderTexture* color,
-                            uint32_t front_buffer);
+                            uint32_t width, uint32_t height, uint32_t front_buffer);
   void ResolveRenderTarget(plume::RenderCommandList* list, plume::RenderTexture* color,
                            uint32_t width, uint32_t height, uint32_t dest_base,
                            uint32_t dest_width, uint32_t dest_height, uint32_t region_width = 0,
