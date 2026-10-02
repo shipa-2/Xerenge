@@ -290,21 +290,24 @@ void PlumeSwapchain::ReadGpuTime() {
     }
     it->second.ns += ns;
     it->second.draws += mark.draws;
+    it->second.vertices += mark.vertices;
+    it->second.binds += mark.binds;
     ++it->second.frames;
     it->second.order = uint32_t(i);
   }
 }
 
-void PlumeSwapchain::MarkPass(plume::RenderCommandList* list, uint32_t dest, uint32_t draws) {
+void PlumeSwapchain::MarkPass(plume::RenderCommandList* list, uint32_t dest, uint32_t draws,
+                              uint32_t vertices, uint32_t binds) {
   if (dest == 0) {
-    pass_marks_.push_back({0, draws});
+    pass_marks_.push_back({0, draws, vertices, binds});
     return;
   }
   if (MarksWritten() >= kPassMarks) {
     return;
   }
   list->writeTimestamp(query_pool_.get(), 2 + MarksWritten());
-  pass_marks_.push_back({dest, draws});
+  pass_marks_.push_back({dest, draws, vertices, binds});
 }
 
 std::string PlumeSwapchain::TakePassReport(uint64_t frames) {
@@ -324,10 +327,11 @@ std::string PlumeSwapchain::TakePassReport(uint64_t frames) {
       continue;
     }
     const uint32_t dest = uint32_t(key >> 8);
-    report += fmt::format(" | {}#{} {:.2f} ms {} draws",
+    const uint64_t seen = time.frames ? time.frames : 1;
+    report += fmt::format(" | {}#{} {:.2f} ms {} draws {}k verts {} pipelines",
                           dest ? fmt::format("{:08X}", dest) : std::string("end"),
-                          uint32_t(key & 0xFF), double(ns) / 1e6,
-                          time.frames ? time.draws / time.frames : 0);
+                          uint32_t(key & 0xFF), double(ns) / 1e6, time.draws / seen,
+                          time.vertices / seen / 1000, time.binds / seen);
   }
   pass_times_.clear();
   return fmt::format("{:.2f} ms a frame{}", double(total_ns / frames) / 1e6, report);
@@ -807,9 +811,9 @@ void PlumeSwapchain::ClearAndPresent(float r, float g, float b, float a, DrawEnc
         }};
     pass.second_target = second_target;
     if (pass_timing_ && query_pool_) {
-      pass.mark = [](void* raw, uint32_t dest, uint32_t draws) {
+      pass.mark = [](void* raw, uint32_t dest, uint32_t draws, uint32_t vertices, uint32_t binds) {
         auto* state = static_cast<PassState*>(raw);
-        state->swapchain->MarkPass(state->list, dest, draws);
+        state->swapchain->MarkPass(state->list, dest, draws, vertices, binds);
       };
     }
     encode(encode_context, command_list_.get(), width, height, draw_target, pass);

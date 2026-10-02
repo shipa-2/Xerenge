@@ -150,10 +150,11 @@ struct RenderPassBreak {
   // target 1, which a resolve with source 1 copies from.
   plume::RenderTexture* second_target = nullptr;
   // Debug mode: a GPU timestamp between two passes, after the copy into `dest`
-  // that ended the first one, which held `draws` draws. Dest 0: the frame's
+  // that ended the first one, which held `draws` draws shading `vertices`
+  // vertices, with `binds` pipeline changes. Dest 0: the frame's
   // last pass, which the swapchain times itself. The swapchain reports what
   // the GPU spent between marks (PlumeSwapchain::MarkPass).
-  void (*mark)(void*, uint32_t dest, uint32_t draws) = nullptr;
+  void (*mark)(void*, uint32_t dest, uint32_t draws, uint32_t vertices, uint32_t binds) = nullptr;
 };
 
 // Whether scene passes carry a second colour attachment - render target 1,

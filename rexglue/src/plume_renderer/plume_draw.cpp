@@ -6668,6 +6668,9 @@ void PlumeDrawContext::EncodeDraws(plume::RenderCommandList* list,
   uint32_t anchor_x = box_x;
   // Draws encoded since the last copy (for the debug-mode pass timings).
   uint32_t segment_draws = 0;
+  // ... and the vertices those draws shade, and how often the pipeline changes.
+  uint32_t segment_vertices = 0;
+  uint32_t segment_binds = 0;
   // A render target smaller than the frame - a cube face, a post-processing
   // buffer - is drawn at its own size, in the corner of the one buffer, the
   // way it occupies a corner of EDRAM on the console; its resolve copies just
@@ -7116,6 +7119,7 @@ void PlumeDrawContext::EncodeDraws(plume::RenderCommandList* list,
     if (pipeline != bound_pipeline) {
       list->setPipeline(pipeline);
       bound_pipeline = pipeline;
+      ++segment_binds;
     }
     if (!passthrough && snap.poly_offset) {
       // Xenos keeps the slope term in 1/16 subpixel units and the constant in
@@ -7235,6 +7239,7 @@ void PlumeDrawContext::EncodeDraws(plume::RenderCommandList* list,
       vb_used += vertex_count;
     }
     ++encoded;
+    segment_vertices += vertex_count;
     ++fate.drawn;
     if (snap.d3d_vertex_buffer != 0) {
       ++fate.d3d_drawn;
@@ -7549,9 +7554,12 @@ void PlumeDrawContext::EncodeDraws(plume::RenderCommandList* list,
                               snap.resolve_height ? snap.resolve_height : height, region_w,
                               region_h, snap.resolve_face, snap.resolve_cube);
           if (pass->mark) {
-            pass->mark(pass->context, snap.resolve_dest, segment_draws);
+            pass->mark(pass->context, snap.resolve_dest, segment_draws, segment_vertices,
+                       segment_binds);
           }
           segment_draws = 0;
+          segment_vertices = 0;
+          segment_binds = 0;
           bool known = false;
           for (FrameCopy& copy : frame_copies) {
             if (copy.dest == snap.resolve_dest && copy.source == snap.resolve_source &&
@@ -7684,7 +7692,7 @@ void PlumeDrawContext::EncodeDraws(plume::RenderCommandList* list,
     }
   }
   if (pass && pass->mark) {
-    pass->mark(pass->context, 0, segment_draws);
+    pass->mark(pass->context, 0, segment_draws, segment_vertices, segment_binds);
   }
   frame_encoded_draws_ = encoded;
   if (xerenge::Diagnostics()) {

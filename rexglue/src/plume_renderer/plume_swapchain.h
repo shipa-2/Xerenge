@@ -128,7 +128,9 @@ class PlumeSwapchain {
   static constexpr uint32_t kPassMarks = 62;
   struct PassMark {
     uint32_t dest;   // the copy that ended the pass; 0 for the frame's last
-    uint32_t draws;  // draws in the pass
+    uint32_t draws;     // draws in the pass
+    uint32_t vertices;  // vertices they shade
+    uint32_t binds;     // pipeline changes
   };
   bool pass_timing_ = false;
   std::vector<PassMark> pass_marks_;
@@ -138,11 +140,14 @@ class PlumeSwapchain {
   struct PassTime {
     uint64_t ns = 0;
     uint64_t draws = 0;
+    uint64_t vertices = 0;
+    uint64_t binds = 0;
     uint32_t frames = 0;
     uint32_t order = 0;  // where in the frame it came, last seen
   };
   std::vector<std::pair<uint64_t, PassTime>> pass_times_;
-  void MarkPass(plume::RenderCommandList* list, uint32_t dest, uint32_t draws);
+  void MarkPass(plume::RenderCommandList* list, uint32_t dest, uint32_t draws, uint32_t vertices,
+                uint32_t binds);
   // The marks that wrote a timestamp: all but the frame's last pass.
   uint32_t MarksWritten() const {
     return uint32_t(pass_marks_.size()) - (!pass_marks_.empty() && pass_marks_.back().dest == 0);
