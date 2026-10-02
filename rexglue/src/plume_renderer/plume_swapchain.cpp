@@ -221,8 +221,10 @@ bool PlumeSwapchain::Initialize(plume::RenderDevice* device, SDL_Window* window,
   pass_timing_ = xerenge::Diagnostics();
   query_pool_ = device_->createQueryPool(pass_timing_ ? 2 + kPassMarks : 2);
   spare_query_pool_ = device_->createQueryPool(pass_timing_ ? 2 + kPassMarks : 2);
-  // One pool per set, like the timestamps: frames may overlap.
-  if (pass_timing_) {
+  // One pool per set, like the timestamps: frames may overlap. Asked for on its
+  // own (XERENGE_FRAGMENT_COUNTS): a query around every draw stalls a tiled GPU,
+  // ten times over on the Xperia, so debug mode alone does not count.
+  if (pass_timing_ && std::getenv("XERENGE_FRAGMENT_COUNTS") != nullptr) {
     fragment_pool_ = device_->createFragmentCountQueryPool(kFragmentCounts);
     spare_fragment_pool_ = device_->createFragmentCountQueryPool(kFragmentCounts);
     if (!spare_fragment_pool_) {
