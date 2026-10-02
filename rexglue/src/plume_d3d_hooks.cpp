@@ -1186,6 +1186,11 @@ REX_HOOK_RAW(D3DDevice_DrawIndexedVertices) {
     buffers.from_interface = xerenge::DrawingInterface();
     buffers.interface_left = xerenge::DrawingInterfaceLeft();
     buffers.interface_object = xerenge::InterfaceObject();
+    // The target's size, as TakeDrawState gives the other draws: without it
+    // the reflection's faces - 128x128 targets, all of them indexed draws -
+    // were drawn over the whole frame-sized buffer rather than in its corner,
+    // and only that corner of the stretched face was copied into the cube.
+    SurfaceSize(target, buffers.target_width, buffers.target_height);
     {
       std::lock_guard lock(g_state_mutex);
       buffers.vertex_shader_object = g_state.vertex_shader;

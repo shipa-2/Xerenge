@@ -6472,6 +6472,27 @@ void PlumeDrawContext::ChooseReflectionFaces(const std::vector<GuestDrawSnapshot
     }
     if (snap.resolve_cube && snap.resolve_face < 6) {
       cube_seen = true;
+      static uint32_t described = 0;
+      if (xerenge::Diagnostics() && described < 12) {
+        ++described;
+        // What a face's draws say they draw into: matched against the copy's
+        // size to tell them from the frame's own.
+        std::map<std::tuple<uint32_t, uint32_t, bool, bool>, uint32_t> kinds;
+        for (size_t j = face_start; j < i; ++j) {
+          const GuestDrawSnapshot& face = draws[j];
+          ++kinds[{face.d3d_target_width, face.d3d_target_height, face.is_clear,
+                   face.d3d_vertex_buffer != 0}];
+        }
+        std::string text;
+        for (const auto& [kind, count] : kinds) {
+          text += fmt::format(" {}x{}{}{}:{}", std::get<0>(kind), std::get<1>(kind),
+                              std::get<2>(kind) ? " clear" : "",
+                              std::get<3>(kind) ? " d3d" : " ring", count);
+        }
+        REXLOG_INFO("plume: reflection face {} copy {}x{} (turn {}): draws by target{}",
+                    snap.resolve_face, snap.resolve_width, snap.resolve_height, reflection_turn_,
+                    text);
+      }
       if (snap.resolve_face / 2 != reflection_turn_) {
         if (skip_draw_.empty()) {
           skip_draw_.assign(draws.size(), 0);
