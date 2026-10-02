@@ -954,7 +954,7 @@ void PlumeGraphicsSystem::PublishDrawSnapshot(uint32_t prim_type, uint32_t sourc
     snap.ps_hash = pending_d3d_shaders_[1];
   }
   snap.d3d_vertex_buffer = buffers.vertex_buffer;
-  snap.interface_draw = buffers.interface;
+  snap.interface_draw = buffers.from_interface;
   snap.interface_left = buffers.interface_left;
   snap.interface_object = buffers.interface_object;
   snap.d3d_vertex_stride = buffers.vertex_stride;
@@ -1003,10 +1003,17 @@ void PlumeGraphicsSystem::PublishDrawSnapshot(uint32_t prim_type, uint32_t sourc
       // them again, byte-swapped, was 8 KB per draw for nothing, a thousand
       // draws a frame, on the title's thread.
       if (d3d_device != device) {
-        CopyDeviceDwords(memory_, snap.vs_constants.data(), d3d_device, kD3DVsFloatOffset,
-                         static_cast<uint32_t>(snap.vs_constants.size()));
-        CopyDeviceDwords(memory_, snap.ps_constants.data(), d3d_device, kD3DPsFloatOffset,
-                         static_cast<uint32_t>(snap.ps_constants.size()));
+        // Read into scratch and taken as shared blocks, like the register
+        // file's: written into the snapshot's own block instead, every draw
+        // copied the block it shared first - an allocation and 4 KB twice per
+        // draw on the title's thread, and the frees half the present thread's
+        // allocator work on the Pixel.
+        static thread_local std::array<uint32_t, 1024> vs_scratch;
+        static thread_local std::array<uint32_t, 1024> ps_scratch;
+        CopyDeviceDwords(memory_, vs_scratch.data(), d3d_device, kD3DVsFloatOffset, 1024);
+        CopyDeviceDwords(memory_, ps_scratch.data(), d3d_device, kD3DPsFloatOffset, 1024);
+        snap.vs_constants.AssignShared(vs_scratch.data(), last_device_vs_constants_);
+        snap.ps_constants.AssignShared(ps_scratch.data(), last_device_ps_constants_);
       }
       // The boolean constants steer the shaders' branches, and the ring's
       // copy belongs to the interface just like its float constants do.
@@ -1046,7 +1053,7 @@ void PlumeGraphicsSystem::PublishDrawSnapshot(uint32_t prim_type, uint32_t sourc
                     from_device[1], object_word1);
       }
       if (d3d_device != device) {
-        snap.fetch_constants = from_device;
+        snap.fetch_constants.AssignShared(from_device.data(), last_device_fetch_constants_);
       }
       fetch_from_device = true;
     }
@@ -1815,7 +1822,11 @@ void PlumeGraphicsSystem::PresentClearColorOnUiThread(uint32_t guest_width,
   const auto present_locked = std::chrono::steady_clock::now();
   g_present_encode_us = 0;
 
-  std::vector<GuestDrawSnapshot> batch;
+  // Kept from frame to frame (cleared, not freed): a frame's snapshots are a
+  // few hundred KB, which Android's allocator maps and unmaps at that size -
+  // the madvise calls were an eighth of this thread on the Pixel.
+  std::vector<GuestDrawSnapshot>& batch = present_batch_;
+  batch.clear();
   {
     // Everything this mutex protects is written by the command processor one
     // draw at a time, so however long it is held here is time that thread
@@ -1828,7 +1839,8 @@ void PlumeGraphicsSystem::PresentClearColorOnUiThread(uint32_t guest_width,
     // entries are abandoned the moment the count is reset), and sample the
     // counters into locals. The assembly below touches only this thread's own
     // state and does not need it.
-    std::vector<GuestDrawSnapshot> overlays;
+    std::vector<GuestDrawSnapshot>& overlays = present_overlays_;
+    overlays.clear();
     uint32_t pushed = 0, rejected = 0, no_vs = 0, no_ps = 0, few_indices = 0, overwritten = 0;
     uint32_t classified_video = 0;
     bool saw_video = false;
@@ -1994,7 +2006,7 @@ void PlumeGraphicsSystem::PresentClearColorOnUiThread(uint32_t guest_width,
       batch.push_back(pending_video_);
     }
     if (batch.empty()) {
-      batch = std::move(overlays);
+      batch.swap(overlays);
     } else {
       batch.insert(batch.end(), std::make_move_iterator(overlays.begin()),
                    std::make_move_iterator(overlays.end()));
