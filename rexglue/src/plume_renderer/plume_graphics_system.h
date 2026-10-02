@@ -172,7 +172,6 @@ class PlumeGraphicsSystem final : public system::IGraphicsSystem {
 
   std::mutex present_mutex_;
   std::mutex snapshot_mutex_;
-  GuestDrawSnapshot last_snapshot_;
   GuestDrawSnapshot pending_video_;
   std::vector<GuestDrawSnapshot> last_overlays_;
   std::atomic<uint64_t> last_video_key_{0};

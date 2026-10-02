@@ -1340,7 +1340,10 @@ void PlumeGraphicsSystem::PublishDrawSnapshot(uint32_t prim_type, uint32_t sourc
     if (snap.d3d_vertex_buffer != 0) {
       d3d_snapshots_pushed_.fetch_add(1, std::memory_order_relaxed);
     }
-    draw_ring_[draw_ring_next_] = snap;
+    // Moved, not copied: nothing reads the snapshot after this, and the copy
+    // (a few hundred bytes and three shared blocks per draw) was most of the
+    // title thread's memmove on the Pixel.
+    draw_ring_[draw_ring_next_] = std::move(snap);
     draw_ring_next_ = (draw_ring_next_ + 1) % kDrawRingSize;
     if (draw_ring_count_ < kDrawRingSize) {
       ++draw_ring_count_;
@@ -1350,7 +1353,6 @@ void PlumeGraphicsSystem::PublishDrawSnapshot(uint32_t prim_type, uint32_t sourc
       ++g_ring_overwritten_since_present;
     }
   }
-  last_snapshot_ = std::move(snap);
 }
 
 void PlumeGraphicsSystem::NoteShaderLoad(uint32_t object, bool pixel_shader, uint32_t microcode,
