@@ -221,9 +221,13 @@ bool PlumeSwapchain::Initialize(plume::RenderDevice* device, SDL_Window* window,
   pass_timing_ = xerenge::Diagnostics();
   query_pool_ = device_->createQueryPool(pass_timing_ ? 2 + kPassMarks : 2);
   spare_query_pool_ = device_->createQueryPool(pass_timing_ ? 2 + kPassMarks : 2);
-  // Counted per draw only while one frame is on the GPU at a time: one pool.
-  if (pass_timing_ && std::getenv("XERENGE_ASYNC_PRESENT") == nullptr) {
+  // One pool per set, like the timestamps: frames may overlap.
+  if (pass_timing_) {
     fragment_pool_ = device_->createFragmentCountQueryPool(kFragmentCounts);
+    spare_fragment_pool_ = device_->createFragmentCountQueryPool(kFragmentCounts);
+    if (!spare_fragment_pool_) {
+      fragment_pool_.reset();
+    }
     REXLOG_INFO("plume: fragments counted per draw: {}",
                 fragment_pool_ ? "yes" : "no (no pipeline statistics on this device)");
   }
@@ -455,6 +459,7 @@ void PlumeSwapchain::Shutdown() {
   query_pool_.reset();
   spare_query_pool_.reset();
   fragment_pool_.reset();
+  spare_fragment_pool_.reset();
   query_written_ = spare_query_written_ = false;
   swap_chain_.reset();
   command_queue_.reset();
@@ -755,6 +760,8 @@ void PlumeSwapchain::ClearAndPresent(float r, float g, float b, float a, DrawEnc
     std::swap(scene_pending_, spare_scene_pending_);
     std::swap(query_written_, spare_query_written_);
     std::swap(pass_marks_, spare_pass_marks_);
+    std::swap(fragment_pool_, spare_fragment_pool_);
+    std::swap(fragment_labels_, spare_fragment_labels_);
   }
   // The frame that used this set first: this frame reuses its command list,
   // its acquire semaphore and the upload buffers it read from.

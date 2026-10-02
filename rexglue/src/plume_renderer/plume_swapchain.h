@@ -153,13 +153,15 @@ class PlumeSwapchain {
     return uint32_t(pass_marks_.size()) - (!pass_marks_.empty() && pass_marks_.back().dest == 0);
   }
   std::string TakePassReport(uint64_t frames);
-  // Debug mode, frames not overlapped: fragment shader invocations, counted
+  // Debug mode: fragment shader invocations, counted
   // by the GPU around each draw (FragmentCountLabel says which). Reported
   // beside the pass times: what each pass shades a frame, and the frame's
   // heaviest draws.
   static constexpr uint32_t kFragmentCounts = 4096;
   std::unique_ptr<plume::RenderQueryPool> fragment_pool_;
+  std::unique_ptr<plume::RenderQueryPool> spare_fragment_pool_;
   std::vector<FragmentCountLabel> fragment_labels_;
+  std::vector<FragmentCountLabel> spare_fragment_labels_;
   std::vector<uint64_t> fragments_by_pass_;
   uint64_t fragment_frames_ = 0;
   std::vector<std::pair<uint64_t, FragmentCountLabel>> heaviest_draws_;
