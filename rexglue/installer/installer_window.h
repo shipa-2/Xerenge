@@ -90,6 +90,7 @@ class InstallerWindow : public QWidget {
   QCheckBox* early_submit_box_ = nullptr;
   QCheckBox* packed_vertices_box_ = nullptr;
   QCheckBox* culling_box_ = nullptr;
+  QCheckBox* reflection_split_box_ = nullptr;
   QComboBox* resolution_combo_ = nullptr;
   QCheckBox* fps_box_ = nullptr;
   // The keyboard as a pad: on or off, and a key per pad control (keybind_*).

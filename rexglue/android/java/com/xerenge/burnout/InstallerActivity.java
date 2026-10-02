@@ -95,7 +95,7 @@ public class InstallerActivity extends Activity {
     // No "Windowed" or "Xenia render" here: a phone runs full screen, and on plume.
     private CheckBox bloomBox, blurBox, debugBox;
     private Spinner languageSpinner;
-    private CheckBox asyncBox, earlySubmitBox, packedVerticesBox, cullingBox, fpsBox;
+    private CheckBox asyncBox, earlySubmitBox, packedVerticesBox, cullingBox, reflectionSplitBox, fpsBox;
     private Spinner resolutionSpinner;
     private CheckBox aspectBox;
     private TextView gpuStatus;
@@ -364,6 +364,7 @@ public class InstallerActivity extends Activity {
         earlySubmitBox = check(hacks, R.string.early_submit, R.string.early_submit_tip);
         packedVerticesBox = check(hacks, R.string.packed_vertices, R.string.packed_vertices_tip);
         cullingBox = check(hacks, R.string.culling, R.string.culling_tip);
+        reflectionSplitBox = check(hacks, R.string.reflection_split, R.string.reflection_split_tip);
         LinearLayout resolutionRow = row(hacks);
         label(resolutionRow, getString(R.string.render_resolution), 15, false, Color.WHITE).setPadding(0, 0, dp(12), 0);
         resolutionSpinner = spinner(resolutionRow, Settings.RESOLUTIONS, getString(R.string.resolution_window));
@@ -465,6 +466,7 @@ public class InstallerActivity extends Activity {
         earlySubmitBox.setChecked(s.earlySubmit);
         packedVerticesBox.setChecked(s.packedVertices);
         cullingBox.setChecked(s.culling);
+        reflectionSplitBox.setChecked(s.reflectionSplit);
         int resolution = indexOf(Settings.RESOLUTIONS, s.renderResolution);
         resolutionSpinner.setSelection(Math.max(resolution, 0));
         aspectBox.setChecked(s.aspect169);
@@ -504,6 +506,7 @@ public class InstallerActivity extends Activity {
         s.earlySubmit = earlySubmitBox.isChecked();
         s.packedVertices = packedVerticesBox.isChecked();
         s.culling = cullingBox.isChecked();
+        s.reflectionSplit = reflectionSplitBox.isChecked();
         s.renderResolution = Settings.RESOLUTIONS[resolutionSpinner.getSelectedItemPosition()][1];
         s.aspect169 = aspectBox.isChecked();
         s.fpsCounter = fpsBox.isChecked();

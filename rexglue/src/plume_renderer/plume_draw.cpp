@@ -5779,7 +5779,7 @@ void PlumeDrawContext::BindGuestTextures(plume::RenderCommandList* list,
 
   for (size_t snap_index = 0; snap_index < draws.size(); ++snap_index) {
     const GuestDrawSnapshot& snap = draws[snap_index];
-    if (!snap.valid) {
+    if (!snap.valid || Skipped(snap_index)) {
       continue;
     }
     // Every copy of the decoded frame shares one texture, uploaded once from
@@ -6453,6 +6453,47 @@ void StartEncodeWatchdog() {
 }
 }  // namespace
 
+void PlumeDrawContext::ChooseReflectionFaces(const std::vector<GuestDrawSnapshot>& draws) {
+  skip_draw_.clear();
+  static const bool split = std::getenv("XERENGE_REFLECTION_SPLIT") != nullptr;
+  if (!split) {
+    return;
+  }
+  // A face is the draws into a target of its size since the copy before, and
+  // its own copy into the cube; the faces not this frame's keep what they
+  // were drawn with last time. Clears and the video stay: they may be the
+  // frame's own, ahead of the first face.
+  bool cube_seen = false;
+  size_t face_start = 0;
+  for (size_t i = 0; i < draws.size(); ++i) {
+    const GuestDrawSnapshot& snap = draws[i];
+    if (!snap.is_resolve) {
+      continue;
+    }
+    if (snap.resolve_cube && snap.resolve_face < 6) {
+      cube_seen = true;
+      if (snap.resolve_face / 2 != reflection_turn_) {
+        if (skip_draw_.empty()) {
+          skip_draw_.assign(draws.size(), 0);
+        }
+        skip_draw_[i] = 1;
+        for (size_t j = face_start; j < i; ++j) {
+          const GuestDrawSnapshot& face = draws[j];
+          if (!face.is_clear && !face.is_resolve && !face.has_video_frame() &&
+              face.d3d_target_width == snap.resolve_width &&
+              face.d3d_target_height == snap.resolve_height) {
+            skip_draw_[j] = 1;
+          }
+        }
+      }
+    }
+    face_start = i + 1;
+  }
+  if (cube_seen) {
+    reflection_turn_ = (reflection_turn_ + 1) % 3;
+  }
+}
+
 void PlumeDrawContext::EncodeDraws(plume::RenderCommandList* list,
                                    const std::vector<GuestDrawSnapshot>& draws,
                                    memory::Memory* memory, uint32_t width, uint32_t height,
@@ -6464,6 +6505,7 @@ void PlumeDrawContext::EncodeDraws(plume::RenderCommandList* list,
   }
 
   UploadNullTexture(list);
+  ChooseReflectionFaces(draws);
   BindGuestTextures(list, draws, memory);
   // Every draw's vertex cache check at once, on the worker threads: hashing
   // index buffers and the vertex ranges they read is most of what a cached
@@ -6473,9 +6515,10 @@ void PlumeDrawContext::EncodeDraws(plume::RenderCommandList* list,
   if (cache_mapped_ && memory) {
     std::vector<const GuestDrawSnapshot*> candidates;
     candidates.reserve(draws.size());
-    for (const GuestDrawSnapshot& snap : draws) {
+    for (size_t index = 0; index < draws.size(); ++index) {
+      const GuestDrawSnapshot& snap = draws[index];
       if (snap.valid && !snap.is_clear && !snap.is_resolve && snap.d3d_vertex_buffer != 0 &&
-          !snap.has_video_frame()) {
+          !snap.has_video_frame() && !Skipped(index)) {
         candidates.push_back(&snap);
       }
     }
@@ -7348,7 +7391,7 @@ void PlumeDrawContext::EncodeDraws(plume::RenderCommandList* list,
     }
   }
   for (size_t snap_index = 0; snap_index < draws.size(); ++snap_index) {
-    if (snap_index == hoisted_video) {
+    if (snap_index == hoisted_video || Skipped(snap_index)) {
       continue;
     }
     const GuestDrawSnapshot& snap = draws[snap_index];
@@ -7481,7 +7524,7 @@ void PlumeDrawContext::EncodeDraws(plume::RenderCommandList* list,
           uint32_t area_w = 0;
           uint32_t area_h = 0;
           for (size_t j = snap_index + 1; j < draws.size(); ++j) {
-            if (j == hoisted_video) {
+            if (j == hoisted_video || Skipped(j)) {
               continue;
             }
             const GuestDrawSnapshot& next = draws[j];

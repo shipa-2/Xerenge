@@ -821,6 +821,15 @@ class PlumeDrawContext {
   bool frame_cleared_whole_ = false;
   bool frame_drawn_since_copy_ = true;
   uint32_t frame_draws_after_resolve_ = 0;
+  // XERENGE_REFLECTION_SPLIT (the installer's "Reflections in turns"): the
+  // reflection cube's six faces, each a pass of its own (11-13 ms of a 32 ms
+  // garage frame on the Xperia), drawn two a frame in turn. Per draw of the
+  // frame being encoded, whether it belongs to a face left for later; which
+  // pair of faces this frame draws.
+  std::vector<uint8_t> skip_draw_;
+  uint32_t reflection_turn_ = 0;
+  void ChooseReflectionFaces(const std::vector<GuestDrawSnapshot>& draws);
+  bool Skipped(size_t index) const { return index < skip_draw_.size() && skip_draw_[index]; }
   uint32_t frame_indices_after_resolve_ = 0;
   std::unordered_set<uint32_t> known_front_buffers_{0x06C90000, 0x068F8000};
 

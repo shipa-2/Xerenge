@@ -108,6 +108,7 @@ lang=$(value language)
 [ "$(value early_submit)" = false ] && export XERENGE_ACQUIRE_FIRST=1
 [ "$(value packed_vertices)" = false ] && export XERENGE_FULL_VERTICES=1
 [ "$(value culling)" = true ] && export XERENGE_CULL=1
+[ "$(value reflection_split)" = true ] && export XERENGE_REFLECTION_SPLIT=1
 res=$(value render_resolution)
 [ -n "$res" ] && export XERENGE_RENDER_RESOLUTION="$res"
 [ "$(value fps_counter)" = true ] && export XERENGE_FPS_SHOW=1
@@ -206,6 +207,7 @@ if /i "%async_present%"=="true" set "XERENGE_ASYNC_PRESENT=1"
 if /i "%early_submit%"=="false" set "XERENGE_ACQUIRE_FIRST=1"
 if /i "%packed_vertices%"=="false" set "XERENGE_FULL_VERTICES=1"
 if /i "%culling%"=="true" set "XERENGE_CULL=1"
+if /i "%reflection_split%"=="true" set "XERENGE_REFLECTION_SPLIT=1"
 if defined render_resolution set "XERENGE_RENDER_RESOLUTION=%render_resolution%"
 if /i "%fps_counter%"=="true" set "XERENGE_FPS_SHOW=1"
 if /i not "%aspect_16_9%"=="false" set "XERENGE_ASPECT_16_9=1"
@@ -513,6 +515,11 @@ InstallerWindow::InstallerWindow(QWidget* parent) : QWidget(parent) {
   culling_box_->setToolTip(
       tr("Skip the faces the game culls itself, as the console does. Experimental."));
   hacks_layout->addWidget(culling_box_);
+  reflection_split_box_ = new QCheckBox(tr("Reflections in turns"));
+  reflection_split_box_->setToolTip(
+      tr("Redraw two of the car reflection's six sides a frame, in turn, rather than all six. "
+         "Faster on a weak GPU; reflections lag a little."));
+  hacks_layout->addWidget(reflection_split_box_);
   auto* resolution_row = new QHBoxLayout;
   resolution_row->addWidget(new QLabel(tr("Render resolution")));
   resolution_combo_ = new QComboBox;
@@ -807,6 +814,7 @@ void InstallerWindow::LoadSettings(const QString& path) {
   flag("early_submit", early_submit_box_);
   flag("packed_vertices", packed_vertices_box_);
   flag("culling", culling_box_);
+  flag("reflection_split", reflection_split_box_);
   choice("render_resolution", resolution_combo_);
   flag("fps_counter", fps_box_);
   flag("keyboard", keyboard_box_);
@@ -893,6 +901,7 @@ void InstallerWindow::StartInstall() {
         << "early_submit = " << (early_submit_box_->isChecked() ? "true" : "false") << "\n"
         << "packed_vertices = " << (packed_vertices_box_->isChecked() ? "true" : "false") << "\n"
         << "culling = " << (culling_box_->isChecked() ? "true" : "false") << "\n"
+        << "reflection_split = " << (reflection_split_box_->isChecked() ? "true" : "false") << "\n"
         << "render_resolution = " << resolution_combo_->currentData().toString() << "\n"
         << "fps_counter = " << (fps_box_->isChecked() ? "true" : "false") << "\n"
         << "# The keyboard as a pad, and a key (or several, comma separated) per control\n"
