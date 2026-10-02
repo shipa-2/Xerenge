@@ -517,8 +517,11 @@ InstallerWindow::InstallerWindow(QWidget* parent) : QWidget(parent) {
   resolution_row->addWidget(new QLabel(tr("Render resolution")));
   resolution_combo_ = new QComboBox;
   resolution_combo_->addItem(tr("The window's"), QString());
-  resolution_combo_->addItem("1280x720", "1280x720");
   resolution_combo_->addItem("1600x900", "1600x900");
+  resolution_combo_->addItem("1280x720", "1280x720");
+  resolution_combo_->addItem("960x540", "960x540");
+  resolution_combo_->addItem("854x480", "854x480");
+  resolution_combo_->addItem("640x360", "640x360");
   resolution_combo_->setToolTip(tr("Draw the frame at this size and scale it onto the window. "
                                    "1280x720 is the size the game renders at on the console."));
   resolution_row->addWidget(resolution_combo_, 1);

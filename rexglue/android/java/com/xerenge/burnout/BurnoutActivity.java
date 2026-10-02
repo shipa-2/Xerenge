@@ -1,7 +1,10 @@
 package com.xerenge.burnout;
 
 import android.os.Bundle;
+import android.os.Process;
+import android.os.SystemClock;
 import android.system.Os;
+import android.widget.Toast;
 
 import java.io.File;
 
@@ -51,6 +54,33 @@ public class BurnoutActivity extends SDLActivity {
     @Override
     public void setOrientationBis(int w, int h, boolean resizable, String hint) {
         setRequestedOrientation(android.content.pm.ActivityInfo.SCREEN_ORIENTATION_SENSOR_LANDSCAPE);
+    }
+
+    // Back (the gesture or the button) leaves the game only when given twice:
+    // the first press says so, a second within EXIT_WINDOW_MS closes it for
+    // good - not to the background, where it would keep its memory and its
+    // sound, but out of the recent apps with the process gone.
+    private static final long EXIT_WINDOW_MS = 2000;
+    private long lastBackPress;
+    private Toast exitToast;
+
+    @Override
+    public void onBackPressed() {
+        long now = SystemClock.uptimeMillis();
+        if (lastBackPress != 0 && now - lastBackPress < EXIT_WINDOW_MS) {
+            if (exitToast != null) {
+                exitToast.cancel();
+            }
+            finishAndRemoveTask();
+            Process.killProcess(Process.myPid());
+            return;
+        }
+        lastBackPress = now;
+        if (exitToast != null) {
+            exitToast.cancel();
+        }
+        exitToast = Toast.makeText(this, R.string.press_back_to_exit, Toast.LENGTH_SHORT);
+        exitToast.show();
     }
 
     @Override

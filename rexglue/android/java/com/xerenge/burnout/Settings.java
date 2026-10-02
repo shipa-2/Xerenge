@@ -39,6 +39,9 @@ final class Settings {
         {"1440p", "2560x1440"},
         {"1080p", "1920x1080"},
         {"720p", "1280x720"},
+        {"540p", "960x540"},
+        {"480p", "854x480"},
+        {"360p", "640x360"},
     };
 
     static final String DEFAULT_SERVER = "94639.snk.wtf";
