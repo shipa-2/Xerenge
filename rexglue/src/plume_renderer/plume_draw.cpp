@@ -7347,11 +7347,77 @@ void PlumeDrawContext::EncodeDraws(plume::RenderCommandList* list,
       REXLOG_INFO("plume: queue of frame {} ({} entries):{}", frame_serial_, draws.size(), out);
     }
   }
+  // The copies made so far this frame, and how many draws and clears had
+  // reached the target by then (see the repeat test where copies are made).
+  struct FrameCopy {
+    uint32_t dest;
+    uint32_t source;
+    uint32_t face;
+    bool cube;
+    uint64_t writes;
+  };
+  std::vector<FrameCopy> frame_copies;
+  uint64_t target_writes = 0;
+  // After a copy the pass stays closed until something is drawn or cleared:
+  // copies back to back no longer open and close an empty pass between them,
+  // which on a tiled GPU loaded and stored every attachment for nothing.
+  bool pass_closed = false;
+  auto reopen_pass = [&](size_t from) {
+    pass->begin(pass->context);
+    // The part of the target the draws up to the next copy touch. The
+    // garage's reflection faces and the post-processing buffers are drawn in
+    // a corner, a 128x128 one each face; reopened over the whole target, a
+    // tiled GPU (the phones') loaded and stored all of it - colour, depth and
+    // the second target, some fifteen times a frame - for that corner. Only
+    // what a pass draws into is its area now; anything drawn whole, or
+    // unknown, keeps the whole target.
+    {
+      uint32_t area_w = 0;
+      uint32_t area_h = 0;
+      for (size_t j = from; j < draws.size(); ++j) {
+        if (j == hoisted_video) {
+          continue;
+        }
+        const GuestDrawSnapshot& next = draws[j];
+        if (next.is_resolve) {
+          break;
+        }
+        uint32_t ew = width;
+        uint32_t eh = height;
+        if (next.is_clear) {
+          if (next.clear_width != 0) {
+            native_extent(next.clear_width, next.clear_height, ew, eh);
+          }
+        } else if (next.d3d_vertex_buffer != 0 && !next.has_video_frame()) {
+          native_extent(next.d3d_target_width, next.d3d_target_height, ew, eh);
+        }
+        area_w = std::max(area_w, ew);
+        area_h = std::max(area_h, eh);
+        if (area_w >= width && area_h >= height) {
+          break;
+        }
+      }
+      if (area_w != 0 && (area_w < width || area_h < height)) {
+        const plume::RenderRect area(0, 0, int32_t(area_w), int32_t(area_h));
+        list->setRenderArea(&area);
+      }
+    }
+  };
   for (size_t snap_index = 0; snap_index < draws.size(); ++snap_index) {
     if (snap_index == hoisted_video) {
       continue;
     }
     const GuestDrawSnapshot& snap = draws[snap_index];
+    if (!snap.is_resolve) {
+      // Any draw or clear, made or refused, counts as a write: so the first copy
+      // after the pass reopens is never taken for a repeat, which the area
+      // reopen_pass picks - up to that copy - depends on.
+      ++target_writes;
+      if (pass_closed) {
+        reopen_pass(snap_index);
+        pass_closed = false;
+      }
+    }
     if (snap.is_clear) {
       if ((snap.clear_flags & 0x1u) != 0) {
         video_since_clear = false;
@@ -7439,73 +7505,65 @@ void PlumeDrawContext::EncodeDraws(plume::RenderCommandList* list,
         continue;
       }
       if (copy_in_order && pass && pass->end && pass->begin && colour_target) {
-        pass->end(pass->context);
-        plume::RenderTexture* const source =
-            (snap.resolve_source == 1 && pass->second_target) ? pass->second_target
-                                                              : colour_target;
-        uint32_t region_w = 0;
-        uint32_t region_h = 0;
-        native_extent(snap.resolve_width, snap.resolve_height, region_w, region_h);
-        {
-          // Which copies a frame makes, when that changes: the menu's video
-          // came out as its own top-left corner, blown up, only with targets
-          // followed.
-          static std::mutex seen_mutex;
-          static std::set<std::tuple<uint32_t, uint32_t, uint32_t, uint32_t>> seen;
-          std::lock_guard lock(seen_mutex);
-          if (seen.size() < 200 &&
-              seen.emplace(snap.resolve_dest, snap.resolve_width, snap.resolve_height, region_w)
-                  .second) {
-            REXLOG_INFO("plume: copy -> {:08X} {}x{} region {}x{} source {} face {} cube {}",
-                        snap.resolve_dest, snap.resolve_width, snap.resolve_height, region_w,
-                        region_h, snap.resolve_source, snap.resolve_face, snap.resolve_cube);
+        // The same copy again - into the same place, from the same target,
+        // with nothing drawn or cleared since - is left out. The tiled scene
+        // copies each of its three bands into three textures; drawn whole
+        // here, every band's copy is the whole frame: nine full-frame copies
+        // where three say it all, each a third of a millisecond on the Xperia.
+        bool repeat = false;
+        for (const FrameCopy& copy : frame_copies) {
+          if (copy.dest == snap.resolve_dest && copy.source == snap.resolve_source &&
+              copy.face == snap.resolve_face && copy.cube == snap.resolve_cube) {
+            repeat = copy.writes == target_writes;
+            break;
           }
         }
-        ResolveRenderTarget(list, source, width, height, snap.resolve_dest,
-                            snap.resolve_width ? snap.resolve_width : width,
-                            snap.resolve_height ? snap.resolve_height : height, region_w,
-                            region_h, snap.resolve_face, snap.resolve_cube);
-        if (pass->mark) {
-          pass->mark(pass->context, snap.resolve_dest, segment_draws);
-        }
-        segment_draws = 0;
-        pass->begin(pass->context);
-        // The part of the target the draws up to the next copy touch. The
-        // garage's reflection faces and the post-processing buffers are drawn in
-        // a corner, a 128x128 one each face; reopened over the whole target, a
-        // tiled GPU (the phones') loaded and stored all of it - colour, depth and
-        // the second target, some fifteen times a frame - for that corner. Only
-        // what a pass draws into is its area now; anything drawn whole, or
-        // unknown, keeps the whole target.
-        {
-          uint32_t area_w = 0;
-          uint32_t area_h = 0;
-          for (size_t j = snap_index + 1; j < draws.size(); ++j) {
-            if (j == hoisted_video) {
-              continue;
+        if (!repeat) {
+          if (!pass_closed) {
+            pass->end(pass->context);
+            pass_closed = true;
+          }
+          plume::RenderTexture* const source =
+              (snap.resolve_source == 1 && pass->second_target) ? pass->second_target
+                                                                : colour_target;
+          uint32_t region_w = 0;
+          uint32_t region_h = 0;
+          native_extent(snap.resolve_width, snap.resolve_height, region_w, region_h);
+          {
+            // Which copies a frame makes, when that changes: the menu's video
+            // came out as its own top-left corner, blown up, only with targets
+            // followed.
+            static std::mutex seen_mutex;
+            static std::set<std::tuple<uint32_t, uint32_t, uint32_t, uint32_t>> seen;
+            std::lock_guard lock(seen_mutex);
+            if (seen.size() < 200 &&
+                seen.emplace(snap.resolve_dest, snap.resolve_width, snap.resolve_height, region_w)
+                    .second) {
+              REXLOG_INFO("plume: copy -> {:08X} {}x{} region {}x{} source {} face {} cube {}",
+                          snap.resolve_dest, snap.resolve_width, snap.resolve_height, region_w,
+                          region_h, snap.resolve_source, snap.resolve_face, snap.resolve_cube);
             }
-            const GuestDrawSnapshot& next = draws[j];
-            if (next.is_resolve) {
-              break;
-            }
-            uint32_t ew = width;
-            uint32_t eh = height;
-            if (next.is_clear) {
-              if (next.clear_width != 0) {
-                native_extent(next.clear_width, next.clear_height, ew, eh);
-              }
-            } else if (next.d3d_vertex_buffer != 0 && !next.has_video_frame()) {
-              native_extent(next.d3d_target_width, next.d3d_target_height, ew, eh);
-            }
-            area_w = std::max(area_w, ew);
-            area_h = std::max(area_h, eh);
-            if (area_w >= width && area_h >= height) {
+          }
+          ResolveRenderTarget(list, source, width, height, snap.resolve_dest,
+                              snap.resolve_width ? snap.resolve_width : width,
+                              snap.resolve_height ? snap.resolve_height : height, region_w,
+                              region_h, snap.resolve_face, snap.resolve_cube);
+          if (pass->mark) {
+            pass->mark(pass->context, snap.resolve_dest, segment_draws);
+          }
+          segment_draws = 0;
+          bool known = false;
+          for (FrameCopy& copy : frame_copies) {
+            if (copy.dest == snap.resolve_dest && copy.source == snap.resolve_source &&
+                copy.face == snap.resolve_face && copy.cube == snap.resolve_cube) {
+              copy.writes = target_writes;
+              known = true;
               break;
             }
           }
-          if (area_w != 0 && (area_w < width || area_h < height)) {
-            const plume::RenderRect area(0, 0, int32_t(area_w), int32_t(area_h));
-            list->setRenderArea(&area);
+          if (!known) {
+            frame_copies.push_back({snap.resolve_dest, snap.resolve_source, snap.resolve_face,
+                                    snap.resolve_cube, target_writes});
           }
         }
         bound_pipeline = nullptr;
