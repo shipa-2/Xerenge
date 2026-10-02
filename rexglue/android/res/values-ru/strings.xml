@@ -24,8 +24,6 @@
     <string name="packed_vertices_tip">На GPU уходят только те данные вершин, что читает шейдер, а не формат на все шейдеры сразу. Меньше трафика памяти; выключите, если модели выглядят сломанными.</string>
     <string name="culling">Отсечение задних граней</string>
     <string name="culling_tip">Пропускать грани, которые игра отсекает сама, как на консоли. Экспериментально.</string>
-    <string name="reflection_split">Отражения по очереди</string>
-    <string name="reflection_split_tip">Перерисовывать за кадр две из шести сторон отражения на машине, по очереди, а не все шесть. Быстрее на слабом GPU; отражения чуть запаздывают.</string>
     <string name="press_back_to_exit">Нажмите ещё раз, чтобы выйти из игры</string>
     <string name="render_resolution">Разрешение рендера</string>
     <string name="resolution_window">Устройства</string>
