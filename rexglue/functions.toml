@@ -70,3 +70,9 @@
 # a four-instruction guard (a zero flag byte tail-branches to 0x8258BAA8, else
 # E_INVALIDARG through 0x8258BB40) that the analyser folded into nothing.
 0x8258BB30 = { size = 0x10 }
+
+# Saving a Burnout clip died on "call to an unregistered function at
+# 0x823D9200": six instructions between the end of 0x823D90E8 (a formatter,
+# its last a branch at 0x823D91FC) and 0x823D9218, reached only through a
+# function pointer, so the analyser never made them a function.
+0x823D9200 = { size = 0x18 }

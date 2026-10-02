@@ -15,6 +15,7 @@
 #include <cstring>
 
 #include <rex/hook.h>
+#include <rex/logging.h>
 #include <rex/ppc.h>
 #include "guest_memory.h"
 
@@ -74,4 +75,21 @@ REX_HOOK_RAW(sub_821436D0) {
     }
   }
   __imp__sub_821436D0(ctx, base);
+}
+
+// D3DX's CImage::LoadJPG (0x823C2CF0), on saving a Burnout clip. Its libjpeg
+// reports a bad stream by longjmp-ing out of its error handler, which the
+// recompiled code cannot do: decoding went on past the error and read through
+// a null decompressor at +0x1A4 (sub_823D85F8, its marker reader) for good.
+// Saying the image cannot be read is what the title is ready for - a failed
+// D3DX call - and the clip saves without that picture.
+extern "C" void __imp__sub_823C2CF0(PPCContext& __restrict, uint8_t*);
+REX_HOOK_RAW(sub_823C2CF0) {
+  (void)base;
+  static bool told = false;
+  if (!told) {
+    told = true;
+    REXLOG_WARN("D3DX LoadJPG refused (libjpeg cannot unwind its errors here)");
+  }
+  ctx.r3.u64 = 0x80004005u;  // E_FAIL
 }
