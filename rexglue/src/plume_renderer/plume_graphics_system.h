@@ -243,6 +243,9 @@ class PlumeGraphicsSystem final : public system::IGraphicsSystem {
   // the most recent one lost the rest.
   std::deque<uint32_t> pending_shader_objects_[2];
   std::atomic<uint64_t> last_present_ms_{0};
+  // Vblanks a swap is paced to (PaceSwapToVblank): 2 in Crash mode and with the
+  // 30 fps lock. PresentedRecently's grace is that many frames longer.
+  std::atomic<uint32_t> pace_interval_{1};
  public:
   // Front buffer address named by the last XE_SWAP packet.
   std::atomic<uint32_t> swap_frontbuffer_{0};

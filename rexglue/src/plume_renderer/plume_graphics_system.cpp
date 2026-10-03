@@ -1554,7 +1554,9 @@ bool PlumeGraphicsSystem::PresentedRecently() const {
   // Three frames' grace at sixty. Long enough that the ring keeps ownership
   // whenever it is working at all, short enough that a stall is caught before
   // the screen visibly freezes.
-  return now - last < 50;
+  // Three frames at the pace swaps go at: at thirty a slow frame passed 50 ms,
+  // the title's Swap presented as well, and the menu showed its video alone.
+  return now - last < 50 * uint64_t(pace_interval_.load(std::memory_order_relaxed));
 }
 
 namespace {
@@ -1589,6 +1591,7 @@ void PlumeGraphicsSystem::PaceSwapToVblank() {
     clock_provider(&clock, sizeof(clock));
     interval = clock.vblanks_per_frame == 2 ? 2u : 1u;
   }
+  pace_interval_.store(interval, std::memory_order_relaxed);
   {
     static uint32_t shown_interval = 0;
     if (interval != shown_interval) {
