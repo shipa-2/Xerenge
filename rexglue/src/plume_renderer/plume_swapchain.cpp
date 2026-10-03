@@ -9,9 +9,14 @@
 #include "plume_renderer/plume_swapchain.h"
 
 #include "diagnostics.h"
+#include "plume_renderer/plume_framegen.h"
 
 #include <SDL3/SDL.h>
 #include <SDL3/SDL_vulkan.h>
+
+#ifdef __ANDROID__
+#include <dlfcn.h>
+#endif
 
 #include <plume_render_interface.h>
 
@@ -152,6 +157,30 @@ plume::RenderWindow NativeRenderWindow(SDL_Window* window, void* native_window) 
 #endif
 }
 
+// Frame generation on Android: the panel runs at the rate the system picks for
+// what is on screen, sixty for an app that has not said otherwise - so say.
+// ANativeWindow_setFrameRate is API 30, looked up rather than linked (29 is
+// the minimum).
+void AskForFrameRate(void* window) {
+#ifdef __ANDROID__
+  if (!window || !FrameGenerationEnabled()) {
+    return;
+  }
+  using SetFrameRate = int32_t (*)(void*, float, int8_t);
+  static const SetFrameRate set = [] {
+    void* android = dlopen("libandroid.so", RTLD_NOW | RTLD_NOLOAD);
+    return android ? reinterpret_cast<SetFrameRate>(dlsym(android, "ANativeWindow_setFrameRate"))
+                   : nullptr;
+  }();
+  const float rate = FrameGenerationTarget() ? float(FrameGenerationTarget()) : 120.0f;
+  const int32_t result = set ? set(window, rate, 0) : -1;
+  REXLOG_INFO("plume: frame generation - asked the display for {:.0f} Hz ({})", rate,
+              result == 0 ? "accepted" : "not available");
+#else
+  (void)window;
+#endif
+}
+
 }  // namespace
 
 PlumeSwapchain::~PlumeSwapchain() {
@@ -188,12 +217,15 @@ bool PlumeSwapchain::Initialize(plume::RenderDevice* device, SDL_Window* window,
   }
 #ifdef __ANDROID__
   android_window_ = render_window;
+  AskForFrameRate(render_window);
 #endif
 
   // XERENGE_UNLOCK_FPS: no vsync on the host side either (immediate present,
   // where the driver has it), so the frame rate is whatever the renderer
   // manages. The game's logic steps once per frame, so it runs fast with it.
-  if (std::getenv("XERENGE_UNLOCK_FPS") != nullptr) {
+  // XERENGE_NO_HOST_VSYNC: the same for the screen alone - the title still
+  // paced by its own vblank (testing frame generation on a slower screen).
+  if (std::getenv("XERENGE_UNLOCK_FPS") != nullptr || std::getenv("XERENGE_NO_HOST_VSYNC") != nullptr) {
     swap_chain_->setVsyncEnabled(false);
     REXLOG_WARN("plume: frame rate unlocked - the game runs faster than it should");
   }
@@ -684,7 +716,8 @@ bool PlumeSwapchain::FollowAndroidWindow() {
   static uint32_t failures = 0;
   swap_chain_ = command_queue_->createSwapChain(plume::RenderSwapChainDesc(
       static_cast<plume::RenderWindow>(current), kSwapchainFormat, kBufferCount));
-  if (swap_chain_ && std::getenv("XERENGE_UNLOCK_FPS") != nullptr) {
+  if (swap_chain_ && (std::getenv("XERENGE_UNLOCK_FPS") != nullptr ||
+                      std::getenv("XERENGE_NO_HOST_VSYNC") != nullptr)) {
     swap_chain_->setVsyncEnabled(false);
   }
   if (!swap_chain_ || !swap_chain_->resize()) {
@@ -707,6 +740,7 @@ bool PlumeSwapchain::FollowAndroidWindow() {
   }
   REXLOG_INFO("plume: swap chain made again on the new window surface ({}x{})", last_width_,
               last_height_);
+  AskForFrameRate(current);
   return true;
 #else
   return true;
@@ -1078,6 +1112,19 @@ void PlumeSwapchain::ClearAndPresent(float r, float g, float b, float a, DrawEnc
       last_report = fence_done;
     }
   }
+}
+
+}  // namespace rex::plume_renderer
+
+namespace rex::plume_renderer {
+
+float PlumeSwapchain::DisplayRefreshHz() const {
+  if (!window_) {
+    return 0.0f;
+  }
+  const SDL_DisplayID display = SDL_GetDisplayForWindow(window_);
+  const SDL_DisplayMode* mode = display ? SDL_GetCurrentDisplayMode(display) : nullptr;
+  return mode ? mode->refresh_rate : 0.0f;
 }
 
 }  // namespace rex::plume_renderer

@@ -72,6 +72,8 @@ class PlumeSwapchain {
                        void* encode_context = nullptr, ResolveFn resolve = nullptr,
                        bool hold = false);
   bool CanHoldFrames() const { return scene_texture_ != nullptr; }
+  // The refresh rate of the display the window is on, in Hz; 0 when unknown.
+  float DisplayRefreshHz() const;
 
  private:
   void CreateFramebuffers();

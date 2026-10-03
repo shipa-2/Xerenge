@@ -34,6 +34,7 @@
 
 #include "frame_clock_provider.h"
 #include "plume_renderer/plume_draw.h"
+#include "plume_renderer/plume_framegen.h"
 #include "plume_renderer/plume_interp.h"
 #include "plume_renderer/plume_parallel.h"
 #include "plume_renderer/plume_shader_cache.h"
@@ -2112,7 +2113,44 @@ void PlumeGraphicsSystem::PresentClearColorOnUiThread(uint32_t guest_width,
   // the last picture again, rather than a blink of the bare background.
   const bool hold = swapchain_->CanHoldFrames() && draw_context_ &&
                     draw_context_->HoldsThinFrame(batch);
+  // Frame generation: the frames between the title's last frame and this
+  // one go up first, then this one (plume_framegen.h). They take none of
+  // this frame's pending copies - their resolve only shows the picture.
+  const uint32_t can_generate = FramesToGenerate();
+  const uint32_t generate = hold || framegen_previous_.empty() ? 0u : can_generate;
+  if (generate != 0) {
+    const FramePairing pairing = PairFrames(framegen_previous_, batch);
+    static uint32_t reports = 0;
+    if (reports < 8 || (reports % 600) == 0) {
+      REXLOG_INFO("plume: frame generation - {} frame(s) between, {} draws followed, {} jumped{}",
+                  generate, pairing.matches.size(), pairing.jumped, pairing.cut ? ", a cut" : "");
+    }
+    ++reports;
+    if (!pairing.cut) {
+      auto show_only = [](void* raw, plume::RenderCommandList* list, uint32_t width,
+                          uint32_t height, plume::RenderTexture* color, const RenderPassBreak&) {
+        auto* encode_ctx = static_cast<EncodeCtx*>(raw);
+        if (encode_ctx->draw && encode_ctx->system) {
+          encode_ctx->draw->PresentResolvedFrame(
+              list, color, width, height,
+              encode_ctx->system->swap_frontbuffer_.load(std::memory_order_relaxed));
+        }
+      };
+      for (uint32_t k = 1; k <= generate; ++k) {
+        BuildInBetween(framegen_previous_, batch, pairing, float(k) / float(generate + 1),
+                       framegen_batch_);
+        EncodeCtx between{draw_context_.get(), memory_, &framegen_batch_, this};
+        swapchain_->ClearAndPresent(0.03f, 0.04f, 0.07f, 1.0f, encode, &between, show_only,
+                                    false);
+      }
+    }
+  }
   swapchain_->ClearAndPresent(0.03f, 0.04f, 0.07f, 1.0f, encode, &ctx, resolve, hold);
+  if (FrameGenerationEnabled() && !hold) {
+    // Kept for the next frame's frames between: swapped, not copied - this
+    // frame's list is cleared and refilled next time either way.
+    framegen_previous_.swap(batch);
+  }
   // A slow frame, split: waiting for this renderer's lock, taking the queue,
   // encoding the draws (textures included), and the rest of the swapchain's
   // work - acquire, submit, present, fences.
@@ -4029,6 +4067,98 @@ void PlumeGraphicsSystem::Shutdown() {
   draw_indexed_indices_ = 0;
   shader_cache_hits_ = 0;
   shader_cache_misses_ = 0;
+}
+
+}  // namespace rex::plume_renderer
+
+namespace rex::plume_renderer {
+
+uint32_t PlumeGraphicsSystem::FramesToGenerate() {
+  if (!FrameGenerationEnabled() || !swapchain_) {
+    return 0;
+  }
+  // The title's rate: sixty, or thirty in Crash mode (its clock says which).
+  uint32_t vblanks = 1;
+  if (const RexFrameClockProviderFn clock_provider = RexFrameClockProvider()) {
+    struct {
+      uint64_t frame;
+      uint32_t steps_this_frame, epoch;
+      double state_steps, real_steps;
+      uint32_t valid, vblanks_per_frame;
+    } clock{};
+    clock_provider(&clock, sizeof(clock));
+    vblanks = clock.vblanks_per_frame == 2 ? 2u : 1u;
+  }
+  const double title_hz = 60.0 / double(vblanks);
+  const double period_us = 1e6 / title_hz;
+
+  // How often the title's frames come, on average. It waits for this thread,
+  // so frames between that cost more than it has to spare slow the game
+  // itself (it is frame-locked): then they are left out for a while, and for
+  // longer each time it happens again.
+  const auto now = std::chrono::steady_clock::now();
+  if (framegen_last_arrival_.time_since_epoch().count() != 0) {
+    const double interval =
+        double(std::chrono::duration_cast<std::chrono::microseconds>(now - framegen_last_arrival_)
+                   .count());
+    framegen_interval_us_ = framegen_interval_us_ == 0.0
+                                ? interval
+                                : framegen_interval_us_ * 0.9 + std::min(interval, 4 * period_us) * 0.1;
+  }
+  framegen_last_arrival_ = now;
+  static bool generating = false;
+  if (now < framegen_paused_until_) {
+    generating = false;
+    return 0;
+  }
+
+  // The screen's rate: the one asked for, else the display's own.
+  static float display_hz = 0.0f;
+  static auto display_checked = std::chrono::steady_clock::time_point{};
+  if (now - display_checked > std::chrono::seconds(1)) {
+    display_checked = now;
+    const float hz = swapchain_->DisplayRefreshHz();
+    if (hz != display_hz) {
+      REXLOG_INFO("plume: frame generation - display at {:.1f} Hz{}", hz,
+                  FrameGenerationTarget() ? fmt::format(", {} Hz asked for", FrameGenerationTarget())
+                                          : std::string());
+      display_hz = hz;
+    }
+  }
+  const double target_hz = FrameGenerationTarget() ? double(FrameGenerationTarget()) : double(display_hz);
+  const uint32_t frames =
+      uint32_t(std::clamp(std::lround(target_hz / title_hz) - 1, 0l, 3l));
+
+  static auto generating_since = now;
+  if (generating && frames != 0 && framegen_interval_us_ > period_us * 1.12) {
+    // Far slower: a loading screen, not these frames - a second off, no
+    // longer. A little slower: these frames are what it cannot afford, and
+    // they stay off longer each time.
+    const bool loading = framegen_interval_us_ > period_us * 1.6;
+    const uint32_t seconds = loading ? 1u : framegen_backoff_s_;
+    REXLOG_WARN("plume: frame generation - the title slowed to {:.1f} fps, off for {} s{}",
+                1e6 / framegen_interval_us_, seconds, loading ? " (loading)" : "");
+    framegen_paused_until_ = now + std::chrono::seconds(seconds);
+    if (!loading) {
+      framegen_backoff_s_ = std::min(framegen_backoff_s_ * 2, 64u);
+    }
+    framegen_interval_us_ = 0.0;
+    generating = false;
+    return 0;
+  }
+  // A good while without trouble: the next time starts short again.
+  if (generating && now - generating_since > std::chrono::seconds(20)) {
+    framegen_backoff_s_ = 2;
+  }
+  if (!generating && frames != 0) {
+    generating_since = now;
+  }
+  if (!generating && frames != 0) {
+    // Measured afresh with the frames between.
+    framegen_interval_us_ = 0.0;
+  }
+  generating = frames != 0;
+  return frames;
 }
 
 }  // namespace rex::plume_renderer

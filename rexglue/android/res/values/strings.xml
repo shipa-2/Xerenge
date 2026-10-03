@@ -35,6 +35,8 @@
     <string name="fps_counter_tip">Frames per second in the top left corner.</string>
     <string name="fps_30">30 fps lock</string>
     <string name="fps_30_tip">An even thirty frames a second, for a device that cannot hold sixty: each frame runs two of the game\'s logic steps, as Crash mode does on the console.</string>
+    <string name="frame_generation">Frame generation (120 Hz)</string>
+    <string name="frame_generation_tip">For a 120 Hz screen: a frame drawn between each two of the game\'s, the picture a frame behind. The game runs at its sixty as ever (thirty in Crash mode); on a device without the power to spare it switches itself off.</string>
     <string name="install_path">Install path</string>
     <string name="section_gpu">Graphics driver</string>
     <string name="gpu_ok">The system Vulkan driver is recent enough (1.1 or newer).</string>

@@ -7,6 +7,7 @@
 #include <unordered_set>
 
 #include <array>
+#include <atomic>
 #include <cstring>
 #include <cstdint>
 #include <map>

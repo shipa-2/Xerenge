@@ -189,6 +189,17 @@ class PlumeGraphicsSystem final : public system::IGraphicsSystem {
   // The present's draw lists, reused from frame to frame (PresentClearColorOnUiThread).
   std::vector<GuestDrawSnapshot> present_batch_;
   std::vector<GuestDrawSnapshot> present_overlays_;
+  // Frame generation (plume_framegen.h): the title's frame before the one being
+  // presented, the frame drawn between them, and whether generating is held
+  // off - the title waits for this thread, so when the frames between cost it
+  // its own rate they are dropped for a while (longer each time).
+  std::vector<GuestDrawSnapshot> framegen_previous_;
+  std::vector<GuestDrawSnapshot> framegen_batch_;
+  std::chrono::steady_clock::time_point framegen_last_arrival_{};
+  std::chrono::steady_clock::time_point framegen_paused_until_{};
+  double framegen_interval_us_ = 0.0;
+  uint32_t framegen_backoff_s_ = 2;
+  uint32_t FramesToGenerate();
   // The constant blocks of the last snapshot published (title thread only):
   // the next one shares them when its words are the same (AssignShared).
   SharedWords<1024> last_vs_constants_;

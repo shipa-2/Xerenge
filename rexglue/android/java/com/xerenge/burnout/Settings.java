@@ -54,6 +54,7 @@ final class Settings {
     String lobbyServer = DEFAULT_SERVER;
     boolean asyncPresent, earlySubmit = true, packedVertices = true, culling, fpsCounter;
     boolean fps30;  // two logic steps and two vblanks a frame: an even 30
+    boolean frameGeneration;  // frames drawn between the game's, for a 120 Hz screen
     String renderResolution = "";
     boolean aspect169 = true;  // Android: keep the frame 16:9, black bars on a wider screen
     // On-screen controls (Android only; the desktop has the keyboard instead).
@@ -135,6 +136,7 @@ final class Settings {
         settings.aspect169 = flag(v, "aspect_16_9", settings.aspect169);
         settings.fpsCounter = flag(v, "fps_counter", settings.fpsCounter);
         settings.fps30 = flag(v, "fps_30", settings.fps30);
+        settings.frameGeneration = flag(v, "frame_generation", settings.frameGeneration);
         settings.touchControls = flag(v, "touch_controls", settings.touchControls);
         try {
             if (v.containsKey("touch_opacity")) {
@@ -182,6 +184,7 @@ final class Settings {
            .append("aspect_16_9 = ").append(tf(aspect169)).append('\n')
            .append("fps_counter = ").append(tf(fpsCounter)).append('\n')
            .append("fps_30 = ").append(tf(fps30)).append('\n')
+           .append("frame_generation = ").append(tf(frameGeneration)).append('\n')
            .append("# On-screen controls: translucent pad buttons over the game, and how opaque (percent)\n")
            .append("touch_controls = ").append(tf(touchControls)).append('\n')
            .append("touch_opacity = ").append(touchOpacity).append('\n');
@@ -254,6 +257,7 @@ final class Settings {
         if (!"false".equals(value("aspect_16_9"))) env("XERENGE_ASPECT_16_9", "1");
         if ("true".equals(value("fps_counter"))) env("XERENGE_FPS_SHOW", "1");
         if ("true".equals(value("fps_30"))) env("XERENGE_FPS_30", "1");
+        if ("true".equals(value("frame_generation"))) env("XERENGE_FRAME_GENERATION", "120");
         if ("true".equals(value("debug"))) {
             // The renderer's own counting and timing, per draw: debug mode only.
             env("XERENGE_DEBUG", "1");
