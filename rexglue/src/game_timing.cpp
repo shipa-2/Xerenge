@@ -120,6 +120,14 @@ REX_HOOK_RAW(sub_82363E68) {
     }
     g_doubled_next_frame = true;
   }
+  {
+    static bool shown = false;
+    if (!shown && FramesLockedTo30()) {
+      shown = true;
+      REXLOG_INFO("game timing: 30 fps lock - the timer asked for {} to {} steps, given {} to {}",
+                  g_doubled_next_frame ? 1u : ctx.r4.u32, ctx.r5.u32, ctx.r4.u32, ctx.r5.u32);
+    }
+  }
   g_clock.vblanks_per_frame = ctx.r4.u32 == 2 ? 2u : 1u;
   if (LogicFollowsWallClock() && timer >= 0x10000 && timer < 0xA0000000u) {
     const uint32_t mode = LoadU32(base, timer);

@@ -20,6 +20,16 @@ using RexFrameClockProviderFn = void (*)(void*, size_t);
 
 RexFrameClockProviderFn RexFrameClockProvider();
 
+#elif defined(__ANDROID__)
+
+// Android as well: the game is libmain.so, which Java loads into the app's own
+// namespace, and the plugin's plain extern came out null there - Crash mode's
+// and the 30 fps lock's pacing never reached the renderer. Looked up in
+// libmain.so by name instead (frame_clock_provider_android.cpp).
+#define REX_HOST_EXPORT __attribute__((visibility("default")))
+
+RexFrameClockProviderFn RexFrameClockProvider();
+
 #else
 
 #define REX_HOST_EXPORT

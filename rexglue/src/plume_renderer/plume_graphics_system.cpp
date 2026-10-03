@@ -1589,6 +1589,14 @@ void PlumeGraphicsSystem::PaceSwapToVblank() {
     clock_provider(&clock, sizeof(clock));
     interval = clock.vblanks_per_frame == 2 ? 2u : 1u;
   }
+  {
+    static uint32_t shown_interval = 0;
+    if (interval != shown_interval) {
+      shown_interval = interval;
+      REXLOG_INFO("plume: swaps paced at every {} vblank(s){}", interval,
+                  RexFrameClockProvider() ? "" : " (no frame clock from the game)");
+    }
+  }
   vblank_cv_.wait_for(lock, std::chrono::milliseconds(100), [this, interval] {
     return vblank_count_.load(std::memory_order_acquire) >= last_swap_vblank_ + interval;
   });
