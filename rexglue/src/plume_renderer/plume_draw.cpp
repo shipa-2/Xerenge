@@ -6583,10 +6583,14 @@ void PlumeDrawContext::EncodeDraws(plume::RenderCommandList* list,
     std::vector<Job> jobs;
     jobs.reserve(draws.size());
     size_t total = 0;
-    for (const GuestDrawSnapshot& snap : draws) {
+    for (size_t index = 0; index < draws.size(); ++index) {
+      const GuestDrawSnapshot& snap = draws[index];
+      // Nor a draw left out this frame (a reflection face drawn another
+      // time): unpacked for nothing, the four faces skipped cost the phone
+      // some 35 ms a frame of the worker threads' time.
       if (!snap.valid || snap.is_clear || snap.is_resolve || snap.d3d_vertex_buffer == 0 ||
           snap.d3d_vertex_stride == 0 || snap.has_video_frame() || snap.num_indices == 0 ||
-          snap.num_indices > kVertsPerFrame) {
+          snap.num_indices > kVertsPerFrame || Skipped(index)) {
         continue;
       }
       if (auto check = mesh_checks_.find(&snap); check != mesh_checks_.end() && check->second.hit) {
