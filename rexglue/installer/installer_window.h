@@ -92,6 +92,7 @@ class InstallerWindow : public QWidget {
   QCheckBox* culling_box_ = nullptr;
   QCheckBox* reflection_split_box_ = nullptr;
   QComboBox* resolution_combo_ = nullptr;
+  QComboBox* anisotropy_combo_ = nullptr;
   QCheckBox* fps_box_ = nullptr;
   QCheckBox* fps30_box_ = nullptr;
   QCheckBox* framegen_box_ = nullptr;

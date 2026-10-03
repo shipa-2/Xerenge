@@ -30,6 +30,9 @@
     <string name="render_resolution">Разрешение рендера</string>
     <string name="resolution_window">Устройства</string>
     <string name="render_resolution_tip">Рисовать кадр в этом размере и масштабировать на экран. 720p — размер, в котором игра рисует на консоли; чем меньше, тем быстрее.</string>
+    <string name="anisotropy">Анизотропная фильтрация</string>
+    <string name="anisotropy_off">Выключена</string>
+    <string name="anisotropy_tip">Дорога остаётся чёткой вдали. Игра просит 8x; 4x выглядит почти так же и дешевле для GPU телефона; выключенная — быстрее всего.</string>
     <string name="aspect_16_9">Фиксировать 16:9</string>
     <string name="aspect_16_9_tip">Кадр сохраняет консольное соотношение 16:9, с чёрными полосами на более широком экране. Если выключено, игра заполняет широкий экран: по бокам видно больше, ничего не растягивается, а интерфейс остаётся по центру в 16:9.</string>
     <string name="fps_counter">Счётчик кадров</string>

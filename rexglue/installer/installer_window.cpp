@@ -111,6 +111,9 @@ lang=$(value language)
 [ "$(value reflection_split)" = true ] && export XERENGE_REFLECTION_SPLIT=1
 res=$(value render_resolution)
 [ -n "$res" ] && export XERENGE_RENDER_RESOLUTION="$res"
+aniso=$(value anisotropy)
+if [ "$aniso" = off ]; then export XERENGE_MAX_ANISOTROPY=1
+elif [ -n "$aniso" ]; then export XERENGE_MAX_ANISOTROPY="$aniso"; fi
 [ "$(value fps_counter)" = true ] && export XERENGE_FPS_SHOW=1
 [ "$(value fps_30)" = true ] && export XERENGE_FPS_30=1
 [ "$(value frame_generation)" = true ] && export XERENGE_FRAME_GENERATION=120
@@ -211,6 +214,7 @@ if /i "%packed_vertices%"=="false" set "XERENGE_FULL_VERTICES=1"
 if /i "%culling%"=="true" set "XERENGE_CULL=1"
 if /i "%reflection_split%"=="true" set "XERENGE_REFLECTION_SPLIT=1"
 if defined render_resolution set "XERENGE_RENDER_RESOLUTION=%render_resolution%"
+if /i "%anisotropy%"=="off" (set "XERENGE_MAX_ANISOTROPY=1") else if defined anisotropy set "XERENGE_MAX_ANISOTROPY=%anisotropy%"
 if /i "%fps_counter%"=="true" set "XERENGE_FPS_SHOW=1"
 if /i "%fps_30%"=="true" set "XERENGE_FPS_30=1"
 if /i "%frame_generation%"=="true" set "XERENGE_FRAME_GENERATION=120"
@@ -537,6 +541,18 @@ InstallerWindow::InstallerWindow(QWidget* parent) : QWidget(parent) {
                                    "1280x720 is the size the game renders at on the console."));
   resolution_row->addWidget(resolution_combo_, 1);
   hacks_layout->addLayout(resolution_row);
+  auto* anisotropy_row = new QHBoxLayout;
+  anisotropy_row->addWidget(new QLabel(tr("Anisotropic filtering")));
+  anisotropy_combo_ = new QComboBox;
+  anisotropy_combo_->addItem(tr("Off"), "off");
+  anisotropy_combo_->addItem("4x", "4");
+  anisotropy_combo_->addItem("8x", "8");
+  anisotropy_combo_->setCurrentIndex(2);
+  anisotropy_combo_->setToolTip(tr("Keeps the road sharp into the distance. The game asks for "
+                                   "8x; 4x looks nearly the same and costs a weak GPU less; "
+                                   "off is fastest."));
+  anisotropy_row->addWidget(anisotropy_combo_, 1);
+  hacks_layout->addLayout(anisotropy_row);
   fps_box_ = new QCheckBox(tr("Frame counter"));
   fps_box_->setToolTip(tr("Frames per second in the top left corner."));
   hacks_layout->addWidget(fps_box_);
@@ -831,6 +847,7 @@ void InstallerWindow::LoadSettings(const QString& path) {
   flag("culling", culling_box_);
   flag("reflection_split", reflection_split_box_);
   choice("render_resolution", resolution_combo_);
+  choice("anisotropy", anisotropy_combo_);
   flag("fps_counter", fps_box_);
   flag("fps_30", fps30_box_);
   flag("frame_generation", framegen_box_);
@@ -920,6 +937,7 @@ void InstallerWindow::StartInstall() {
         << "culling = " << (culling_box_->isChecked() ? "true" : "false") << "\n"
         << "reflection_split = " << (reflection_split_box_->isChecked() ? "true" : "false") << "\n"
         << "render_resolution = " << resolution_combo_->currentData().toString() << "\n"
+        << "anisotropy = " << anisotropy_combo_->currentData().toString() << "\n"
         << "fps_counter = " << (fps_box_->isChecked() ? "true" : "false") << "\n"
         << "fps_30 = " << (fps30_box_->isChecked() ? "true" : "false") << "\n"
         << "frame_generation = " << (framegen_box_->isChecked() ? "true" : "false") << "\n"

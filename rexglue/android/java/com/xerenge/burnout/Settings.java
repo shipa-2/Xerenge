@@ -44,6 +44,13 @@ final class Settings {
         {"360p", "640x360"},
     };
 
+    /** Anisotropic filtering at most: label (null: off) and value. */
+    static final String[][] ANISOTROPY = {
+        {null, "off"},
+        {"4x", "4"},
+        {"8x", "8"},
+    };
+
     static final String DEFAULT_SERVER = "94639.snk.wtf";
 
     // What the installer's controls hold.
@@ -57,6 +64,7 @@ final class Settings {
     boolean frameGeneration;  // frames drawn between the game's, for a 120 Hz screen
     boolean reflectionSplit;  // two of the reflection cube's faces a frame
     String renderResolution = "";
+    String anisotropy = "4";  // the title asks 8 of the road; 4 costs a phone less
     boolean aspect169 = true;  // Android: keep the frame 16:9, black bars on a wider screen
     // On-screen controls (Android only; the desktop has the keyboard instead).
     boolean touchControls = true;
@@ -135,6 +143,9 @@ final class Settings {
         if (v.containsKey("render_resolution")) {
             settings.renderResolution = v.get("render_resolution");
         }
+        if (v.containsKey("anisotropy") && !v.get("anisotropy").isEmpty()) {
+            settings.anisotropy = v.get("anisotropy");
+        }
         settings.aspect169 = flag(v, "aspect_16_9", settings.aspect169);
         settings.fpsCounter = flag(v, "fps_counter", settings.fpsCounter);
         settings.fps30 = flag(v, "fps_30", settings.fps30);
@@ -183,6 +194,8 @@ final class Settings {
            .append("culling = ").append(tf(culling)).append('\n')
            .append("reflection_split = ").append(tf(reflectionSplit)).append('\n')
            .append("render_resolution = ").append(renderResolution).append('\n')
+           .append("# Anisotropic filtering at most: off, 4 or 8\n")
+           .append("anisotropy = ").append(anisotropy).append('\n')
            .append("# Keep the frame 16:9 (black bars on a wider screen)\n")
            .append("aspect_16_9 = ").append(tf(aspect169)).append('\n')
            .append("fps_counter = ").append(tf(fpsCounter)).append('\n')
@@ -258,6 +271,8 @@ final class Settings {
         if ("true".equals(value("culling"))) env("XERENGE_CULL", "1");
         if ("true".equals(value("reflection_split"))) env("XERENGE_REFLECTION_SPLIT", "1");
         if (!value("render_resolution").isEmpty()) env("XERENGE_RENDER_RESOLUTION", value("render_resolution"));
+        if ("off".equals(value("anisotropy"))) env("XERENGE_MAX_ANISOTROPY", "1");
+        else if (!value("anisotropy").isEmpty()) env("XERENGE_MAX_ANISOTROPY", value("anisotropy"));
         if (!"false".equals(value("aspect_16_9"))) env("XERENGE_ASPECT_16_9", "1");
         if ("true".equals(value("fps_counter"))) env("XERENGE_FPS_SHOW", "1");
         if ("true".equals(value("fps_30"))) env("XERENGE_FPS_30", "1");

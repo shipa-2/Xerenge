@@ -31,6 +31,9 @@
     <string name="render_resolution">Render resolution</string>
     <string name="resolution_window">The device\'s</string>
     <string name="render_resolution_tip">Draw the frame at this size and scale it onto the screen. 720p is the size the game renders at on the console; lower is faster.</string>
+    <string name="anisotropy">Anisotropic filtering</string>
+    <string name="anisotropy_off">Off</string>
+    <string name="anisotropy_tip">Keeps the road sharp into the distance. The game asks for 8x; 4x looks nearly the same and costs the phone\'s GPU less; off is fastest.</string>
     <string name="aspect_16_9">Keep 16:9</string>
     <string name="aspect_16_9_tip">The frame keeps the console\'s 16:9 shape, with black bars on a wider screen. Off, the game fills a wider screen: you see more to either side, with nothing stretched, and the interface stays in the middle at 16:9.</string>
     <string name="fps_counter">Frame counter</string>
