@@ -900,10 +900,33 @@ class PlumeDrawContext {
   std::unordered_map<uint64_t, std::vector<VfetchAttr>> vfetch_by_shader_;
   std::unordered_map<uint64_t, std::unique_ptr<ResolvedShaderVfetch>> resolved_vfetch_by_shader_;
 
+  // Bumped when the map is cleared (Shutdown): the entries are otherwise never
+  // replaced, so a pointer found once stays good.
+  std::atomic<uint64_t> vfetch_generation_{0};
+  // Several lookups a draw, from the encoder and the worker threads: each
+  // thread keeps the pointers it found, rather than taking the lock - an
+  // atomic pair per lookup, thousands a frame on the phone.
   const ResolvedShaderVfetch* FindResolvedVfetch(uint64_t vs_hash) const {
+    struct Found {
+      const PlumeDrawContext* owner = nullptr;
+      uint64_t generation = 0;
+      uint64_t hash = 0;
+      const ResolvedShaderVfetch* info = nullptr;
+    };
+    thread_local std::array<Found, 64> found{};
+    Found& slot = found[(vs_hash ^ (vs_hash >> 32)) & 63];
+    const uint64_t generation = vfetch_generation_.load(std::memory_order_acquire);
+    if (slot.info && slot.hash == vs_hash && slot.owner == this && slot.generation == generation) {
+      return slot.info;
+    }
     std::shared_lock lock(vfetch_mutex_);
     auto it = resolved_vfetch_by_shader_.find(vs_hash);
-    return it != resolved_vfetch_by_shader_.end() ? it->second.get() : nullptr;
+    const ResolvedShaderVfetch* info =
+        it != resolved_vfetch_by_shader_.end() ? it->second.get() : nullptr;
+    if (info) {
+      slot = Found{this, generation, vs_hash, info};
+    }
+    return info;
   }
 
   std::unordered_map<PipelineKey, std::unique_ptr<plume::RenderPipeline>, PipelineKeyHash>

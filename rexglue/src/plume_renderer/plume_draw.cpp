@@ -2323,6 +2323,7 @@ void PlumeDrawContext::Shutdown() {
     vfetch_by_shader_.clear();
     real_locations_by_shader_.clear();
     resolved_vfetch_by_shader_.clear();
+    vfetch_generation_.fetch_add(1, std::memory_order_acq_rel);
   }
   if (vs_constants_ && vs_constants_mapped_) {
     vs_constants_->unmap();
