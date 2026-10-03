@@ -685,6 +685,13 @@ constexpr uint32_t kD3DPsFloatOffset = 0x1780;
 constexpr uint32_t kD3DVsBoolOffset = 0x2780;
 constexpr uint32_t kD3DPsBoolOffset = 0x2790;
 constexpr uint32_t kD3DDeviceMinBytes = 0x2800;
+// As far as the render state shadows read per draw reach (+0x3230 and on).
+constexpr uint32_t kD3DDeviceStateBytes = 0x3400;
+// The device whose state shadows were found readable once: the device is made
+// at start and never freed, and the twenty-odd checks a draw made of its
+// fields each took the heap's lock - a twentieth of the title's thread on
+// the Xperia.
+std::atomic<uint32_t> g_readable_device_state{0};
 // RB_DEPTHCONTROL's shadow; RB_BLENDCONTROL0 follows it.
 constexpr uint32_t kD3DRenderStateOffset = 0x2D74;
 constexpr uint32_t kD3DColorMaskOffset = 0x2D1C;
@@ -701,6 +708,10 @@ bool RangeReadable(memory::Memory* memory, uint32_t guest_va, uint32_t bytes) {
   const uint32_t last = guest_va + bytes - 1;
   if (last < guest_va) {
     return false;
+  }
+  const uint32_t device = g_readable_device_state.load(std::memory_order_relaxed);
+  if (device != 0 && guest_va >= device && last < device + kD3DDeviceStateBytes) {
+    return true;
   }
   auto* heap = memory->LookupHeap(guest_va);
   if (!heap || memory->LookupHeap(last) != heap) {
@@ -738,6 +749,10 @@ bool DeviceRangeReadable(memory::Memory* memory, uint32_t device_guest) {
     return false;
   }
   g_readable_device.store(device_guest, std::memory_order_relaxed);
+  if (g_readable_device_state.load(std::memory_order_relaxed) != device_guest &&
+      RangeReadable(memory, device_guest, kD3DDeviceStateBytes)) {
+    g_readable_device_state.store(device_guest, std::memory_order_relaxed);
+  }
   return true;
 }
 

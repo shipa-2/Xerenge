@@ -3189,7 +3189,8 @@ plume::RenderPipeline* PlumeDrawContext::GetOrCreatePipeline(
 // them here, before any of it depends on the title behaving, separates "the
 // title never hands us the geometry" from "we could not have drawn it anyway".
 void PlumeDrawContext::Run3DCapabilityCheck() {
-  if (std::getenv("XERENGE_3D_CHECK") == nullptr || !ready_) {
+  static const bool wanted = std::getenv("XERENGE_3D_CHECK") != nullptr;
+  if (!wanted || !ready_) {
     return;
   }
   static bool done = false;
