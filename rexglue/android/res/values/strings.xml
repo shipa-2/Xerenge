@@ -33,6 +33,8 @@
     <string name="aspect_16_9_tip">The frame keeps the console\'s 16:9 shape, with black bars on a wider screen. Off, the game fills a wider screen: you see more to either side, with nothing stretched, and the interface stays in the middle at 16:9.</string>
     <string name="fps_counter">Frame counter</string>
     <string name="fps_counter_tip">Frames per second in the top left corner.</string>
+    <string name="fps_30">30 fps lock</string>
+    <string name="fps_30_tip">An even thirty frames a second, for a device that cannot hold sixty: each frame runs two of the game\'s logic steps, as Crash mode does on the console.</string>
     <string name="install_path">Install path</string>
     <string name="section_gpu">Graphics driver</string>
     <string name="gpu_ok">The system Vulkan driver is recent enough (1.1 or newer).</string>

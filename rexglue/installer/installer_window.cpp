@@ -111,6 +111,7 @@ lang=$(value language)
 res=$(value render_resolution)
 [ -n "$res" ] && export XERENGE_RENDER_RESOLUTION="$res"
 [ "$(value fps_counter)" = true ] && export XERENGE_FPS_SHOW=1
+[ "$(value fps_30)" = true ] && export XERENGE_FPS_30=1
 [ "$(value aspect_16_9)" = false ] || export XERENGE_ASPECT_16_9=1
 
 # Fullscreen unless windowed; the keyboard as a pad with its keybind_* lines.
@@ -208,6 +209,7 @@ if /i "%packed_vertices%"=="false" set "XERENGE_FULL_VERTICES=1"
 if /i "%culling%"=="true" set "XERENGE_CULL=1"
 if defined render_resolution set "XERENGE_RENDER_RESOLUTION=%render_resolution%"
 if /i "%fps_counter%"=="true" set "XERENGE_FPS_SHOW=1"
+if /i "%fps_30%"=="true" set "XERENGE_FPS_30=1"
 if /i not "%aspect_16_9%"=="false" set "XERENGE_ASPECT_16_9=1"
 
 rem Fullscreen unless windowed; the keyboard as a pad with its keybind_* lines.
@@ -529,6 +531,11 @@ InstallerWindow::InstallerWindow(QWidget* parent) : QWidget(parent) {
   fps_box_ = new QCheckBox(tr("Frame counter"));
   fps_box_->setToolTip(tr("Frames per second in the top left corner."));
   hacks_layout->addWidget(fps_box_);
+  fps30_box_ = new QCheckBox(tr("30 fps lock"));
+  fps30_box_->setToolTip(
+      tr("An even thirty frames a second, for a machine that cannot hold sixty: each frame "
+         "runs two of the game's logic steps, as Crash mode does on the console."));
+  hacks_layout->addWidget(fps30_box_);
   hacks->setVisible(false);
   layout->addWidget(hacks);
   connect(hacks_toggle, &QToolButton::toggled, this, [hacks, hacks_toggle](bool open) {
@@ -809,6 +816,7 @@ void InstallerWindow::LoadSettings(const QString& path) {
   flag("culling", culling_box_);
   choice("render_resolution", resolution_combo_);
   flag("fps_counter", fps_box_);
+  flag("fps_30", fps30_box_);
   flag("keyboard", keyboard_box_);
   for (const auto& [setting, edit] : key_edits_) {
     if (values.contains(setting)) {
@@ -895,6 +903,7 @@ void InstallerWindow::StartInstall() {
         << "culling = " << (culling_box_->isChecked() ? "true" : "false") << "\n"
         << "render_resolution = " << resolution_combo_->currentData().toString() << "\n"
         << "fps_counter = " << (fps_box_->isChecked() ? "true" : "false") << "\n"
+        << "fps_30 = " << (fps30_box_->isChecked() ? "true" : "false") << "\n"
         << "# The keyboard as a pad, and a key (or several, comma separated) per control\n"
         << "keyboard = " << (keyboard_box_->isChecked() ? "true" : "false") << "\n";
     for (const auto& [setting, edit] : key_edits_) {

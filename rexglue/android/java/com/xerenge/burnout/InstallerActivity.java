@@ -95,7 +95,7 @@ public class InstallerActivity extends Activity {
     // No "Windowed" or "Xenia render" here: a phone runs full screen, and on plume.
     private CheckBox bloomBox, blurBox, debugBox;
     private Spinner languageSpinner;
-    private CheckBox asyncBox, earlySubmitBox, packedVerticesBox, cullingBox, fpsBox;
+    private CheckBox asyncBox, earlySubmitBox, packedVerticesBox, cullingBox, fpsBox, fps30Box;
     private Spinner resolutionSpinner;
     private CheckBox aspectBox;
     private TextView gpuStatus;
@@ -370,6 +370,7 @@ public class InstallerActivity extends Activity {
         note(hacks, R.string.render_resolution_tip);
         aspectBox = check(hacks, R.string.aspect_16_9, R.string.aspect_16_9_tip);
         fpsBox = check(hacks, R.string.fps_counter, R.string.fps_counter_tip);
+        fps30Box = check(hacks, R.string.fps_30, R.string.fps_30_tip);
         hacks.setVisibility(View.GONE);
         page.addView(hacks);
         hacksToggle.setOnClickListener(v -> {
@@ -469,6 +470,7 @@ public class InstallerActivity extends Activity {
         resolutionSpinner.setSelection(Math.max(resolution, 0));
         aspectBox.setChecked(s.aspect169);
         fpsBox.setChecked(s.fpsCounter);
+        fps30Box.setChecked(s.fps30);
     }
 
     private void showNetwork(Settings s) {
@@ -507,6 +509,7 @@ public class InstallerActivity extends Activity {
         s.renderResolution = Settings.RESOLUTIONS[resolutionSpinner.getSelectedItemPosition()][1];
         s.aspect169 = aspectBox.isChecked();
         s.fpsCounter = fpsBox.isChecked();
+        s.fps30 = fps30Box.isChecked();
         s.touchControls = touchBox.isChecked();
         s.touchOpacity = opacityBar.getProgress() + 10;
         return s;
