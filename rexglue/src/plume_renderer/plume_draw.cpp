@@ -4742,8 +4742,12 @@ void ClearFirstPass(plume::RenderCommandList* list, const RenderPassBreak* pass,
 bool PlumeSecondTargetEnabled() {
   // XERENGE_NO_SECOND_TARGET: no render target 1 (motion vectors, read only by
   // the motion blur) - on a phone's tiled GPU every pixel was written twice.
+  // Nor with motion blur off (XERENGE_NO_MOTION_BLUR): the patch for it leaves
+  // the blur at speed, which still drew from the vectors; without them the
+  // setting does what it says, and the scene pass carries one colour target.
   static const bool on = std::getenv("XERENGE_D3D_TARGETS") != nullptr &&
-                         std::getenv("XERENGE_NO_SECOND_TARGET") == nullptr;
+                         std::getenv("XERENGE_NO_SECOND_TARGET") == nullptr &&
+                         std::getenv("XERENGE_NO_MOTION_BLUR") == nullptr;
   return on;
 }
 
