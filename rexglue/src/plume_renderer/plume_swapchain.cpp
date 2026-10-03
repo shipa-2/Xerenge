@@ -501,6 +501,13 @@ void PlumeSwapchain::CreateFramebuffers() {
     requested_width =
         uint32_t(uint64_t(requested_height) * window_width / window_height) & ~1u;
   }
+  // Narrower (16:10): the width asked for, and the screen's shape below it -
+  // the cameras show more above and below and the interface keeps its strip.
+  if (!FixedAspect() && requested_width != 0 && window_width != 0 &&
+      uint64_t(window_width) * 9 < uint64_t(window_height) * 16) {
+    requested_height =
+        uint32_t(uint64_t(requested_width) * window_height / window_width) & ~1u;
+  }
   const bool scaled = scene_wanted && requested_width != 0 &&
                       (requested_width != window_width || requested_height != window_height);
   const uint32_t width = scaled ? requested_width : window_width;

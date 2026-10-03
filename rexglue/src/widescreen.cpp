@@ -1,5 +1,6 @@
 // Screens wider than 16:9 (21:9 and 18:9 phones): the scene widens to fill
-// them, the interface keeps the console's 16:9 box.
+// them, the interface keeps the console's 16:9 box. Narrower ones (a 16:10
+// monitor): the scene grows taller instead, the interface keeps its 16:9 strip.
 //
 // The cameras are RenderWare's: CGtViewport::Update hands the field of view to
 // sub_82353BA8, which makes the view window - x from the viewport's scale
@@ -59,15 +60,17 @@ void StoreGuestFloat(uint8_t* base, uint32_t address, float value) {
   xerenge::StoreGuestU32(base, address, bits);
 }
 
-// How much wider than 16:9 the screen the scene is drawn for is; 1 when it
-// is not wider, or the renderer has not said.
+// The screen the scene is drawn for against 16:9: above 1 wider (21:9, 18:9),
+// below it narrower (16:10, 4:3); 1 when it is 16:9, or the renderer has not said.
 float WideningFactor() {
   const char* text = std::getenv("XERENGE_SCREEN_ASPECT");
   if (!text) {
     return 1.0f;
   }
   const float aspect = std::strtof(text, nullptr);
-  return aspect > kConsoleAspect * 1.01f && aspect < 4.0f ? aspect / kConsoleAspect : 1.0f;
+  const bool wider = aspect > kConsoleAspect * 1.01f && aspect < 4.0f;
+  const bool narrower = aspect < kConsoleAspect * 0.99f && aspect > 1.2f;
+  return wider || narrower ? aspect / kConsoleAspect : 1.0f;
 }
 
 }  // namespace
@@ -108,10 +111,15 @@ REX_HOOK_RAW(sub_82353BA8) {
   if (widen) {
     static std::atomic<bool> told{false};
     if (!told.exchange(true)) {
-      REXLOG_INFO("widescreen: cameras widened by {:.3f} for a {:.3f} screen", factor,
-                  factor * kConsoleAspect);
+      REXLOG_INFO("widescreen: cameras {} by {:.3f} for a {:.3f} screen",
+                  factor > 1.0f ? "widened" : "made taller", factor, factor * kConsoleAspect);
     }
-    StoreGuestFloat(base, viewport + 112, scale * factor);
+    // Wider: x grows with the scale, y (x over the aspect) stays. Narrower
+    // (16:10): x stays and y grows - the same width of view, more above and
+    // below, rather than the picture squeezed upright.
+    if (factor > 1.0f) {
+      StoreGuestFloat(base, viewport + 112, scale * factor);
+    }
     StoreGuestFloat(base, viewport + 116, aspect * factor);
   }
   __imp__sub_82353BA8(ctx, base);

@@ -6651,6 +6651,7 @@ void PlumeDrawContext::EncodeDraws(plume::RenderCommandList* list,
   bool viewport_flipped = false;
   int32_t scissor_now[4] = {0, 0, int32_t(width), int32_t(height)};
   uint32_t viewport_x = 0;
+  uint32_t viewport_y = 0;
   uint32_t viewport_w = width;
   uint32_t viewport_h = height;
   // A screen wider than 16:9 (XERENGE_ASPECT_16_9 unset): the scene is drawn
@@ -6661,6 +6662,12 @@ void PlumeDrawContext::EncodeDraws(plume::RenderCommandList* list,
                              ? std::min(width, (height * 16 / 9) & ~1u)
                              : width;
   const uint32_t box_x = (width - box_w) / 2;
+  // And narrower than 16:9 (16:10): the cameras show more above and below
+  // (widescreen.cpp), and the interface keeps its 16:9 strip across the middle.
+  const uint32_t box_h = widen_scene && uint64_t(height) * 16 > uint64_t(width) * 9 + width
+                             ? std::min(height, (width * 9 / 16) & ~1u)
+                             : height;
+  const uint32_t box_y = (height - box_h) / 2;
   // Where the current 2D object's box goes: against the screen's left or right
   // edge for an object on that side of the 16:9 layout, centred otherwise -
   // decided by the object's first draw with a known extent, kept for the rest.
@@ -6689,21 +6696,24 @@ void PlumeDrawContext::EncodeDraws(plume::RenderCommandList* list,
       vh = std::min(th, height);
     }
   };
-  auto use_viewport = [&](bool flipped, uint32_t vx, uint32_t vw, uint32_t vh) {
-    if (flipped == viewport_flipped && vx == viewport_x && vw == viewport_w && vh == viewport_h) {
+  auto use_viewport = [&](bool flipped, uint32_t vx, uint32_t vy, uint32_t vw, uint32_t vh) {
+    if (flipped == viewport_flipped && vx == viewport_x && vy == viewport_y && vw == viewport_w &&
+        vh == viewport_h) {
       return;
     }
     viewport_flipped = flipped;
     viewport_x = vx;
+    viewport_y = vy;
     viewport_w = vw;
     viewport_h = vh;
-    list->setViewports(plume::RenderViewport(float(vx), 0.0f, float(vw), float(vh),
+    list->setViewports(plume::RenderViewport(float(vx), float(vy), float(vw), float(vh),
                                              flipped ? 1.0f : 0.0f, flipped ? 0.0f : 1.0f));
-    list->setScissors(plume::RenderRect(int32_t(vx), 0, int32_t(vx + vw), int32_t(vh)));
+    list->setScissors(
+        plume::RenderRect(int32_t(vx), int32_t(vy), int32_t(vx + vw), int32_t(vy + vh)));
     scissor_now[0] = int32_t(vx);
-    scissor_now[1] = 0;
+    scissor_now[1] = int32_t(vy);
     scissor_now[2] = int32_t(vx + vw);
-    scissor_now[3] = int32_t(vh);
+    scissor_now[3] = int32_t(vy + vh);
   };
   // What is bound, so that a draw repeating it does not bind it again. A
   // pass break (around a copy) forgets both.
@@ -7141,14 +7151,16 @@ void PlumeDrawContext::EncodeDraws(plume::RenderCommandList* list,
       // menus) - in the 16:9 box when the frame is wider. And the video by what
       // it carries: it comes through either path from frame to frame, and
       // drawn by the other one it jumped between the box and the whole width.
-      const bool boxed = box_w != width && vw == width && vh == height &&
+      const bool boxed = (box_w != width || box_h != height) && vw == width && vh == height &&
                          (snap.interface_draw || snap.d3d_vertex_buffer == 0 ||
                           snap.has_video_frame());
       // The music player's panel keeps its box against the screen's left edge;
       // the HUD's objects go to the edge of their side, each one whole.
       uint32_t vx = 0;
+      uint32_t vy = 0;
       if (boxed) {
         vx = box_x;
+        vy = box_y;
         if (snap.interface_left) {
           vx = 0;
         } else if (snap.interface_object != 0 && !snap.has_video_frame()) {
@@ -7171,20 +7183,23 @@ void PlumeDrawContext::EncodeDraws(plume::RenderCommandList* list,
       }
       if (boxed) {
         vw = box_w;
+        vh = box_h;
       }
-      use_viewport(snap.d3d_vertex_buffer != 0, vx, vw, vh);
+      use_viewport(snap.d3d_vertex_buffer != 0, vx, vy, vw, vh);
       // The title's scissor, scaled from its render target's pixels to the
       // area that target is drawn over here.
-      int32_t sx0 = int32_t(vx), sy0 = 0, sx1 = int32_t(vx + vw), sy1 = int32_t(vh);
+      int32_t sx0 = int32_t(vx), sy0 = int32_t(vy), sx1 = int32_t(vx + vw), sy1 = int32_t(vy + vh);
       if (snap.scissor_enabled && snap.d3d_target_width != 0 && snap.d3d_target_height != 0) {
         const float kx = float(vw) / float(snap.d3d_target_width);
         const float ky = float(vh) / float(snap.d3d_target_height);
         sx0 = std::clamp(int32_t(vx) + int32_t(std::floor(snap.scissor_rect[0] * kx)),
                          int32_t(vx), int32_t(vx + vw));
-        sy0 = std::clamp(int32_t(std::floor(snap.scissor_rect[1] * ky)), 0, int32_t(vh));
+        sy0 = std::clamp(int32_t(vy) + int32_t(std::floor(snap.scissor_rect[1] * ky)), int32_t(vy),
+                         int32_t(vy + vh));
         sx1 = std::clamp(int32_t(vx) + int32_t(std::ceil(snap.scissor_rect[2] * kx)), sx0,
                          int32_t(vx + vw));
-        sy1 = std::clamp(int32_t(std::ceil(snap.scissor_rect[3] * ky)), sy0, int32_t(vh));
+        sy1 = std::clamp(int32_t(vy) + int32_t(std::ceil(snap.scissor_rect[3] * ky)), sy0,
+                         int32_t(vy + vh));
       }
       if (sx0 != scissor_now[0] || sy0 != scissor_now[1] || sx1 != scissor_now[2] ||
           sy1 != scissor_now[3]) {
@@ -7623,6 +7638,7 @@ void PlumeDrawContext::EncodeDraws(plume::RenderCommandList* list,
         scissor_now[2] = int32_t(width);
         scissor_now[3] = int32_t(height);
         viewport_x = 0;
+        viewport_y = 0;
         viewport_w = width;
         viewport_h = height;
         ++resolved_in_place;
