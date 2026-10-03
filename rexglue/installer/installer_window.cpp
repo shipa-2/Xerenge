@@ -533,8 +533,8 @@ InstallerWindow::InstallerWindow(QWidget* parent) : QWidget(parent) {
   hacks_layout->addWidget(fps_box_);
   fps30_box_ = new QCheckBox(tr("30 fps lock"));
   fps30_box_->setToolTip(
-      tr("An even thirty frames a second, for a machine that cannot hold sixty: each frame "
-         "runs two of the game's logic steps, as Crash mode does on the console."));
+      tr("An even thirty frames a second, for a machine that cannot hold sixty: the game runs "
+         "at sixty as ever, and every other frame is left undrawn."));
   hacks_layout->addWidget(fps30_box_);
   hacks->setVisible(false);
   layout->addWidget(hacks);

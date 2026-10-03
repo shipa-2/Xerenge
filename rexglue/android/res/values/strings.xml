@@ -34,7 +34,7 @@
     <string name="fps_counter">Frame counter</string>
     <string name="fps_counter_tip">Frames per second in the top left corner.</string>
     <string name="fps_30">30 fps lock</string>
-    <string name="fps_30_tip">An even thirty frames a second, for a device that cannot hold sixty: each frame runs two of the game\'s logic steps, as Crash mode does on the console.</string>
+    <string name="fps_30_tip">An even thirty frames a second, for a device that cannot hold sixty: the game runs at sixty as ever, and every other frame is left undrawn.</string>
     <string name="install_path">Install path</string>
     <string name="section_gpu">Graphics driver</string>
     <string name="gpu_ok">The system Vulkan driver is recent enough (1.1 or newer).</string>
