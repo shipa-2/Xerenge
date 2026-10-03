@@ -5824,6 +5824,20 @@ void PlumeDrawContext::BindGuestTextures(plume::RenderCommandList* list,
         }
         const size_t mip_size = mip_src ? mips.size : 0;
         if (page_writes_) {
+          // Still watched since it was last hashed: the watch comes off a page
+          // only when the page is written, which counts. Set again every frame
+          // regardless, it took the heap's lock and an mprotect per texture.
+          {
+            uint64_t writes = PageWrites(info.memory.base_address, size);
+            if (mip_size) {
+              writes += PageWrites(mips.address, mip_size);
+            }
+            if (auto known = texture_watch_.find(key);
+                known != texture_watch_.end() && known->second.writes == writes) {
+              frame_hashes.emplace(key, known->second.hash);
+              continue;
+            }
+          }
           // Watched first, then the writes counted, then (if they changed)
           // hashed: a write at any point after the watch is set shows in the
           // count by the next frame at the latest.
