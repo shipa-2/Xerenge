@@ -25,6 +25,8 @@
     <string name="packed_vertices_tip">Only the vertex data each shader reads goes to the GPU, not a layout wide enough for every shader. Less memory traffic; turn off if models look broken.</string>
     <string name="culling">Back-face culling</string>
     <string name="culling_tip">Skip the faces the game culls itself, as the console does. Experimental.</string>
+    <string name="reflection_split">Reflections in turns</string>
+    <string name="reflection_split_tip">Redraw two of the car reflection\'s six sides a frame, in turn, rather than all six. Faster on a weak GPU; reflections lag a little.</string>
     <string name="press_back_to_exit">Press back again to exit the game</string>
     <string name="render_resolution">Render resolution</string>
     <string name="resolution_window">The device\'s</string>

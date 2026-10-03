@@ -55,6 +55,7 @@ final class Settings {
     boolean asyncPresent, earlySubmit = true, packedVertices = true, culling, fpsCounter;
     boolean fps30;  // two logic steps and two vblanks a frame: an even 30
     boolean frameGeneration;  // frames drawn between the game's, for a 120 Hz screen
+    boolean reflectionSplit;  // two of the reflection cube's faces a frame
     String renderResolution = "";
     boolean aspect169 = true;  // Android: keep the frame 16:9, black bars on a wider screen
     // On-screen controls (Android only; the desktop has the keyboard instead).
@@ -130,6 +131,7 @@ final class Settings {
         settings.earlySubmit = flag(v, "early_submit", settings.earlySubmit);
         settings.packedVertices = flag(v, "packed_vertices", settings.packedVertices);
         settings.culling = flag(v, "culling", settings.culling);
+        settings.reflectionSplit = flag(v, "reflection_split", settings.reflectionSplit);
         if (v.containsKey("render_resolution")) {
             settings.renderResolution = v.get("render_resolution");
         }
@@ -179,6 +181,7 @@ final class Settings {
            .append("early_submit = ").append(tf(earlySubmit)).append('\n')
            .append("packed_vertices = ").append(tf(packedVertices)).append('\n')
            .append("culling = ").append(tf(culling)).append('\n')
+           .append("reflection_split = ").append(tf(reflectionSplit)).append('\n')
            .append("render_resolution = ").append(renderResolution).append('\n')
            .append("# Keep the frame 16:9 (black bars on a wider screen)\n")
            .append("aspect_16_9 = ").append(tf(aspect169)).append('\n')
@@ -253,6 +256,7 @@ final class Settings {
         if ("false".equals(value("early_submit"))) env("XERENGE_ACQUIRE_FIRST", "1");
         if ("false".equals(value("packed_vertices"))) env("XERENGE_FULL_VERTICES", "1");
         if ("true".equals(value("culling"))) env("XERENGE_CULL", "1");
+        if ("true".equals(value("reflection_split"))) env("XERENGE_REFLECTION_SPLIT", "1");
         if (!value("render_resolution").isEmpty()) env("XERENGE_RENDER_RESOLUTION", value("render_resolution"));
         if (!"false".equals(value("aspect_16_9"))) env("XERENGE_ASPECT_16_9", "1");
         if ("true".equals(value("fps_counter"))) env("XERENGE_FPS_SHOW", "1");
