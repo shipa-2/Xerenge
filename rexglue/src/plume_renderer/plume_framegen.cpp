@@ -54,12 +54,22 @@ bool Followable(const GuestDrawSnapshot& d) {
          !d.has_video_frame();
 }
 
-uint64_t DrawKey(const GuestDrawSnapshot& d) {
+// Which object a draw is: its shaders, buffers and index range - and which of
+// the frame's passes it is in, and its target. The garage draws its meshes into
+// the six faces of the reflection cube as well as the view, each face with its
+// own camera: keyed by the mesh alone, a face's draw was paired with the view's
+// of the frame before, and drawn between two cameras - objects flickered, went
+// missing and turned up in the wrong places.
+uint64_t DrawKey(const GuestDrawSnapshot& d, uint32_t pass) {
   struct {
     uint64_t vs, ps;
     uint32_t vb, stride, ib, start, count, base_vertex, prim;
     uint32_t streams[4];
+    uint32_t pass, target_width, target_height;
   } key{};
+  key.pass = pass;
+  key.target_width = d.d3d_target_width;
+  key.target_height = d.d3d_target_height;
   key.vs = d.vs_hash;
   key.ps = d.ps_hash;
   key.vb = d.d3d_vertex_buffer;
@@ -120,16 +130,19 @@ FramePairing PairFrames(const std::vector<GuestDrawSnapshot>& previous,
   // The older frame's draws by key, in the order drawn.
   std::unordered_map<uint64_t, std::vector<uint32_t>> before;
   before.reserve(previous.size());
-  for (uint32_t i = 0; i < previous.size(); ++i) {
+  // Passes counted by the copies that end them.
+  for (uint32_t i = 0, pass = 0; i < previous.size(); ++i) {
+    pass += previous[i].is_resolve ? 1u : 0u;
     if (Followable(previous[i])) {
-      before[DrawKey(previous[i])].push_back(i);
+      before[DrawKey(previous[i], pass)].push_back(i);
     }
   }
   std::unordered_map<uint64_t, std::vector<uint32_t>> now;
   now.reserve(current.size());
-  for (uint32_t i = 0; i < current.size(); ++i) {
+  for (uint32_t i = 0, pass = 0; i < current.size(); ++i) {
+    pass += current[i].is_resolve ? 1u : 0u;
     if (Followable(current[i])) {
-      now[DrawKey(current[i])].push_back(i);
+      now[DrawKey(current[i], pass)].push_back(i);
     }
   }
   pairing.matches.reserve(current.size());
