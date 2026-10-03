@@ -3150,7 +3150,13 @@ plume::RenderPipeline* PlumeDrawContext::GetOrCreatePipeline(
   // SPEC_CONSTANT_ALPHA_TEST (shader_common.h): the shader clips below
   // g_AlphaThreshold. Without it the tyres' hubs, which are cut out by alpha,
   // were drawn solid in front of the wheel rims.
-  const plume::RenderSpecConstant spec(0, alpha_test ? (1u << 1) : 0u);
+  // SPEC_CONSTANT_BLOOM_IN_PLACE (1 << 6) with bloom off (XERENGE_NO_BLOOM):
+  // the composite takes its bloom term from the pixel itself, so the sky
+  // keeps its blue without the glare (XenosRecomp, the texture fetch).
+  static const bool bloom_in_place = std::getenv("XERENGE_NO_BLOOM") != nullptr &&
+                                     std::getenv("XERENGE_GREY_SKY") == nullptr;
+  const plume::RenderSpecConstant spec(
+      0, (alpha_test ? (1u << 1) : 0u) | (bloom_in_place ? (1u << 6) : 0u));
   desc.specConstants = &spec;
   desc.specConstantsCount = 1;
 
