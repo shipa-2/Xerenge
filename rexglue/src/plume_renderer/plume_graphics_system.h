@@ -205,6 +205,15 @@ class PlumeGraphicsSystem final : public system::IGraphicsSystem {
   SharedWords<1024> last_vs_constants_;
   SharedWords<1024> last_ps_constants_;
   SharedWords<192> last_fetch_constants_;
+  // Whether the register file's float and fetch constant blocks (vs, ps,
+  // fetch) still hold the words of the last ones above: cleared by any write
+  // into them - a pull that changed a word, a register write, a ring packet.
+  std::atomic<bool> constants_as_last_[3] = {false, false, false};
+  void NoteConstantWrite(uint32_t index) {
+    if (index >= 0x4000 && index < 0x48C0) {
+      constants_as_last_[(index - 0x4000) >> 10].store(false, std::memory_order_relaxed);
+    }
+  }
   // The same for the constants read from the Direct3D device per draw.
   SharedWords<1024> last_device_vs_constants_;
   SharedWords<1024> last_device_ps_constants_;

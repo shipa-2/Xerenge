@@ -755,6 +755,26 @@ void CopyDeviceDwords(memory::Memory* memory, uint32_t* dst, uint32_t device_gue
   }
 }
 
+// CopyDeviceDwords, telling whether any word it wrote differs from what was
+// there: compared as they are copied, rather than by a memcmp of the whole
+// block afterwards - 9 KB a draw on the title's thread, a tenth of it on the
+// Xperia.
+bool CopyDeviceDwordsChanged(memory::Memory* memory, uint32_t* dst, uint32_t device_guest,
+                             uint32_t offset, uint32_t count) {
+  if (offset + count * 4 > kD3DDeviceMinBytes) {
+    CopyBeDwords(memory, dst, device_guest + offset, count);
+    return true;
+  }
+  const uint8_t* src = memory->TranslateVirtual<const uint8_t*>(device_guest + offset);
+  uint32_t differ = 0;
+  for (uint32_t i = 0; i < count; ++i) {
+    const uint32_t value = rex::memory::load_and_swap<uint32_t>(src + i * 4);
+    differ |= value ^ dst[i];
+    dst[i] = value;
+  }
+  return differ != 0;
+}
+
 }  // namespace
 
 bool PlumeGraphicsSystem::DeviceLooksValid(uint32_t device_guest) const {
@@ -781,9 +801,18 @@ void PlumeGraphicsSystem::PullDeviceConstants(uint32_t device_guest) {
   if (!memory_ || !DeviceLooksValid(device_guest)) {
     return;
   }
-  CopyDeviceDwords(memory_, &gpu_registers_[0x4000], device_guest, kD3DVsFloatOffset, 1024);
-  CopyDeviceDwords(memory_, &gpu_registers_[0x4400], device_guest, kD3DPsFloatOffset, 1024);
-  CopyDeviceDwords(memory_, &gpu_registers_[0x4800], device_guest, kD3DFetchOffset, 192);
+  if (CopyDeviceDwordsChanged(memory_, &gpu_registers_[0x4000], device_guest, kD3DVsFloatOffset,
+                              1024)) {
+    constants_as_last_[0] = false;
+  }
+  if (CopyDeviceDwordsChanged(memory_, &gpu_registers_[0x4400], device_guest, kD3DPsFloatOffset,
+                              1024)) {
+    constants_as_last_[1] = false;
+  }
+  if (CopyDeviceDwordsChanged(memory_, &gpu_registers_[0x4800], device_guest, kD3DFetchOffset,
+                              192)) {
+    constants_as_last_[2] = false;
+  }
   CopyDeviceDwords(memory_, &gpu_registers_[0x4900], device_guest, kD3DVsBoolOffset, 4);
   CopyDeviceDwords(memory_, &gpu_registers_[0x4904], device_guest, kD3DPsBoolOffset, 4);
 
@@ -981,9 +1010,23 @@ void PlumeGraphicsSystem::PublishDrawSnapshot(uint32_t prim_type, uint32_t sourc
   snap.prim_type = prim_type;
   snap.source_select = source_select;
   snap.num_indices = num_indices;
-  snap.vs_constants.AssignShared(&gpu_registers_[0x4000], last_vs_constants_);
-  snap.ps_constants.AssignShared(&gpu_registers_[0x4400], last_ps_constants_);
-  snap.fetch_constants.AssignShared(&gpu_registers_[0x4800], last_fetch_constants_);
+  // A block nothing has written since the last draw took it is that draw's.
+  if (constants_as_last_[0]) {
+    snap.vs_constants.ShareWith(last_vs_constants_);
+  } else {
+    snap.vs_constants.AssignShared(&gpu_registers_[0x4000], last_vs_constants_);
+  }
+  if (constants_as_last_[1]) {
+    snap.ps_constants.ShareWith(last_ps_constants_);
+  } else {
+    snap.ps_constants.AssignShared(&gpu_registers_[0x4400], last_ps_constants_);
+  }
+  if (constants_as_last_[2]) {
+    snap.fetch_constants.ShareWith(last_fetch_constants_);
+  } else {
+    snap.fetch_constants.AssignShared(&gpu_registers_[0x4800], last_fetch_constants_);
+  }
+  constants_as_last_[0] = constants_as_last_[1] = constants_as_last_[2] = true;
   // A draw built from the Direct3D calls has no constants in the register
   // file: this path never receives a SET_CONSTANT packet, so what the ring
   // left there belongs to the interface. The title's own copy does have them,
@@ -2431,6 +2474,7 @@ void PlumeGraphicsSystem::WriteRegister(uint32_t addr, uint32_t value) {
 
   if (r < gpu_registers_.size()) {
     gpu_registers_[r] = value;
+    NoteConstantWrite(r);
   }
 
   std::lock_guard lock(ring_mutex_);
@@ -2804,6 +2848,7 @@ void PlumeGraphicsSystem::Pm4WritePhysical(uint32_t phys_addr, uint32_t value) {
 void PlumeGraphicsSystem::Pm4StoreRegister(uint32_t index, uint32_t value) {
   if (index < gpu_registers_.size()) {
     gpu_registers_[index] = value;
+    NoteConstantWrite(index);
   }
 
   // RB_COPY_* is how the title asks for a resolve: take what was rendered into

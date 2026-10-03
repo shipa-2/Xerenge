@@ -5286,7 +5286,7 @@ void PlumeDrawContext::ResolveRenderTarget(plume::RenderCommandList* list,
                                            uint32_t height, uint32_t dest_base,
                                            uint32_t dest_width, uint32_t dest_height,
                                            uint32_t region_width, uint32_t region_height,
-                                           uint32_t face, bool cube) {
+                                           uint32_t face, bool cube, bool zero) {
   if (!list || !color || !device_ || !texture_set_ || dest_base == 0 || width == 0 || height == 0) {
     return;
   }
@@ -5346,8 +5346,41 @@ void PlumeDrawContext::ResolveRenderTarget(plume::RenderCommandList* list,
     }
     target.width = dest_width;
     target.height = dest_height;
+    target.zeroed = false;
     REXLOG_INFO("plume: resolve target {:08X} -> {}x{} native (guest asked {}x{}, bindless {})",
                 dest_base, dest_width, dest_height, guest_width, guest_height, target.bindless);
+  }
+
+  if (zero) {
+    if (!target.zeroed && !target.cube) {
+      const uint64_t bytes = uint64_t(dest_width) * dest_height * 4;
+      if (!zero_upload_ || zero_upload_bytes_ < bytes) {
+        zero_upload_ = device_->createBuffer(plume::RenderBufferDesc::UploadBuffer(bytes));
+        void* mapped = zero_upload_ ? zero_upload_->map() : nullptr;
+        if (!mapped) {
+          zero_upload_.reset();
+          return;
+        }
+        std::memset(mapped, 0, size_t(bytes));
+        zero_upload_->unmap();
+        zero_upload_bytes_ = bytes;
+      }
+      list->barriers(plume::RenderBarrierStage::COPY,
+                     plume::RenderTextureBarrier(target.texture.get(),
+                                                 plume::RenderTextureLayout::COPY_DEST));
+      list->copyTextureRegion(
+          plume::RenderTextureCopyLocation::Subresource(target.texture.get(), 0, 0),
+          plume::RenderTextureCopyLocation::PlacedFootprint(zero_upload_.get(), kColorTargetFormat,
+                                                            dest_width, dest_height, 1,
+                                                            dest_width, 0));
+      list->barriers(plume::RenderBarrierStage::GRAPHICS,
+                     plume::RenderTextureBarrier(target.texture.get(),
+                                                 plume::RenderTextureLayout::SHADER_READ));
+      texture_set_->setTexture(target.bindless, target.texture.get(),
+                               plume::RenderTextureLayout::SHADER_READ, target.view.get());
+      target.zeroed = true;
+    }
+    return;
   }
 
   // The colour attachment is mid-render here, so both sides have to be moved
@@ -5412,6 +5445,19 @@ void PlumeDrawContext::ResolveRenderTarget(plume::RenderCommandList* list,
     texture_set_->setTexture(target.bindless, target.texture.get(),
                              plume::RenderTextureLayout::SHADER_READ, target.view.get());
   }
+}
+
+bool PlumeDrawContext::ZeroedTargetReady(uint32_t dest_base, uint32_t width, uint32_t height,
+                                         uint32_t region_width, uint32_t region_height) const {
+  const auto it = resolved_targets_.find(dest_base);
+  if (it == resolved_targets_.end() || !it->second.texture || !it->second.zeroed ||
+      it->second.cube) {
+    return false;
+  }
+  const bool region = region_width != 0 && region_height != 0 &&
+                      (region_width < width || region_height < height);
+  return it->second.width == (region ? region_width : width) &&
+         it->second.height == (region ? region_height : height);
 }
 
 namespace {
@@ -7786,6 +7832,18 @@ void PlumeDrawContext::EncodeDraws(plume::RenderCommandList* list,
             break;
           }
         }
+        uint32_t region_w = 0;
+        uint32_t region_h = 0;
+        native_extent(snap.resolve_width, snap.resolve_height, region_w, region_h);
+        // The motion vectors, with no second target to copy them from (motion
+        // blur off): no motion - zeroes, put in once. Copied from the colour
+        // instead, the blur at speed read the picture as movement.
+        const bool zero_vectors =
+            snap.resolve_source == 1 && !pass->second_target && !snap.resolve_cube;
+        if (!repeat && zero_vectors &&
+            ZeroedTargetReady(snap.resolve_dest, width, height, region_w, region_h)) {
+          repeat = true;
+        }
         if (!repeat) {
           if (!pass_closed) {
             pass->end(pass->context);
@@ -7794,9 +7852,6 @@ void PlumeDrawContext::EncodeDraws(plume::RenderCommandList* list,
           plume::RenderTexture* const source =
               (snap.resolve_source == 1 && pass->second_target) ? pass->second_target
                                                                 : colour_target;
-          uint32_t region_w = 0;
-          uint32_t region_h = 0;
-          native_extent(snap.resolve_width, snap.resolve_height, region_w, region_h);
           {
             // Which copies a frame makes, when that changes: the menu's video
             // came out as its own top-left corner, blown up, only with targets
@@ -7815,7 +7870,7 @@ void PlumeDrawContext::EncodeDraws(plume::RenderCommandList* list,
           ResolveRenderTarget(list, source, width, height, snap.resolve_dest,
                               snap.resolve_width ? snap.resolve_width : width,
                               snap.resolve_height ? snap.resolve_height : height, region_w,
-                              region_h, snap.resolve_face, snap.resolve_cube);
+                              region_h, snap.resolve_face, snap.resolve_cube, zero_vectors);
           if (pass->mark) {
             pass->mark(pass->context, snap.resolve_dest, segment_draws, segment_vertices,
                        segment_binds);

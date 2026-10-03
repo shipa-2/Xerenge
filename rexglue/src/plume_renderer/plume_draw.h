@@ -67,6 +67,9 @@ class SharedWords {
     last.words_ = std::move(fresh);
   }
 
+  // last's block, known to hold the same words.
+  void ShareWith(const SharedWords& last) { words_ = last.words_; }
+
   static constexpr size_t size() { return N; }
   const uint32_t* data() const { return words_->data(); }
   uint32_t* data() {
@@ -466,7 +469,12 @@ class PlumeDrawContext {
   void ResolveRenderTarget(plume::RenderCommandList* list, plume::RenderTexture* color,
                            uint32_t width, uint32_t height, uint32_t dest_base,
                            uint32_t dest_width, uint32_t dest_height, uint32_t region_width = 0,
-                           uint32_t region_height = 0, uint32_t face = 0, bool cube = false);
+                           uint32_t region_height = 0, uint32_t face = 0, bool cube = false,
+                           bool zero = false);
+  // The copy into dest_base (ResolveRenderTarget's `zero`) has its zeroes already,
+  // at the size a copy of this frame would make.
+  bool ZeroedTargetReady(uint32_t dest_base, uint32_t width, uint32_t height,
+                         uint32_t region_width, uint32_t region_height) const;
 
  private:
   struct PipelineKey {
@@ -580,8 +588,13 @@ class PlumeDrawContext {
     // A cube map: six faces, each filled by its own copy, and bound through
     // the cube descriptor set rather than the 2D one.
     bool cube = false;
+    // Filled with zeroes rather than copied (ResolveRenderTarget's `zero`).
+    bool zeroed = false;
   };
   std::unordered_map<uint32_t, ResolvedTarget> resolved_targets_;
+  // Zeroes to fill a resolve target from (ResolveRenderTarget's `zero`).
+  std::unique_ptr<plume::RenderBuffer> zero_upload_;
+  uint64_t zero_upload_bytes_ = 0;
 
   // Input locations a translated shader actually uses, per shader hash. These
   // are NOT interchangeable with the ones in vfetch_by_shader_: those follow
