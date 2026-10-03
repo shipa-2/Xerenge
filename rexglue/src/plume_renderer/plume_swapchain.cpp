@@ -19,6 +19,7 @@
 #endif
 
 #include <plume_render_interface.h>
+#include <plume_vulkan.h>
 
 #include <rex/logging.h>
 
@@ -120,6 +121,77 @@ plume::RenderRect AspectRect(uint32_t window_width, uint32_t window_height) {
   const int32_t left = int32_t((window_width - width) / 2);
   const int32_t top = int32_t((window_height - height) / 2);
   return plume::RenderRect(left, top, left + int32_t(width), top + int32_t(height));
+}
+
+// The frame's own size for a window of this size: the window's, or the one
+// asked for (XERENGE_RENDER_RESOLUTION) - which needs the scene target, the
+// frame being scaled from it onto the window. *scaled: it is not the window's.
+void FrameSize(uint32_t window_width, uint32_t window_height, uint32_t* width,
+               uint32_t* height, bool* scaled) {
+  static const bool scene_wanted = std::getenv("XERENGE_SCENE_TARGET") != nullptr ||
+                                   std::getenv("XERENGE_D3D_TARGETS") != nullptr;
+  uint32_t requested_width = 0;
+  uint32_t requested_height = 0;
+  RequestedRenderResolution(&requested_width, &requested_height);
+  if (FixedAspect() && requested_width == 0) {
+    // "The device's" resolution, kept 16:9: as much of the screen as that shape fills.
+    const plume::RenderRect fit = AspectRect(window_width, window_height);
+    requested_width = uint32_t(fit.right - fit.left);
+    requested_height = uint32_t(fit.bottom - fit.top);
+  }
+  // A screen wider than 16:9, not kept at 16:9: the frame takes the screen's
+  // shape at the height asked for - widescreen.cpp widens the cameras to it
+  // and the interface keeps a 16:9 box (EncodeDraws), so nothing stretches.
+  if (!FixedAspect() && requested_width != 0 && window_height != 0 &&
+      uint64_t(window_width) * 9 > uint64_t(window_height) * 16) {
+    requested_width =
+        uint32_t(uint64_t(requested_height) * window_width / window_height) & ~1u;
+  }
+  // Narrower (16:10): the width asked for, and the screen's shape below it -
+  // the cameras show more above and below and the interface keeps its strip.
+  if (!FixedAspect() && requested_width != 0 && window_width != 0 &&
+      uint64_t(window_width) * 9 < uint64_t(window_height) * 16) {
+    requested_height =
+        uint32_t(uint64_t(requested_width) * window_height / window_width) & ~1u;
+  }
+  *scaled = scene_wanted && requested_width != 0 &&
+            (requested_width != window_width || requested_height != window_height);
+  *width = *scaled ? requested_width : window_width;
+  *height = *scaled ? requested_height : window_height;
+}
+
+// On Android the window's images can be smaller than the window: the system
+// scales them onto it, on the display hardware. Drawn at 720p for a 1080p
+// screen, the frame then goes up as a straight copy rather than a filtered
+// scale onto 2520x1080 - 1.2 ms of the Xperia's GPU a frame in the garage, 3.9
+// in the menus. The images keep the window's shape (the frame's, or around a
+// 16:9 frame kept at 16:9), so nothing is stretched.
+void SizeImagesToFrame(plume::RenderSwapChain* swap_chain, uint32_t window_width,
+                       uint32_t window_height) {
+#ifdef __ANDROID__
+  if (!swap_chain || std::getenv("XERENGE_FULL_SIZE_WINDOW") != nullptr) {
+    return;
+  }
+  uint32_t width = 0, height = 0;
+  bool scaled = false;
+  FrameSize(window_width, window_height, &width, &height, &scaled);
+  if (!scaled || width == 0 || height == 0 || width >= window_width || height >= window_height) {
+    swap_chain->setFixedSize(0, 0);
+    return;
+  }
+  if (uint64_t(window_width) * height > uint64_t(window_height) * width) {
+    width = uint32_t(uint64_t(height) * window_width / window_height) & ~1u;
+  } else if (uint64_t(window_width) * height < uint64_t(window_height) * width) {
+    height = uint32_t(uint64_t(width) * window_height / window_width) & ~1u;
+  }
+  swap_chain->setFixedSize(width, height);
+  REXLOG_INFO("plume: window images {}x{}, scaled onto the {}x{} window by the system", width,
+              height, window_width, window_height);
+#else
+  (void)swap_chain;
+  (void)window_width;
+  (void)window_height;
+#endif
 }
 
 // Presents in the last whole second.
@@ -228,6 +300,11 @@ bool PlumeSwapchain::Initialize(plume::RenderDevice* device, SDL_Window* window,
   if (std::getenv("XERENGE_UNLOCK_FPS") != nullptr || std::getenv("XERENGE_NO_HOST_VSYNC") != nullptr) {
     swap_chain_->setVsyncEnabled(false);
     REXLOG_WARN("plume: frame rate unlocked - the game runs faster than it should");
+  }
+  {
+    uint32_t window_width = 0, window_height = 0;
+    WindowPixelSize(&window_width, &window_height);
+    SizeImagesToFrame(swap_chain_.get(), window_width, window_height);
   }
   if (!swap_chain_->resize()) {
     REXLOG_ERROR("plume: initial swap chain resize failed");
@@ -512,38 +589,10 @@ void PlumeSwapchain::CreateFramebuffers() {
 
   const uint32_t window_width = swap_chain_->getWidth();
   const uint32_t window_height = swap_chain_->getHeight();
-  // The frame's own size: the window's, or the one asked for - which needs
-  // the scene target, the frame being scaled from it onto the window.
-  static const bool scene_wanted = std::getenv("XERENGE_SCENE_TARGET") != nullptr ||
-                                   std::getenv("XERENGE_D3D_TARGETS") != nullptr;
-  uint32_t requested_width = 0;
-  uint32_t requested_height = 0;
-  RequestedRenderResolution(&requested_width, &requested_height);
-  if (FixedAspect() && requested_width == 0) {
-    // "The device's" resolution, kept 16:9: as much of the screen as that shape fills.
-    const plume::RenderRect fit = AspectRect(window_width, window_height);
-    requested_width = uint32_t(fit.right - fit.left);
-    requested_height = uint32_t(fit.bottom - fit.top);
-  }
-  // A screen wider than 16:9, not kept at 16:9: the frame takes the screen's
-  // shape at the height asked for - widescreen.cpp widens the cameras to it
-  // and the interface keeps a 16:9 box (EncodeDraws), so nothing stretches.
-  if (!FixedAspect() && requested_width != 0 && window_height != 0 &&
-      uint64_t(window_width) * 9 > uint64_t(window_height) * 16) {
-    requested_width =
-        uint32_t(uint64_t(requested_height) * window_width / window_height) & ~1u;
-  }
-  // Narrower (16:10): the width asked for, and the screen's shape below it -
-  // the cameras show more above and below and the interface keeps its strip.
-  if (!FixedAspect() && requested_width != 0 && window_width != 0 &&
-      uint64_t(window_width) * 9 < uint64_t(window_height) * 16) {
-    requested_height =
-        uint32_t(uint64_t(requested_width) * window_height / window_width) & ~1u;
-  }
-  const bool scaled = scene_wanted && requested_width != 0 &&
-                      (requested_width != window_width || requested_height != window_height);
-  const uint32_t width = scaled ? requested_width : window_width;
-  const uint32_t height = scaled ? requested_height : window_height;
+  // The frame's own size: the window's, or the one asked for.
+  uint32_t width = 0, height = 0;
+  bool scaled = false;
+  FrameSize(window_width, window_height, &width, &height, &scaled);
   if (height != 0) {
     // For the cameras (widescreen.cpp): the shape of the frame drawn.
     char aspect[32];
@@ -674,6 +723,7 @@ void PlumeSwapchain::ResizeIfNeeded() {
   // A failure leaves no framebuffers, which skips the frame, and the size
   // still differs next frame, so it is tried again. Not ready_ = false: the
   // graphics system stops calling in for good once it is.
+  SizeImagesToFrame(swap_chain_.get(), width, height);
   if (!swap_chain_->resize()) {
     REXLOG_WARN("plume: swap chain resize failed");
     return;
@@ -720,6 +770,11 @@ bool PlumeSwapchain::FollowAndroidWindow() {
                       std::getenv("XERENGE_NO_HOST_VSYNC") != nullptr)) {
     swap_chain_->setVsyncEnabled(false);
   }
+  if (swap_chain_) {
+    uint32_t window_width = 0, window_height = 0;
+    WindowPixelSize(&window_width, &window_height);
+    SizeImagesToFrame(swap_chain_.get(), window_width, window_height);
+  }
   if (!swap_chain_ || !swap_chain_->resize()) {
     if (++failures <= 5) {
       REXLOG_ERROR("plume: could not make the swap chain again on the new window surface");
@@ -745,6 +800,71 @@ bool PlumeSwapchain::FollowAndroidWindow() {
 #else
   return true;
 #endif
+}
+
+bool PlumeSwapchain::SnapshotDue(double* seconds) {
+  static const std::vector<double> wanted = [] {
+    std::vector<double> times;
+    if (const char* list = std::getenv("XERENGE_SNAPSHOT_SECONDS")) {
+      const char* p = list;
+      while (*p) {
+        char* end = nullptr;
+        const double t = std::strtod(p, &end);
+        if (end == p) {
+          break;
+        }
+        times.push_back(t);
+        p = *end == ',' ? end + 1 : end;
+      }
+      std::sort(times.begin(), times.end());
+    }
+    return times;
+  }();
+  static size_t next = 0;
+  if (next >= wanted.size()) {
+    return false;
+  }
+  static const auto first = std::chrono::steady_clock::now();
+  const double now = std::chrono::duration<double>(std::chrono::steady_clock::now() - first).count();
+  if (now < wanted[next]) {
+    return false;
+  }
+  *seconds = wanted[next];
+  while (next < wanted.size() && wanted[next] <= now) {
+    ++next;
+  }
+  return true;
+}
+
+void PlumeSwapchain::SaveSnapshot() {
+  if (snapshot_pending_ < 0.0 || !snapshot_mapped_) {
+    return;
+  }
+  const char* dir = std::getenv("XERENGE_SNAPSHOT_DIR");
+  char path[512];
+  std::snprintf(path, sizeof(path), "%s/snapshot-%05.1f.ppm", dir && *dir ? dir : "logs",
+                snapshot_pending_);
+  snapshot_pending_ = -1.0;
+  FILE* file = std::fopen(path, "wb");
+  if (!file) {
+    REXLOG_WARN("plume: could not write the snapshot {}", path);
+    return;
+  }
+  std::fprintf(file, "P6\n%u %u\n255\n", snapshot_width_, snapshot_height_);
+  const auto* px = static_cast<const uint8_t*>(snapshot_mapped_);
+  const bool bgra = kColorTargetFormat == plume::RenderFormat::B8G8R8A8_UNORM;
+  std::vector<uint8_t> row(size_t(snapshot_width_) * 3);
+  for (uint32_t y = 0; y < snapshot_height_; ++y) {
+    const uint8_t* in = px + size_t(y) * snapshot_width_ * 4;
+    for (uint32_t x = 0; x < snapshot_width_; ++x) {
+      row[x * 3 + 0] = in[x * 4 + (bgra ? 2 : 0)];
+      row[x * 3 + 1] = in[x * 4 + 1];
+      row[x * 3 + 2] = in[x * 4 + (bgra ? 0 : 2)];
+    }
+    std::fwrite(row.data(), 1, row.size(), file);
+  }
+  std::fclose(file);
+  REXLOG_INFO("plume: snapshot saved to {}", path);
 }
 
 void PlumeSwapchain::CheckProbe() {
@@ -820,6 +940,7 @@ void PlumeSwapchain::ClearAndPresent(float r, float g, float b, float a, DrawEnc
   }
   const auto previous_wait_done = std::chrono::steady_clock::now();
   CheckProbe();
+  SaveSnapshot();
 
   ResizeIfNeeded();
   if (!ready_ || framebuffers_.empty()) {
@@ -908,8 +1029,10 @@ void PlumeSwapchain::ClearAndPresent(float r, float g, float b, float a, DrawEnc
 
   command_list_->setViewports(plume::RenderViewport(0.0f, 0.0f, float(width), float(height)));
   command_list_->setScissors(plume::RenderRect(0, 0, width, height));
-  // A held frame keeps what the scene target holds: the last picture.
-  if (!hold) {
+  // A held frame keeps what the scene target holds: the last picture. A frame
+  // encoded from the title's draws is cleared by the encoder
+  // (RenderPassBreak::clear_first).
+  if (!hold && !encode) {
     command_list_->clearColor(0, plume::RenderColor(r, g, b, a));
     if (second_target) {
       command_list_->clearColor(1, plume::RenderColor(0.0f, 0.0f, 0.0f, 0.0f));
@@ -941,6 +1064,12 @@ void PlumeSwapchain::ClearAndPresent(float r, float g, float b, float a, DrawEnc
           state->list->setScissors(plume::RenderRect(0, 0, state->width, state->height));
         }};
     pass.second_target = second_target;
+    pass.has_depth = depth_texture_ != nullptr;
+    pass.clear_first = !hold;
+    pass.clear_color[0] = r;
+    pass.clear_color[1] = g;
+    pass.clear_color[2] = b;
+    pass.clear_color[3] = a;
     if (pass_timing_ && query_pool_) {
       pass.mark = [](void* raw, uint32_t dest, uint32_t draws, uint32_t vertices, uint32_t binds) {
         auto* state = static_cast<PassState*>(raw);
@@ -992,6 +1121,16 @@ void PlumeSwapchain::ClearAndPresent(float r, float g, float b, float a, DrawEnc
     out->begin();
   }
   const auto record_done = std::chrono::steady_clock::now();
+  // Debug mode: how many render passes the frame took, and how many of them
+  // only because a barrier or a copy inside a pass ended it.
+  static uint64_t pass_begins = 0, pass_breaks = 0;
+  if (pass_timing_) {
+    auto* vk_list = static_cast<plume::VulkanCommandList*>(command_list_.get());
+    pass_begins += vk_list->renderPassBegins;
+    pass_breaks += vk_list->implicitPassEnds;
+    vk_list->renderPassBegins = 0;
+    vk_list->implicitPassEnds = 0;
+  }
 
   if (scene_texture_) {
     const plume::RenderTextureBarrier to_copy[2] = {
@@ -1008,6 +1147,27 @@ void PlumeSwapchain::ClearAndPresent(float r, float g, float b, float a, DrawEnc
           plume::RenderTextureCopyLocation::Subresource(draw_target, 0, 0), 0, 0, 0, &box);
       probe_pending_ = true;
       probe_summary_ = g_plume_frame_summary;
+    }
+    double snapshot_seconds = 0.0;
+    if (snapshot_pending_ < 0.0 && SnapshotDue(&snapshot_seconds)) {
+      if (!snapshot_buffer_ || snapshot_width_ != width || snapshot_height_ != height) {
+        if (snapshot_buffer_ && snapshot_mapped_) {
+          snapshot_buffer_->unmap();
+        }
+        snapshot_buffer_ = device_->createBuffer(
+            plume::RenderBufferDesc::ReadbackBuffer(uint64_t(width) * height * 4));
+        snapshot_mapped_ = snapshot_buffer_ ? snapshot_buffer_->map() : nullptr;
+        snapshot_width_ = width;
+        snapshot_height_ = height;
+      }
+      if (snapshot_mapped_) {
+        out->copyTextureRegion(
+            plume::RenderTextureCopyLocation::PlacedFootprint(snapshot_buffer_.get(),
+                                                              kColorTargetFormat, width, height,
+                                                              1, width, 0),
+            plume::RenderTextureCopyLocation::Subresource(draw_target, 0, 0));
+        snapshot_pending_ = snapshot_seconds;
+      }
     }
     // At another size (XERENGE_RENDER_RESOLUTION) the frame is scaled onto
     // the window, filtered; at the window's own size it is a straight copy.
@@ -1071,6 +1231,7 @@ void PlumeSwapchain::ClearAndPresent(float r, float g, float b, float a, DrawEnc
     }
     ReadGpuTime();
     CheckProbe();
+    SaveSnapshot();
   }
   const auto fence_done = std::chrono::steady_clock::now();
   {
@@ -1098,6 +1259,10 @@ void PlumeSwapchain::ClearAndPresent(float r, float g, float b, float a, DrawEnc
                   gpu_us / frames, fence_us / frames,
                   gpu_busy_frames_ ? gpu_busy_ns_ / gpu_busy_frames_ / 1000 : 0);
       if (pass_timing_) {
+        REXLOG_INFO("plume: {:.1f} render passes a frame, {:.1f} of them begun again after a "
+                    "barrier or a copy inside a pass",
+                    double(pass_begins) / double(frames), double(pass_breaks) / double(frames));
+        pass_begins = pass_breaks = 0;
         const std::string passes = TakePassReport(gpu_busy_frames_);
         if (!passes.empty()) {
           REXLOG_INFO("plume: GPU passes, ended by the copy into: {}", passes);

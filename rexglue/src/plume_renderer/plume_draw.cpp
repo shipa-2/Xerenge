@@ -22,6 +22,7 @@
 #include <bit>
 #include <map>
 #include <set>
+#include <tuple>
 #include <cstring>
 #include <cmath>
 #include <utility>
@@ -4708,6 +4709,36 @@ uint32_t PlumeDrawContext::FillVertices(const GuestDrawSnapshot& snap, memory::M
   return draw_count;
 }
 
+// Debug mode: each pass shape once - where it starts, what it leaves
+// unloaded and unstored.
+void LogPassAccess(size_t from, uint32_t area_w, uint32_t no_load, uint32_t discard) {
+  static std::mutex seen_mutex;
+  static std::set<std::tuple<size_t, uint32_t, uint32_t, uint32_t>> seen;
+  std::lock_guard lock(seen_mutex);
+  if (seen.size() < 64 && seen.emplace(from, area_w, no_load, discard).second) {
+    REXLOG_INFO("plume: pass from entry {} ({} wide): not loaded {:X}, not stored {:X} "
+                "(1 colour, 2 second target, 80000000 depth)",
+                from, area_w, no_load, discard);
+  }
+}
+
+void ClearFirstPass(plume::RenderCommandList* list, const RenderPassBreak* pass,
+                    uint32_t no_load, uint32_t discard) {
+  if (!list || !pass || !pass->clear_first) {
+    return;
+  }
+  list->setAttachmentAccess(no_load, discard);
+  list->clearColor(0, plume::RenderColor(pass->clear_color[0], pass->clear_color[1],
+                                         pass->clear_color[2], pass->clear_color[3]));
+  if (pass->second_target) {
+    list->clearColor(1, plume::RenderColor(0.0f, 0.0f, 0.0f, 0.0f));
+  }
+  if (pass->has_depth) {
+    // Far plane, matching the guest's own convention of clearing depth to 1.
+    list->clearDepth(true, 1.0f);
+  }
+}
+
 bool PlumeSecondTargetEnabled() {
   // XERENGE_NO_SECOND_TARGET: no render target 1 (motion vectors, read only by
   // the motion blur) - on a phone's tiled GPU every pixel was written twice.
@@ -6522,6 +6553,7 @@ void PlumeDrawContext::EncodeDraws(plume::RenderCommandList* list,
                                    const RenderPassBreak* pass) {
   uint32_t resolved_in_place = 0;
   if (!ready_ || !list || draws.empty()) {
+    ClearFirstPass(list, pass, 0, 0);
     return;
   }
 
@@ -7347,6 +7379,121 @@ void PlumeDrawContext::EncodeDraws(plume::RenderCommandList* list,
       ++fate.d3d_drawn;
     }
   };
+  // What each pass need not load or store. Every pass loaded and stored all
+  // three attachments over its area - colour, the second target, depth - and
+  // on a tiled GPU that is the area through memory six times: a pass of one
+  // draw over the frame took 1.2 ms on the Xperia. Now a pass loads an
+  // attachment only when something reads it before it is cleared, and keeps
+  // one only when something reads it - in the pass or later in the frame.
+  // Colour is shown, so always kept; depth and the second target start the
+  // next frame cleared.
+  // XERENGE_LOAD_EVERYTHING: the old way, for comparison.
+  static const bool access_wanted = std::getenv("XERENGE_LOAD_EVERYTHING") == nullptr;
+  const bool track_access = access_wanted && targets_followed && pass != nullptr;
+  constexpr uint32_t kColourBit = 1u;
+  constexpr uint32_t kSecondBit = 2u;
+  constexpr uint32_t kDepthBit = plume::RenderDepthAttachmentBit;
+  const uint32_t all_attachments = kColourBit |
+                                   (pass && pass->second_target ? kSecondBit : 0u) |
+                                   (pass && pass->has_depth ? kDepthBit : 0u);
+  // What a draw reads from the attachments before it writes them: colour
+  // always (blending, or the pixels it leaves), depth when it tests against
+  // it. A test switched off neither reads nor writes depth (Vulkan writes
+  // depth only with the test on), and ALWAYS reads nothing. The second
+  // target is only ever written, unblended.
+  auto draw_reads = [&](const GuestDrawSnapshot& d) -> uint32_t {
+    uint32_t reads = kColourBit;
+    const GuestDepthState depth = DepthStateFromGuest(d.depth_control);
+    if (depth.enabled && depth.function != plume::RenderComparisonFunction::ALWAYS) {
+      reads |= kDepthBit;
+    }
+    return reads & all_attachments;
+  };
+  // What a clear sets everywhere in an area_w x area_h pass (see where clears
+  // are made below: a corner, the whole target, or - a smaller target whose
+  // size reaches the frame's - nothing).
+  auto clear_covers = [&](const GuestDrawSnapshot& c, uint32_t area_w,
+                          uint32_t area_h) -> uint32_t {
+    uint32_t covers = 0;
+    if (c.clear_width != 0) {
+      uint32_t cw = 0;
+      uint32_t ch = 0;
+      native_extent(c.clear_width, c.clear_height, cw, ch);
+      if ((cw < width || ch < height) && cw >= area_w && ch >= area_h) {
+        covers |= (c.clear_flags & 0x10u) != 0 ? kDepthBit : 0u;
+        covers |= (c.clear_flags & 0x1u) != 0 ? kColourBit : 0u;
+      }
+    } else {
+      covers |= (c.clear_flags & 0x10u) != 0 ? kDepthBit : 0u;
+      covers |= (c.clear_flags & 0x1u) != 0 && c.clear_whole ? kColourBit : 0u;
+      covers |= (c.clear_flags & 0x2u) != 0 && c.clear_whole ? kSecondBit : 0u;
+    }
+    return covers & all_attachments;
+  };
+  // The pass from draws[from] up to the next copy, area_w x area_h, after the
+  // frame's opening clear when `opened_cleared`.
+  auto attachment_access = [&](size_t from, uint32_t area_w, uint32_t area_h,
+                               bool opened_cleared, uint32_t& no_load, uint32_t& discard) {
+    uint32_t read = 0;
+    uint32_t read_before_clear = 0;
+    uint32_t cleared = opened_cleared ? all_attachments : 0u;
+    size_t j = from;
+    for (; j < draws.size(); ++j) {
+      if (Skipped(j)) {
+        continue;
+      }
+      const GuestDrawSnapshot& e = draws[j];
+      if (e.is_resolve) {
+        break;
+      }
+      if (e.is_clear) {
+        cleared |= clear_covers(e, area_w, area_h);
+        continue;
+      }
+      const uint32_t reads = draw_reads(e);
+      read_before_clear |= reads & ~cleared;
+      read |= reads;
+    }
+    // Used later: read by a copy or a draw before a clear over this pass's
+    // area. Colour is shown at the end of the frame.
+    uint32_t live = 0;
+    uint32_t dead = 0;
+    for (size_t k = j; k < draws.size() && (live | dead) != all_attachments; ++k) {
+      if (Skipped(k)) {
+        continue;
+      }
+      const GuestDrawSnapshot& e = draws[k];
+      if (e.is_clear) {
+        // Cleared over this pass's area: what it stored there is gone.
+        dead |= clear_covers(e, area_w, area_h) & ~live;
+        continue;
+      }
+      const uint32_t uses =
+          e.is_resolve ? ((e.resolve_source == 1 && (all_attachments & kSecondBit)) ? kSecondBit
+                                                                                     : kColourBit)
+                       : draw_reads(e);
+      live |= uses & ~dead;
+    }
+    live |= kColourBit & ~dead;
+    // Loaded when the pass reads it before clearing it, or when it is used
+    // later and not cleared here - what the pass does not draw over has to
+    // come through. Stored unless nothing reads it here or later: written
+    // and never read, it may still be thrown away, since a pass begun again
+    // after a barrier or a copy finds garbage only where nothing looks.
+    no_load = all_attachments & ~(read_before_clear | (live & ~cleared));
+    discard = all_attachments & ~live & ~read;
+    if (xerenge::Diagnostics()) {
+      LogPassAccess(from, area_w, no_load, discard);
+    }
+  };
+  if (pass && pass->clear_first) {
+    uint32_t no_load = 0;
+    uint32_t discard = 0;
+    if (track_access) {
+      attachment_access(0, width, height, true, no_load, discard);
+    }
+    ClearFirstPass(list, pass, no_load, discard);
+  }
   // The decoded video goes first, under everything, when the ring's draws are
   // all there is. With targets followed it keeps its place instead: the title
   // clears the target, draws the video into it and copies it out for the menu
@@ -7507,6 +7654,15 @@ void PlumeDrawContext::EncodeDraws(plume::RenderCommandList* list,
       if (area_w != 0 && (area_w < width || area_h < height)) {
         const plume::RenderRect area(0, 0, int32_t(area_w), int32_t(area_h));
         list->setRenderArea(&area);
+      } else {
+        area_w = width;
+        area_h = height;
+      }
+      if (track_access) {
+        uint32_t no_load = 0;
+        uint32_t discard = 0;
+        attachment_access(from, area_w, area_h, false, no_load, discard);
+        list->setAttachmentAccess(no_load, discard);
       }
     }
   };

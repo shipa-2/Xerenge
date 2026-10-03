@@ -184,6 +184,16 @@ class PlumeSwapchain {
   uint64_t probe_frames_ = 0;
   std::string probe_summary_;
   void CheckProbe();
+  // XERENGE_SNAPSHOT_SECONDS=<s>[,<s>...]: the frame as drawn, saved as a PPM
+  // (XERENGE_SNAPSHOT_DIR, logs by default) that many seconds after the first
+  // present - a look at a run nobody watches.
+  std::unique_ptr<plume::RenderBuffer> snapshot_buffer_;
+  void* snapshot_mapped_ = nullptr;
+  uint32_t snapshot_width_ = 0;
+  uint32_t snapshot_height_ = 0;
+  double snapshot_pending_ = -1.0;
+  bool SnapshotDue(double* seconds);
+  void SaveSnapshot();
   std::unique_ptr<plume::RenderSwapChain> swap_chain_;
   std::unique_ptr<plume::RenderCommandSemaphore> acquire_semaphore_;
   std::vector<std::unique_ptr<plume::RenderCommandSemaphore>> release_semaphores_;

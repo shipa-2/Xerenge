@@ -2051,6 +2051,7 @@ void PlumeGraphicsSystem::PresentClearColorOnUiThread(uint32_t guest_width,
                    plume::RenderTexture* color, const RenderPassBreak& pass) {
     auto* encode_ctx = static_cast<EncodeCtx*>(raw);
     if (!encode_ctx->draw || !encode_ctx->draws) {
+      ClearFirstPass(list, &pass, 0, 0);
       return;
     }
     // Split the frame's cost. The whole present runs up to two seconds in a

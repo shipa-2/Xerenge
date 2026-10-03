@@ -163,6 +163,14 @@ struct RenderPassBreak {
   // The second colour attachment, when the pass has one: the title's render
   // target 1, which a resolve with source 1 copies from.
   plume::RenderTexture* second_target = nullptr;
+  // The pass carries a depth attachment.
+  bool has_depth = false;
+  // The frame's opening clear (colour, the second target and depth), left to
+  // the encoder: made once the frame's textures are in - an upload inside the
+  // pass ends it, storing and loading everything again - and with the first
+  // pass told what it need not load or store (setAttachmentAccess).
+  bool clear_first = false;
+  float clear_color[4] = {};
   // Debug mode: a GPU timestamp between two passes, after the copy into `dest`
   // that ended the first one, which held `draws` draws shading `vertices`
   // vertices, with `binds` pipeline changes. Dest 0: the frame's
@@ -179,6 +187,11 @@ struct RenderPassBreak {
 // which Burnout's scene shaders write their motion vectors into. Every
 // pipeline drawn in such a pass has to declare both.
 bool PlumeSecondTargetEnabled();
+
+// The frame's opening clear (RenderPassBreak::clear_first), when there is one to
+// make, with the first pass told what it need not load or store.
+void ClearFirstPass(plume::RenderCommandList* list, const RenderPassBreak* pass,
+                    uint32_t no_load, uint32_t discard);
 
 // What the last encoded frame held, in one line (for the frame probe).
 extern std::string g_plume_frame_summary;
