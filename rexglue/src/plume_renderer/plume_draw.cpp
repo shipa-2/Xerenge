@@ -4912,9 +4912,22 @@ void PlumeDrawContext::EnsureSampler(const GuestDrawSnapshot& snap, uint32_t slo
   // Anisotropy as the fetch asks for it (kMax_1_1 .. kMax_16_1); the road
   // seen along its length needs it to stay sharp once it has mips.
   const uint32_t aniso = (key >> 15) & 7u;
+  // Capped by XERENGE_MAX_ANISOTROPY (1: none) - at 4 on phones by default:
+  // the title asks 8 of the road and the scene, which a phone's GPU pays for
+  // in every pixel of them.
+  static const uint32_t max_anisotropy = [] {
+    const char* v = std::getenv("XERENGE_MAX_ANISOTROPY");
+#ifdef __ANDROID__
+    const unsigned long fallback = 4;
+#else
+    const unsigned long fallback = 16;
+#endif
+    const unsigned long n = v && *v ? std::strtoul(v, nullptr, 10) : fallback;
+    return uint32_t(std::clamp<unsigned long>(n, 1, 16));
+  }();
   if (aniso >= 2 && aniso <= 5) {
-    desc.anisotropyEnabled = true;
-    desc.maxAnisotropy = 1u << (aniso - 1);
+    desc.maxAnisotropy = std::min(1u << (aniso - 1), max_anisotropy);
+    desc.anisotropyEnabled = desc.maxAnisotropy > 1;
   }
   // 5 fractional bits, signed.
   desc.mipLODBias = float(int32_t((key >> 18) & 0x3FFu) << 22 >> 22) / 32.0f;
