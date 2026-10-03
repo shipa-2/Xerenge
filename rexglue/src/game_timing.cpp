@@ -78,6 +78,24 @@ bool LogicFollowsWallClock() {
   return enabled;
 }
 
+// XERENGE_FPS_30 (the installer's "30 fps lock"): two logic steps and two
+// vblanks to every frame, which is what the title does itself in Crash mode -
+// an even thirty frames a second for a device that cannot hold sixty, with
+// the world still at sixty steps a second. The title asks for one step a frame
+// everywhere else and gets two.
+bool FramesLockedTo30() {
+  static const bool on = std::getenv("XERENGE_FPS_30") != nullptr && !LogicFollowsWallClock();
+  return on;
+}
+
+// Whether the frame being drawn was given two steps where the title asked for
+// one, and the next one. What runs once per drawn frame, believing a frame to
+// be one step long, is then given two steps' time (sub_8210B3C8) and the
+// interface's update runs once a step (sub_824288F8) - at a sixtieth of a
+// second a frame, the sparks, the fades and the menus ran at half speed.
+bool g_doubled_this_frame = false;
+bool g_doubled_next_frame = false;
+
 uint32_t LoadU32(const uint8_t* base, uint32_t address) {
   return xerenge::LoadGuestU32(base, address);
 }
@@ -93,6 +111,23 @@ extern "C" void __imp__sub_82363E68(PPCContext& __restrict, uint8_t*);
 // sub_82363E68(timer, min_steps, max_steps) -> steps to run next frame.
 REX_HOOK_RAW(sub_82363E68) {
   const uint32_t timer = ctx.r3.u32;
+  g_doubled_this_frame = g_doubled_next_frame;
+  g_doubled_next_frame = false;
+  if (FramesLockedTo30() && ctx.r4.u32 == 1) {
+    ctx.r4.u64 = 2;
+    if (ctx.r5.u32 < 2) {
+      ctx.r5.u64 = 2;
+    }
+    g_doubled_next_frame = true;
+  }
+  {
+    static bool shown = false;
+    if (!shown && FramesLockedTo30()) {
+      shown = true;
+      REXLOG_INFO("game timing: 30 fps lock - the timer asked for {} to {} steps, given {} to {}",
+                  g_doubled_next_frame ? 1u : ctx.r4.u32, ctx.r5.u32, ctx.r4.u32, ctx.r5.u32);
+    }
+  }
   g_clock.vblanks_per_frame = ctx.r4.u32 == 2 ? 2u : 1u;
   if (LogicFollowsWallClock() && timer >= 0x10000 && timer < 0xA0000000u) {
     const uint32_t mode = LoadU32(base, timer);
@@ -166,12 +201,13 @@ extern "C" void __imp__sub_824288F8(PPCContext& __restrict, uint8_t*);
 // and a frame were the same thing: not at all on a frame without one, twice
 // on a frame that caught up two.
 REX_HOOK_RAW(sub_824288F8) {
-  if (!LogicFollowsWallClock()) {
+  if (!LogicFollowsWallClock() && !g_doubled_this_frame) {
     __imp__sub_824288F8(ctx, base);
     return;
   }
   const uint64_t milliseconds = ctx.r3.u64;
-  for (uint32_t i = 0; i < g_steps_this_frame; ++i) {
+  const uint32_t steps = LogicFollowsWallClock() ? g_steps_this_frame : 2u;
+  for (uint32_t i = 0; i < steps; ++i) {
     ctx.r3.u64 = milliseconds;
     __imp__sub_824288F8(ctx, base);
   }
@@ -202,6 +238,8 @@ REX_HOOK_RAW(sub_8210B3C8) {
   __imp__sub_8210B3C8(ctx, base);
   if (LogicFollowsWallClock() && g_per_frame_depth > 0) {
     ctx.f1.f64 = double(float(ctx.f1.f64 * g_frame_scale));
+  } else if (g_doubled_this_frame && g_per_frame_depth > 0) {
+    ctx.f1.f64 = double(float(ctx.f1.f64 * 2.0));
   }
 }
 

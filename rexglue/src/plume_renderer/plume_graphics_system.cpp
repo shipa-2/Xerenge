@@ -1959,30 +1959,6 @@ void PlumeGraphicsSystem::PresentClearColorOnUiThread(uint32_t guest_width,
         REXLOG_WARN("plume: overlay ring overflowed, {} draw(s) lost from this frame", overwritten);
       }
     }
-    // XERENGE_FPS_30 (the installers' "30 fps lock"): the title runs at its
-    // sixty as ever - its logic, its input, its effects all once a frame -
-    // and a frame that comes less than a frame and a half after the last one
-    // shown is left undrawn, its copies with it. Half the GPU's work, and an
-    // even thirty. Giving the title two logic steps a frame instead, as Crash
-    // mode does, lost button presses made in the first of them (the music
-    // player's track change) and slowed what runs once a frame.
-    {
-      static const bool locked = std::getenv("XERENGE_FPS_30") != nullptr;
-      static auto last_shown = std::chrono::steady_clock::time_point{};
-      const auto now = std::chrono::steady_clock::now();
-      if (locked && !overlays.empty() && now - last_shown < std::chrono::milliseconds(25)) {
-        TakePendingResolves();
-        static std::atomic<uint64_t> dropped{0};
-        const uint64_t n = dropped.fetch_add(1, std::memory_order_relaxed) + 1;
-        if (n == 1 || (n % 1800) == 0) {
-          REXLOG_INFO("plume: 30 fps lock - {} frame(s) left undrawn so far", n);
-        }
-        return;
-      }
-      if (!overlays.empty()) {
-        last_shown = now;
-      }
-    }
     if (saw_video) {
       no_video_presents_ = 0;
     } else {

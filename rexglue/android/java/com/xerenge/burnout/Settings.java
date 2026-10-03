@@ -53,7 +53,7 @@ final class Settings {
     boolean online;
     String lobbyServer = DEFAULT_SERVER;
     boolean asyncPresent, earlySubmit = true, packedVertices = true, culling, fpsCounter;
-    boolean fps30;  // every other frame left undrawn: an even 30
+    boolean fps30;  // two logic steps and two vblanks a frame: an even 30
     String renderResolution = "";
     boolean aspect169 = true;  // Android: keep the frame 16:9, black bars on a wider screen
     // On-screen controls (Android only; the desktop has the keyboard instead).
