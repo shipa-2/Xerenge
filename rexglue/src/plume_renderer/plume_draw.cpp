@@ -5381,7 +5381,17 @@ void PlumeDrawContext::ResolveRenderTarget(plume::RenderCommandList* list,
           zero_upload_.reset();
           return;
         }
-        std::memset(mapped, 0, size_t(bytes));
+        // "No motion" as the scene's shaders write it into render target 1:
+        // x = min(vx + 1, 1), y = max(vx, 0), z and w the same for vy, so
+        // (1, 0, 1, 0), and the blur decodes x + y - 1. Zeroes read as a motion
+        // of -1 on both axes: the blur's eight taps went off the picture and
+        // the takedown camera, which always blurs, showed one flat colour. Red
+        // and blue are both 255, so the bytes are the same in BGRA and RGBA.
+        auto* texels = static_cast<uint32_t*>(mapped);
+        const uint8_t still[4] = {0xFF, 0x00, 0xFF, 0x00};
+        uint32_t pattern = 0;
+        std::memcpy(&pattern, still, sizeof(pattern));
+        std::fill(texels, texels + bytes / 4, pattern);
         zero_upload_->unmap();
         zero_upload_bytes_ = bytes;
       }
@@ -7870,7 +7880,8 @@ void PlumeDrawContext::EncodeDraws(plume::RenderCommandList* list,
         uint32_t region_h = 0;
         native_extent(snap.resolve_width, snap.resolve_height, region_w, region_h);
         // The motion vectors, with no second target to copy them from (motion
-        // blur off): no motion - zeroes, put in once. Copied from the colour
+        // blur off): no motion, as the scene writes it (ResolveRenderTarget), put
+        // in once. Copied from the colour
         // instead, the blur at speed read the picture as movement.
         const bool zero_vectors =
             snap.resolve_source == 1 && !pass->second_target && !snap.resolve_cube;
