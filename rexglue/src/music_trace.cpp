@@ -43,6 +43,21 @@ bool Room() {
 
 REX_HOOK_RAW(sub_8210F940) {
   const uint32_t action = ctx.r3.u32;
+  if (action == kSkipAction) {
+    // The pads the action is bound to: up to two port indices (+2441, +2442),
+    // each used only when its flag is set (+2443, +2444).
+    static uint32_t last_binding = ~0u;
+    const uint32_t binding = (uint32_t(LoadU8(base, action + 2441)) << 24) |
+                             (uint32_t(LoadU8(base, action + 2442)) << 16) |
+                             (uint32_t(LoadU8(base, action + 2443)) << 8) |
+                             LoadU8(base, action + 2444);
+    if (binding != last_binding && Room()) {
+      REXLOG_INFO("music: track skip bound to port {} ({}) and port {} ({})",
+                  int8_t(binding >> 24), (binding >> 8) & 0xFF ? "on" : "off",
+                  int8_t(binding >> 16), binding & 0xFF ? "on" : "off");
+    }
+    last_binding = binding;
+  }
   __imp__sub_8210F940(ctx, base);
   if (action == kSkipAction) {
     static int last = -1;
