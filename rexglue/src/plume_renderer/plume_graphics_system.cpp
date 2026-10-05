@@ -2205,7 +2205,7 @@ void PlumeGraphicsSystem::PresentClearColorOnUiThread(uint32_t guest_width,
     }
   }
   swapchain_->ClearAndPresent(0.03f, 0.04f, 0.07f, 1.0f, encode, &ctx, resolve, hold);
-  if (FrameGenerationEnabled() && !hold) {
+  if ((FrameGenerationEnabled() || CrashInterpolationEnabled()) && !hold) {
     // Kept for the next frame's frames between: swapped, not copied - this
     // frame's list is cleared and refilled next time either way.
     framegen_previous_.swap(batch);
@@ -4135,7 +4135,8 @@ void PlumeGraphicsSystem::Shutdown() {
 namespace rex::plume_renderer {
 
 uint32_t PlumeGraphicsSystem::FramesToGenerate() {
-  if (!FrameGenerationEnabled() || !swapchain_) {
+  const bool general = FrameGenerationEnabled();
+  if ((!general && !CrashInterpolationEnabled()) || !swapchain_) {
     return 0;
   }
   // The title's rate: sixty, or thirty in Crash mode (its clock says which).
@@ -4149,6 +4150,13 @@ uint32_t PlumeGraphicsSystem::FramesToGenerate() {
     } clock{};
     clock_provider(&clock, sizeof(clock));
     vblanks = clock.vblanks_per_frame == 2 ? 2u : 1u;
+  }
+  // Crash mode's interpolation alone: only while the title runs at thirty, and
+  // the pace measured afresh each time it gets there.
+  if (!general && vblanks != 2) {
+    framegen_last_arrival_ = {};
+    framegen_interval_us_ = 0.0;
+    return 0;
   }
   const double title_hz = 60.0 / double(vblanks);
   const double period_us = 1e6 / title_hz;
@@ -4186,7 +4194,9 @@ uint32_t PlumeGraphicsSystem::FramesToGenerate() {
       display_hz = hz;
     }
   }
-  const double target_hz = FrameGenerationTarget() ? double(FrameGenerationTarget()) : double(display_hz);
+  const double target_hz = !general                 ? 60.0
+                           : FrameGenerationTarget() ? double(FrameGenerationTarget())
+                                                     : double(display_hz);
   const uint32_t frames =
       uint32_t(std::clamp(std::lround(target_hz / title_hz) - 1, 0l, 3l));
 

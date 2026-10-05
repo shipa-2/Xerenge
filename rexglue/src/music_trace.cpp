@@ -6,8 +6,11 @@
 //     it pressed;
 //   - pressed, with +784 clear: +784 set, XMPStop (sub_822AD778); the stop's
 //     notification plays the next song; +784 clears when XMP says "playing".
-// Logged only when something changes: whether the press is seen, and the
-// update's fields.
+// In Crash mode the press was lost (two logic steps, two pad polls, a frame;
+// the "just pressed" edge gone before the once-a-frame music update looked):
+// the hook on sub_8210F940 also takes the press as frames see it. Logged only
+// when something changes: whether the press is seen, the action's pad
+// binding, and the update's fields.
 #include <cstdint>
 #include <cstring>
 
@@ -60,6 +63,32 @@ REX_HOOK_RAW(sub_8210F940) {
   }
   __imp__sub_8210F940(ctx, base);
   if (action == kSkipAction) {
+    // The press as a frame sees it. The control is "just pressed": button 20
+    // down now (+37 + 20 of the pad) and not at the poll before (+9 + 20). The
+    // pad is polled once per logic step, and Crash mode runs two a frame: by
+    // the time the music update looks, once a frame, the second poll has made
+    // "before" equal "now" and the press is gone - it only ever got through
+    // when it fell between the two polls. Down now and not a frame ago, on a
+    // pad the action is bound to, counts as well.
+    static bool was_down = false;
+    bool down = false;
+    for (int i = 0; i < 2; ++i) {
+      if (LoadU8(base, action + 2443 + i) == 0) {
+        continue;
+      }
+      const int8_t port = int8_t(LoadU8(base, action + 2441 + i));
+      if (port < 0 || port >= 4) {
+        continue;
+      }
+      const uint32_t pad = LoadU32(base, action + 1000 + uint32_t(port) * 360 + 4);
+      if (pad >= 0x10000 && LoadU8(base, pad + 8) != 0 && LoadU8(base, pad + 37 + 20) != 0) {
+        down = true;
+      }
+    }
+    if (down && !was_down) {
+      ctx.r3.u64 = 1;
+    }
+    was_down = down;
     static int last = -1;
     const int pressed = (ctx.r3.u32 & 0xFF) != 0;
     if (pressed != last && Room()) {

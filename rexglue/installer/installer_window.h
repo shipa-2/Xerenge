@@ -96,6 +96,7 @@ class InstallerWindow : public QWidget {
   QCheckBox* fps_box_ = nullptr;
   QCheckBox* fps30_box_ = nullptr;
   QCheckBox* framegen_box_ = nullptr;
+  QCheckBox* crash_interp_box_ = nullptr;
   // The keyboard as a pad: on or off, and a key per pad control (keybind_*).
   QCheckBox* keyboard_box_ = nullptr;
   QList<QPair<QString, QLineEdit*>> key_edits_;

@@ -96,7 +96,7 @@ public class InstallerActivity extends Activity {
     private CheckBox bloomBox, blurBox, debugBox;
     private Spinner languageSpinner;
     private CheckBox asyncBox, earlySubmitBox, packedVerticesBox, cullingBox, reflectionSplitBox, fpsBox, fps30Box,
-            frameGenBox;
+            frameGenBox, crashInterpBox;
     private Spinner resolutionSpinner, anisotropySpinner;
     private CheckBox aspectBox;
     private TextView gpuStatus;
@@ -378,6 +378,7 @@ public class InstallerActivity extends Activity {
         fpsBox = check(hacks, R.string.fps_counter, R.string.fps_counter_tip);
         fps30Box = check(hacks, R.string.fps_30, R.string.fps_30_tip);
         frameGenBox = check(hacks, R.string.frame_generation, R.string.frame_generation_tip);
+        crashInterpBox = check(hacks, R.string.crash_interpolation, R.string.crash_interpolation_tip);
         hacks.setVisibility(View.GONE);
         page.addView(hacks);
         hacksToggle.setOnClickListener(v -> {
@@ -482,6 +483,7 @@ public class InstallerActivity extends Activity {
         fpsBox.setChecked(s.fpsCounter);
         fps30Box.setChecked(s.fps30);
         frameGenBox.setChecked(s.frameGeneration);
+        crashInterpBox.setChecked(s.crashInterpolation);
     }
 
     private void showNetwork(Settings s) {
@@ -524,6 +526,7 @@ public class InstallerActivity extends Activity {
         s.fpsCounter = fpsBox.isChecked();
         s.fps30 = fps30Box.isChecked();
         s.frameGeneration = frameGenBox.isChecked();
+        s.crashInterpolation = crashInterpBox.isChecked();
         s.touchControls = touchBox.isChecked();
         s.touchOpacity = opacityBar.getProgress() + 10;
         return s;

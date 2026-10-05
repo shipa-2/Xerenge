@@ -62,6 +62,7 @@ final class Settings {
     boolean asyncPresent, earlySubmit = true, packedVertices = true, culling, fpsCounter;
     boolean fps30;  // two logic steps and two vblanks a frame: an even 30
     boolean frameGeneration;  // frames drawn between the game's, for a 120 Hz screen
+    boolean crashInterpolation = true;  // Crash mode drawn at sixty, a frame between each two of its thirty
     boolean reflectionSplit;  // two of the reflection cube's faces a frame
     String renderResolution = "";
     String anisotropy = "4";  // the title asks 8 of the road; 4 costs a phone less
@@ -150,6 +151,7 @@ final class Settings {
         settings.fpsCounter = flag(v, "fps_counter", settings.fpsCounter);
         settings.fps30 = flag(v, "fps_30", settings.fps30);
         settings.frameGeneration = flag(v, "frame_generation", settings.frameGeneration);
+        settings.crashInterpolation = flag(v, "crash_interpolation", settings.crashInterpolation);
         settings.touchControls = flag(v, "touch_controls", settings.touchControls);
         try {
             if (v.containsKey("touch_opacity")) {
@@ -201,6 +203,7 @@ final class Settings {
            .append("fps_counter = ").append(tf(fpsCounter)).append('\n')
            .append("fps_30 = ").append(tf(fps30)).append('\n')
            .append("frame_generation = ").append(tf(frameGeneration)).append('\n')
+           .append("crash_interpolation = ").append(tf(crashInterpolation)).append('\n')
            .append("# On-screen controls: translucent pad buttons over the game, and how opaque (percent)\n")
            .append("touch_controls = ").append(tf(touchControls)).append('\n')
            .append("touch_opacity = ").append(touchOpacity).append('\n');
@@ -277,6 +280,7 @@ final class Settings {
         if ("true".equals(value("fps_counter"))) env("XERENGE_FPS_SHOW", "1");
         if ("true".equals(value("fps_30"))) env("XERENGE_FPS_30", "1");
         if ("true".equals(value("frame_generation"))) env("XERENGE_FRAME_GENERATION", "120");
+        if ("false".equals(value("crash_interpolation"))) env("XERENGE_CRASH_INTERPOLATION", "0");
         if ("true".equals(value("debug"))) {
             // The renderer's own counting and timing, per draw: debug mode only.
             env("XERENGE_DEBUG", "1");

@@ -117,6 +117,7 @@ elif [ -n "$aniso" ]; then export XERENGE_MAX_ANISOTROPY="$aniso"; fi
 [ "$(value fps_counter)" = true ] && export XERENGE_FPS_SHOW=1
 [ "$(value fps_30)" = true ] && export XERENGE_FPS_30=1
 [ "$(value frame_generation)" = true ] && export XERENGE_FRAME_GENERATION=120
+[ "$(value crash_interpolation)" = false ] && export XERENGE_CRASH_INTERPOLATION=0
 [ "$(value aspect_16_9)" = false ] || export XERENGE_ASPECT_16_9=1
 
 # Fullscreen unless windowed; the keyboard as a pad with its keybind_* lines.
@@ -218,6 +219,7 @@ if /i "%anisotropy%"=="off" (set "XERENGE_MAX_ANISOTROPY=1") else if defined ani
 if /i "%fps_counter%"=="true" set "XERENGE_FPS_SHOW=1"
 if /i "%fps_30%"=="true" set "XERENGE_FPS_30=1"
 if /i "%frame_generation%"=="true" set "XERENGE_FRAME_GENERATION=120"
+if /i "%crash_interpolation%"=="false" set "XERENGE_CRASH_INTERPOLATION=0"
 if /i not "%aspect_16_9%"=="false" set "XERENGE_ASPECT_16_9=1"
 
 rem Fullscreen unless windowed; the keyboard as a pad with its keybind_* lines.
@@ -567,6 +569,13 @@ InstallerWindow::InstallerWindow(QWidget* parent) : QWidget(parent) {
          "behind. The game runs at its sixty as ever (thirty in Crash mode); on a machine "
          "without the power to spare it switches itself off."));
   hacks_layout->addWidget(framegen_box_);
+  crash_interp_box_ = new QCheckBox(tr("Smooth Crash mode (60 fps)"));
+  crash_interp_box_->setToolTip(
+      tr("Crash mode runs at thirty frames a second, as on the console: a frame drawn between "
+         "each two of its frames makes it sixty. The game itself is untouched; nowhere else is "
+         "affected."));
+  crash_interp_box_->setChecked(true);
+  hacks_layout->addWidget(crash_interp_box_);
   hacks->setVisible(false);
   layout->addWidget(hacks);
   connect(hacks_toggle, &QToolButton::toggled, this, [hacks, hacks_toggle](bool open) {
@@ -851,6 +860,7 @@ void InstallerWindow::LoadSettings(const QString& path) {
   flag("fps_counter", fps_box_);
   flag("fps_30", fps30_box_);
   flag("frame_generation", framegen_box_);
+  flag("crash_interpolation", crash_interp_box_);
   flag("keyboard", keyboard_box_);
   for (const auto& [setting, edit] : key_edits_) {
     if (values.contains(setting)) {
@@ -941,6 +951,7 @@ void InstallerWindow::StartInstall() {
         << "fps_counter = " << (fps_box_->isChecked() ? "true" : "false") << "\n"
         << "fps_30 = " << (fps30_box_->isChecked() ? "true" : "false") << "\n"
         << "frame_generation = " << (framegen_box_->isChecked() ? "true" : "false") << "\n"
+        << "crash_interpolation = " << (crash_interp_box_->isChecked() ? "true" : "false") << "\n"
         << "# The keyboard as a pad, and a key (or several, comma separated) per control\n"
         << "keyboard = " << (keyboard_box_->isChecked() ? "true" : "false") << "\n";
     for (const auto& [setting, edit] : key_edits_) {

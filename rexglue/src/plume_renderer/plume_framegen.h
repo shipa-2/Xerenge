@@ -19,6 +19,10 @@ namespace rex::plume_renderer {
 bool FrameGenerationEnabled();
 // The refresh rate asked for (0: the screen's own).
 uint32_t FrameGenerationTarget();
+// XERENGE_CRASH_INTERPOLATION (on unless "0" or "false"): where the title runs at
+// thirty - Crash mode - one frame between each two of its frames, for sixty,
+// whatever the screen. Nothing elsewhere; FrameGenerationEnabled covers more.
+bool CrashInterpolationEnabled();
 
 // How two frames' draws correspond: each draw of the newer frame whose
 // placement can be followed, with the draw it was in the older one.

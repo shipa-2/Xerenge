@@ -91,6 +91,16 @@ const std::vector<uint16_t>& MatrixRegisters(uint64_t vs_hash) {
   return info ? info->matrix_registers : kNone;
 }
 
+// A matrix element, not the garbage the title leaves in a register's unused
+// lanes - the .w of its world-view rows holds values like 1.8e22 that change
+// from frame to frame. Counted, they swamped every comparison: no movement
+// ever looked like a jump, and of several objects of one mesh (the cars and
+// debris of Crash mode) each was paired almost at random, drawn between two
+// different objects - they skipped about.
+bool Placement(float x) {
+  return std::isfinite(x) && std::fabs(x) < 1.0e7f;
+}
+
 // How far apart two draws' placements are.
 double Distance(const GuestDrawSnapshot& a, const GuestDrawSnapshot& b,
                 const std::vector<uint16_t>& regs) {
@@ -99,7 +109,9 @@ double Distance(const GuestDrawSnapshot& a, const GuestDrawSnapshot& b,
     for (int c = 0; c < 4; ++c) {
       const float x = AsFloat(a.vs_constants[r * 4 + c]);
       const float y = AsFloat(b.vs_constants[r * 4 + c]);
-      d += (std::isfinite(x) && std::isfinite(y)) ? std::fabs(double(x) - double(y)) : 1e9;
+      if (Placement(x) && Placement(y)) {
+        d += std::fabs(double(x) - double(y));
+      }
     }
   }
   return d;
@@ -111,6 +123,14 @@ bool FrameGenerationEnabled() {
   static const bool on = [] {
     const char* v = std::getenv("XERENGE_FRAME_GENERATION");
     return v != nullptr && *v != '\0' && *v != '0';
+  }();
+  return on;
+}
+
+bool CrashInterpolationEnabled() {
+  static const bool on = [] {
+    const char* v = std::getenv("XERENGE_CRASH_INTERPOLATION");
+    return v == nullptr || (std::strcmp(v, "0") != 0 && std::strcmp(v, "false") != 0);
   }();
   return on;
 }
@@ -191,7 +211,6 @@ FramePairing PairFrames(const std::vector<GuestDrawSnapshot>& previous,
       match.current = m;
       match.previous = candidates[best_j];
       double moved = 0.0, size = 0.0;
-      bool bad = false;
       for (const uint16_t r : regs) {
         if (std::memcmp(&a.vs_constants[r * 4], &b.vs_constants[r * 4], 16) == 0) {
           continue;
@@ -200,8 +219,9 @@ FramePairing PairFrames(const std::vector<GuestDrawSnapshot>& previous,
         for (int c = 0; c < 4; ++c) {
           const float x = AsFloat(a.vs_constants[r * 4 + c]);
           const float y = AsFloat(b.vs_constants[r * 4 + c]);
-          if (!std::isfinite(x) || !std::isfinite(y)) {
-            bad = true;
+          if (!Placement(x) || !Placement(y)) {
+            // An unused lane: it goes between 0 and 1e22 from frame to frame,
+            // so it says nothing about the object.
             continue;
           }
           moved += std::fabs(double(y) - double(x));
@@ -215,7 +235,7 @@ FramePairing PairFrames(const std::vector<GuestDrawSnapshot>& previous,
       // A jump rather than a movement: drawn as it is now. A frame of a car
       // at speed moves its nearest objects a fair part of their own size in
       // the camera's matrices, so only well past that is a jump.
-      if (bad || (size > 0.0 && moved > 0.8 * size)) {
+      if (size > 0.0 && moved > 0.8 * size) {
         ++pairing.jumped;
         continue;
       }
@@ -240,7 +260,9 @@ void BuildInBetween(const std::vector<GuestDrawSnapshot>& previous,
       for (int c = 0; c < 4; ++c) {
         const float x = AsFloat(a.vs_constants[r * 4 + c]);
         const float y = AsFloat(std::as_const(d.vs_constants)[r * 4 + c]);
-        d.vs_constants[r * 4 + c] = AsBits(x + (y - x) * t);
+        if (Placement(x) && Placement(y)) {
+          d.vs_constants[r * 4 + c] = AsBits(x + (y - x) * t);
+        }
       }
     }
   }
