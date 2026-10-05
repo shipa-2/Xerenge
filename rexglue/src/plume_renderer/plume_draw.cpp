@@ -7395,6 +7395,27 @@ void PlumeDrawContext::EncodeDraws(plume::RenderCommandList* list,
                          int32_t(vx + vw));
         sy1 = std::clamp(int32_t(vy) + int32_t(std::ceil(snap.scissor_rect[3] * ky)), sy0,
                          int32_t(vy + vh));
+        // Nothing left of it: the takedown camera's whole scene (511 draws and
+        // the blur composite) came out against an empty scissor, and the replay
+        // was the clear colour alone. The title would not draw a scene to clip
+        // all of it away; the rectangle at +0x3220 is not what the GPU used
+        // there (Direct3D intersects it with the viewport into
+        // PA_SC_WINDOW_SCISSOR, and the tiled scene's band is only 256 high), so
+        // an empty result is taken as no scissor rather than as nothing at all.
+        if (sx1 <= sx0 || sy1 <= sy0) {
+          static std::atomic<uint32_t> shown{0};
+          if (shown.fetch_add(1, std::memory_order_relaxed) < 8) {
+            REXLOG_INFO("plume: the title's scissor ({},{},{},{}) on a {}x{} target is empty here; "
+                        "drawn without it (vs={:016X})",
+                        snap.scissor_rect[0], snap.scissor_rect[1], snap.scissor_rect[2],
+                        snap.scissor_rect[3], snap.d3d_target_width, snap.d3d_target_height,
+                        snap.vs_hash);
+          }
+          sx0 = int32_t(vx);
+          sy0 = int32_t(vy);
+          sx1 = int32_t(vx + vw);
+          sy1 = int32_t(vy + vh);
+        }
       }
       if (sx0 != scissor_now[0] || sy0 != scissor_now[1] || sx1 != scissor_now[2] ||
           sy1 != scissor_now[3]) {
