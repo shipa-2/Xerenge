@@ -210,12 +210,18 @@ FramePairing PairFrames(const std::vector<GuestDrawSnapshot>& previous,
       FramePairing::Match match;
       match.current = m;
       match.previous = candidates[best_j];
-      double moved = 0.0, size = 0.0;
+      // Judged register by register - a row of a matrix that changed by about
+      // its own size. Summed over all of them, as it was, the camera's large
+      // entries and the translations in thousands hid a piece of debris put
+      // somewhere else entirely (a slot of the title's reused for a new one), and
+      // it was drawn sliding across between the two.
+      bool jumped = false;
       for (const uint16_t r : regs) {
         if (std::memcmp(&a.vs_constants[r * 4], &b.vs_constants[r * 4], 16) == 0) {
           continue;
         }
         match.registers.push_back(r);
+        double moved = 0.0, size = 0.0;
         for (int c = 0; c < 4; ++c) {
           const float x = AsFloat(a.vs_constants[r * 4 + c]);
           const float y = AsFloat(b.vs_constants[r * 4 + c]);
@@ -227,6 +233,7 @@ FramePairing PairFrames(const std::vector<GuestDrawSnapshot>& previous,
           moved += std::fabs(double(y) - double(x));
           size += 0.5 * (std::fabs(double(x)) + std::fabs(double(y)));
         }
+        jumped = jumped || (size > 1e-3 && moved > 0.8 * size);
       }
       if (match.registers.empty()) {
         continue;  // did not move: nothing to place between
@@ -235,7 +242,7 @@ FramePairing PairFrames(const std::vector<GuestDrawSnapshot>& previous,
       // A jump rather than a movement: drawn as it is now. A frame of a car
       // at speed moves its nearest objects a fair part of their own size in
       // the camera's matrices, so only well past that is a jump.
-      if (size > 0.0 && moved > 0.8 * size) {
+      if (jumped) {
         ++pairing.jumped;
         continue;
       }

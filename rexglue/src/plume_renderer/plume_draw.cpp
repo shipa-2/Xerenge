@@ -437,7 +437,15 @@ constexpr uint32_t kSharedConstantBytes = 512;
 // reflection cube and the scene itself. At 524288 the buffer ran out before
 // post-processing, and everything after - the final composite and the whole
 // interface - was dropped, over a hundred thousand draws a run.
+// And Crash mode's junctions, every car and piece of debris on screen with the
+// six faces, filled half of that a frame (524288) and dropped the post-processing
+// and the interface again: a black 320x180 corner and no HUD, flickering. Twice
+// that on a desktop (640 MB of upload heap); a phone keeps the smaller one.
+#if defined(__ANDROID__)
 constexpr uint32_t kDummyVertexCount = 1048576;
+#else
+constexpr uint32_t kDummyVertexCount = 2097152;
+#endif
 constexpr uint32_t kVertsPerFrame = kDummyVertexCount / 2;
 constexpr uint32_t kCacheVertexCount = 1048576;
 constexpr uint32_t kInputLocationCount = 20;

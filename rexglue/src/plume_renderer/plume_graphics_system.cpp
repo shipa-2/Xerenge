@@ -2185,6 +2185,24 @@ void PlumeGraphicsSystem::PresentClearColorOnUiThread(uint32_t guest_width,
                   generate, pairing.matches.size(), pairing.jumped, pairing.cut ? ", a cut" : "");
     }
     ++reports;
+    {
+      // Every two seconds while it runs: how much was followed and jumped,
+      // and how many frames were cuts drawn without anything between.
+      static uint64_t frames = 0, followed = 0, jumped = 0, cuts = 0;
+      static auto since = std::chrono::steady_clock::now();
+      ++frames;
+      followed += pairing.followed;
+      jumped += pairing.jumped;
+      cuts += pairing.cut ? 1 : 0;
+      const auto now = std::chrono::steady_clock::now();
+      if (now - since >= std::chrono::seconds(2)) {
+        REXLOG_INFO("plume: frame generation - {} frames: {:.0f} draws followed and {:.1f} jumped a "
+                    "frame, {} cuts",
+                    frames, double(followed) / double(frames), double(jumped) / double(frames), cuts);
+        frames = followed = jumped = cuts = 0;
+        since = now;
+      }
+    }
     if (!pairing.cut) {
       auto show_only = [](void* raw, plume::RenderCommandList* list, uint32_t width,
                           uint32_t height, plume::RenderTexture* color, const RenderPassBreak&) {
