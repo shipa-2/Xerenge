@@ -73,8 +73,34 @@ jobs:
           git -C "$RUNNER_TEMP/assets" remote set-url origin https://github.com/shipa-2/xerenge-assets.git
           ls -la "$RUNNER_TEMP/assets/game" "$RUNNER_TEMP/assets/game/graphics"
 
+      # The SDK, plume and XenosRecomp are separate forks that rarely change
+      # between runs; cached by their current commit, so an unchanged fork
+      # is a cache restore (seconds) rather than a full clone and rebuild
+      # (minutes) - CMake and Ninja still see everything up to date and do
+      # nothing further, which is why the scripts below are unchanged.
+      - name: Resolve SDK/plume/XenosRecomp commits
+        id: pins
+        run: |
+          echo "sdk=$(git ls-remote https://github.com/shipa-2/rexglue-xerenge.git HEAD | cut -f1)" >> "$GITHUB_OUTPUT"
+          echo "plume=$(git ls-remote https://github.com/shipa-2/plume.git HEAD | cut -f1)" >> "$GITHUB_OUTPUT"
+          echo "xenos=$(git ls-remote https://github.com/shipa-2/XenosRecomp-xerenge.git HEAD | cut -f1)" >> "$GITHUB_OUTPUT"
+
+      - name: Cache the SDK checkout and build
+        uses: actions/cache@v4
+        with:
+          path: rexglue-sdk
+          key: sdk-linux-amd64-${{ steps.pins.outputs.sdk }}
+
       - name: SDK
         run: ./scripts/setup-sdk.sh
+
+      - name: Cache plume and XenosRecomp
+        uses: actions/cache@v4
+        with:
+          path: |
+            plume
+            XenosRecomp
+          key: deps-linux-amd64-${{ steps.pins.outputs.plume }}-${{ steps.pins.outputs.xenos }}
 
       - name: plume and XenosRecomp
         run: ./scripts/setup-deps.sh
@@ -145,6 +171,12 @@ jobs:
           arch: win64_msvc2022_64
           cache: true
 
+      - name: Exclude the workspace from Windows Defender
+        shell: pwsh
+        run: |
+          Add-MpPreference -ExclusionPath "${{ github.workspace }}"
+          Add-MpPreference -ExclusionPath "$env:RUNNER_TEMP"
+
       - name: Set up sccache
         uses: hendrikmuhs/ccache-action@v1.2.22
         with:
@@ -162,8 +194,31 @@ jobs:
           git -C ../xerenge-assets remote set-url origin https://github.com/shipa-2/xerenge-assets.git
           ls -la ../xerenge-assets/game ../xerenge-assets/game/graphics
 
+      # See the matching step in linux-amd64 for why: an unchanged fork
+      # restores from cache instead of a full clone and rebuild.
+      - name: Resolve SDK/plume/XenosRecomp commits
+        id: pins
+        run: |
+          echo "sdk=$(git ls-remote https://github.com/shipa-2/rexglue-xerenge.git HEAD | cut -f1)" >> "$GITHUB_OUTPUT"
+          echo "plume=$(git ls-remote https://github.com/shipa-2/plume.git HEAD | cut -f1)" >> "$GITHUB_OUTPUT"
+          echo "xenos=$(git ls-remote https://github.com/shipa-2/XenosRecomp-xerenge.git HEAD | cut -f1)" >> "$GITHUB_OUTPUT"
+
+      - name: Cache the SDK checkout and build
+        uses: actions/cache@v4
+        with:
+          path: rexglue-sdk
+          key: sdk-win-amd64-${{ steps.pins.outputs.sdk }}
+
       - name: SDK
         run: ./scripts/setup-sdk.sh
+
+      - name: Cache plume and XenosRecomp
+        uses: actions/cache@v4
+        with:
+          path: |
+            plume
+            XenosRecomp
+          key: deps-win-amd64-${{ steps.pins.outputs.plume }}-${{ steps.pins.outputs.xenos }}
 
       - name: plume and XenosRecomp
         run: ./scripts/setup-deps.sh
@@ -274,8 +329,31 @@ jobs:
           git clone --depth 1 "https://x-access-token:${ASSETS_TOKEN}@github.com/shipa-2/xerenge-assets.git" "$RUNNER_TEMP/assets"
           git -C "$RUNNER_TEMP/assets" remote set-url origin https://github.com/shipa-2/xerenge-assets.git
 
+      # See the matching step in linux-amd64 for why: an unchanged fork
+      # restores from cache instead of a full clone and rebuild.
+      - name: Resolve SDK/plume/XenosRecomp commits
+        id: pins
+        run: |
+          echo "sdk=$(git ls-remote https://github.com/shipa-2/rexglue-xerenge.git HEAD | cut -f1)" >> "$GITHUB_OUTPUT"
+          echo "plume=$(git ls-remote https://github.com/shipa-2/plume.git HEAD | cut -f1)" >> "$GITHUB_OUTPUT"
+          echo "xenos=$(git ls-remote https://github.com/shipa-2/XenosRecomp-xerenge.git HEAD | cut -f1)" >> "$GITHUB_OUTPUT"
+
+      - name: Cache the SDK checkout and build
+        uses: actions/cache@v4
+        with:
+          path: rexglue-sdk
+          key: sdk-android-arm64-${{ steps.pins.outputs.sdk }}
+
       - name: SDK
         run: ./scripts/setup-sdk.sh
+
+      - name: Cache plume and XenosRecomp
+        uses: actions/cache@v4
+        with:
+          path: |
+            plume
+            XenosRecomp
+          key: deps-android-arm64-${{ steps.pins.outputs.plume }}-${{ steps.pins.outputs.xenos }}
 
       - name: plume and XenosRecomp
         run: ./scripts/setup-deps.sh
