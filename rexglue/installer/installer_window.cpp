@@ -146,9 +146,14 @@ if [ "$(value debug)" = true ]; then
     [ "$(value debug_noisy)" = true ] && extra="$extra --log_noisy=true"
 fi
 
-export SDL_VIDEODRIVER=x11
-export LD_LIBRARY_PATH="$dir/bin${LD_LIBRARY_PATH:+:$LD_LIBRARY_PATH}"
-logs="${XDG_STATE_HOME:-$HOME/.local/state}/xerenge-burnout"
+if [ "$(uname -s)" = Darwin ]; then
+    # The game finds its libraries, the Vulkan loader and MoltenVK beside it.
+    logs="$HOME/Library/Logs/xerenge-burnout"
+else
+    export SDL_VIDEODRIVER=x11
+    export LD_LIBRARY_PATH="$dir/bin${LD_LIBRARY_PATH:+:$LD_LIBRARY_PATH}"
+    logs="${XDG_STATE_HOME:-$HOME/.local/state}/xerenge-burnout"
+fi
 mkdir -p "$logs"
 
 # Started from a shortcut there is no terminal to show why a start failed
@@ -463,6 +468,12 @@ InstallerWindow::InstallerWindow(QWidget* parent) : QWidget(parent) {
   layout->addWidget(bloom_box_);
   layout->addWidget(blur_box_);
   layout->addWidget(xenia_box_);
+#ifdef Q_OS_MACOS
+  // Xenia's renderer drew a black picture when tried on a Mac; MoltenVK reports
+  // no geometry shaders and no way to turn primitive restart off. plume is the
+  // only one offered there.
+  xenia_box_->setVisible(false);
+#endif
 
   windowed_box_ = new QCheckBox(tr("Windowed"));
   windowed_box_->setToolTip(tr("Run in a window. Fullscreen otherwise."));
@@ -885,8 +896,9 @@ void InstallerWindow::SetBusy(bool busy) {
 }
 
 // Where the built game that ships with the installer is: payload/ beside it,
-// or inside the AppImage under usr/share/xerenge/payload. XERENGE_PAYLOAD
-// names another one (a CI package unpacked by hand, say).
+// inside the AppImage under usr/share/xerenge/payload, or in the macOS app's
+// Contents/Resources/payload. XERENGE_PAYLOAD names another one (a CI package
+// unpacked by hand, say).
 bool InstallerWindow::LocatePayload(QString* error) {
   const QDir here(QCoreApplication::applicationDirPath());
   QStringList candidates;
@@ -895,6 +907,7 @@ bool InstallerWindow::LocatePayload(QString* error) {
   }
   candidates.append(here.filePath("payload"));
   candidates.append(here.filePath("../share/xerenge/payload"));
+  candidates.append(here.filePath("../Resources/payload"));
   payload_dir_.clear();
   for (const QString& candidate : candidates) {
     if (QFileInfo::exists(QDir(candidate).filePath(QString("bin/burnout") + kExe))) {
@@ -921,7 +934,11 @@ void InstallerWindow::StartInstall() {
   install_dir_ = QDir(path_edit_->text().trimmed()).absolutePath();
   bloom_ = bloom_box_->isChecked();
   blur_ = blur_box_->isChecked();
+#ifdef Q_OS_MACOS
+  xenia_ = false;
+#else
   xenia_ = xenia_box_->isChecked();
+#endif
   {
     QString extra;
     QTextStream out(&extra);
@@ -1057,8 +1074,13 @@ void InstallerWindow::StartInstall() {
 void InstallerWindow::RunNextStep() {
   if (step_index_ >= steps_.size()) {
     progress_->setValue(progress_->maximum());
+#ifdef Q_OS_MACOS
+    SetStatus(tr("Installed. Start Burnout Revenge from Launchpad or from Applications in your "
+                 "home folder."));
+#else
     SetStatus(tr("Installed. Start Burnout Revenge from the desktop shortcut or the "
                  "applications menu."));
+#endif
     SetBusy(false);
     if (unattended_) {
       QCoreApplication::exit(0);
@@ -1232,6 +1254,50 @@ QString InstallerWindow::CreateShortcuts() const {
     if (!QFile::link(launcher, shortcut)) {
       return tr("cannot create %1").arg(shortcut);
     }
+  }
+  return {};
+#elif defined(Q_OS_MACOS)
+  // On a Mac a small app in ~/Applications that runs the launcher, so the game
+  // starts from Launchpad, Spotlight or the Dock without a terminal. The game
+  // category is what lets macOS turn on Game Mode for it in fullscreen.
+  const QString applications =
+      QStandardPaths::writableLocation(QStandardPaths::ApplicationsLocation);
+  if (applications.isEmpty() || !QDir().mkpath(applications)) {
+    return tr("no applications directory to put the app in");
+  }
+  const QDir app(QDir(applications).filePath("Burnout Revenge.app"));
+  QDir(app).removeRecursively();
+  if (!QDir().mkpath(app.filePath("Contents/MacOS")) ||
+      !QDir().mkpath(app.filePath("Contents/Resources"))) {
+    return tr("cannot create %1").arg(app.absolutePath());
+  }
+  const QString plist = QString(
+                            "<?xml version=\"1.0\" encoding=\"UTF-8\"?>\n"
+                            "<!DOCTYPE plist PUBLIC \"-//Apple//DTD PLIST 1.0//EN\" "
+                            "\"http://www.apple.com/DTDs/PropertyList-1.0.dtd\">\n"
+                            "<plist version=\"1.0\">\n<dict>\n"
+                            "  <key>CFBundleExecutable</key><string>burnout-revenge</string>\n"
+                            "  <key>CFBundleIdentifier</key><string>%1</string>\n"
+                            "  <key>CFBundleName</key><string>Burnout Revenge</string>\n"
+                            "  <key>CFBundlePackageType</key><string>APPL</string>\n"
+                            "  <key>CFBundleIconFile</key><string>xerenge</string>\n"
+                            "  <key>LSApplicationCategoryType</key>"
+                            "<string>public.app-category.racing-games</string>\n"
+                            "  <key>NSHighResolutionCapable</key><true/>\n"
+                            "</dict>\n</plist>\n")
+                            .arg("xerenge.burnout-revenge");
+  if (!WriteText(app.filePath("Contents/Info.plist"), plist, false)) {
+    return tr("cannot write %1").arg(app.filePath("Contents/Info.plist"));
+  }
+  const QString run = QString("#!/bin/sh\nexec \"%1\" \"$@\"\n").arg(launcher);
+  if (!WriteText(app.filePath("Contents/MacOS/burnout-revenge"), run, true)) {
+    return tr("cannot write %1").arg(app.filePath("Contents/MacOS/burnout-revenge"));
+  }
+  // The installer's own icon, when it was packed with one.
+  const QString icon =
+      QDir(QCoreApplication::applicationDirPath()).filePath("../Resources/xerenge.icns");
+  if (QFileInfo::exists(icon)) {
+    CopyFile(icon, app.filePath("Contents/Resources/xerenge.icns"));
   }
   return {};
 #else
