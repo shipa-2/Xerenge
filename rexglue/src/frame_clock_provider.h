@@ -30,6 +30,17 @@ RexFrameClockProviderFn RexFrameClockProvider();
 
 RexFrameClockProviderFn RexFrameClockProvider();
 
+#elif defined(__APPLE__)
+
+// macOS as well, for another reason: the SDK's librexruntime defines a pointer
+// of the same name, and with two-level namespaces the plugin's plain extern was
+// bound to that copy, which nobody sets. The log said "no frame clock from the
+// game" and the renderer paced and interpolated without it. Looked up in the
+// executable by name instead (frame_clock_provider_mac.cpp).
+#define REX_HOST_EXPORT __attribute__((visibility("default")))
+
+RexFrameClockProviderFn RexFrameClockProvider();
+
 #else
 
 #define REX_HOST_EXPORT

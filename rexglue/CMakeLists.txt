@@ -112,6 +112,9 @@ if(WIN32)
 elseif(ANDROID)
     # Nor, in practice, Android's: the game library is loaded apart from it.
     list(APPEND REXGPU_PLUME_SOURCES src/plume_renderer/frame_clock_provider_android.cpp)
+elseif(APPLE)
+    # Nor macOS's, where the plain extern binds to librexruntime's copy.
+    list(APPEND REXGPU_PLUME_SOURCES src/plume_renderer/frame_clock_provider_mac.cpp)
 endif()
 
 # What the renderer needs from each translated shader's HLSL, read at build
