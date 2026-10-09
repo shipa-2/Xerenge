@@ -94,6 +94,13 @@ if [ -n "$generate_only" ]; then
     exit 0
 fi
 
+# etcpak is a submodule of this repository, and a clone without
+# --recurse-submodules leaves it empty; CMake then stops at xerenge-etcpak.
+if [ ! -f "$root/rexglue/thirdparty/etcpak/ProcessRGB.cpp" ]; then
+    echo "== fetching etcpak"
+    retry git -C "$root" submodule update --init --depth 1 rexglue/thirdparty/etcpak
+fi
+
 echo "== configuring"
 # Two flags are not optional and are not in the SDK's own project template:
 # the SSSE3 baseline, because the SDK's memory code uses those intrinsics while
