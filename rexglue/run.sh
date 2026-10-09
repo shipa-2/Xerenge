@@ -102,6 +102,7 @@ mkdir -p logs
 # executable's name and how the runtime libraries are found.
 case "$(uname -s)" in
     MINGW*|MSYS*|CYGWIN*) PRESET=win-amd64; EXE=.exe; WINDOWS=1 ;;
+    Darwin) PRESET=mac-arm64; EXE= ;;
     *) PRESET=linux-amd64; EXE= ;;
 esac
 
@@ -213,6 +214,10 @@ fi
 if [ -n "$WINDOWS" ]; then
     # The libraries built with the game first, then the SDK's.
     export PATH="$(pwd)/build:$SDK_LIB:$PATH"
+elif [ "$PRESET" = mac-arm64 ]; then
+    # Libraries come through @executable_path, and the SDK finds the Vulkan
+    # loader and MoltenVK staged in build/vulkan by itself.
+    :
 else
     export SDL_VIDEODRIVER=x11
     export LD_LIBRARY_PATH="$SDK_LIB${LD_LIBRARY_PATH:+:$LD_LIBRARY_PATH}"

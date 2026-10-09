@@ -39,8 +39,14 @@ echo "== XenosRecomp submodules"
 retry git -C "$xenos" submodule update --init --recursive --depth 1
 
 echo "== building XenosRecomp"
+# On a Mac XenosRecomp also compiles every shader to Metal AIR, which needs the
+# metal compiler from a full Xcode. plume takes SPIR-V only, so leave it out.
+xenos_options=
+if [ "$XR_OS" = mac ]; then
+    xenos_options=-DXENOS_RECOMP_AIR=OFF
+fi
 cmake -S "$xenos" -B "$xenos/build" -G Ninja -DCMAKE_BUILD_TYPE=Release \
-      -DCMAKE_C_COMPILER=clang -DCMAKE_CXX_COMPILER=clang++
+      -DCMAKE_C_COMPILER=clang -DCMAKE_CXX_COMPILER=clang++ $xenos_options
 cmake --build "$xenos/build" --target XenosRecomp -j"$XR_JOBS"
 
 echo
