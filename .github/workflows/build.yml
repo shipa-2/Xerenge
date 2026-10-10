@@ -691,13 +691,13 @@ jobs:
 
           **macOS**: download `Burnout_Revenge_Installer-macos-arm64.zip` (Apple silicon) or `Burnout_Revenge_Installer-macos-x86_64.zip` (Intel), unzip it and run the app inside. It puts `Burnout Revenge.app` in `~/Applications`, so the game starts from Launchpad or Spotlight. The app is signed ad hoc, so macOS stops it the first time it is opened after a download; allow it under System Settings, Privacy & Security, Open Anyway. The installed game logs to `~/Library/Logs/xerenge-burnout/`.
 
-          **Your own online server:** `ealobby-linux-amd64` or `ealobby-win-amd64.exe` is a lobby server for the online mode. Run it on a machine whose TCP ports 31860 and 31861 the players can reach, and start each game with `--lobby-server=<that machine>`. Without it, the copies on one LAN find each other's games with no server at all.
+          **Online play works out of the box** - the installer already points at a shared lobby server (`94639.snk.wtf`), so you do not need to run your own. **Your own online server, if you want one instead:** `ealobby-linux-amd64` or `ealobby-win-amd64.exe` is a lobby server for the online mode. Run it on a machine whose TCP ports 31860 and 31861 the players can reach, and point the installer's "Server address" field at it (or start the game with `--lobby-server=<that machine>`).
 
-          What is new in 0.4.0:
-          - Faster on phones' GPUs: a render pass loads and keeps only the attachments something reads, the frame goes to the screen at its own size (the phone scales it), reflections can be redrawn two faces a frame ("Reflections in turns"), pixel shaders run in half precision where it is safe, anisotropic filtering is a choice (off, 4x, 8x; 4x on Android by default).
-          - Less work on the CPU: constants, textures and memory checks no longer redone for every draw when nothing changed.
-          - Bloom off keeps the sky blue and the picture as bright as with bloom, without the glare; motion blur off now really turns the blur at speed off.
-          - Frame generation (frames drawn between the game's, for 90-120 Hz screens), a 30 fps lock, 16:10 screens, render resolutions below 720p, and back twice to quit on Android.
+          What is new since 0.4.0:
+          - **macOS**, Apple silicon and Intel: the SDK builds its own Vulkan loader and MoltenVK (via plume's new SDL/Vulkan-on-Metal path) and stages them next to the game, so the installer app needs nothing but your disc image.
+          - The installer's render resolution can be any WIDTHxHEIGHT now, not just the fixed presets.
+          - Online multiplayer fixes: a missing lobby cvar that could fail the build, and a crash from a malformed `IDENT` field are both fixed; a texture-slot regression that stretched some textures into black triangles is reverted.
+          - CI is considerably faster: the SDK and the plume/XenosRecomp forks are cached by commit instead of being cloned and rebuilt on every run.
 
           EOF
           gh release create "v$VERSION" --title "$VERSION" --latest --target "$GITHUB_SHA" \
