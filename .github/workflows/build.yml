@@ -401,7 +401,9 @@ jobs:
   # supplies the build tools and Qt for the installer, no Vulkan or windowing
   # packages. GitHub's macOS runners are Apple Silicon.
   macos-arm64:
-    runs-on: macos-14
+    # macos-14's default Xcode is 15.x (AppleClang 15); the SDK needs AppleClang
+    # 16+ (Xcode 16+) for C++23. macos-15 defaults to a new enough Xcode.
+    runs-on: macos-15
     env:
       CC: clang
       CXX: clang++
