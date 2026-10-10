@@ -12,14 +12,16 @@ case "$(uname -s)" in
         XR_EXE=.exe
         ;;
     Darwin)
-        # Apple silicon only: nobody has built or run this on an Intel Mac.
-        if [ "$(uname -m)" != arm64 ]; then
-            echo "macOS: only Apple silicon (arm64) is set up, this is $(uname -m)" >&2
-            exit 1
-        fi
         XR_OS=mac
-        XR_PRESET=mac-arm64
         XR_EXE=
+        case "$(uname -m)" in
+            arm64) XR_PRESET=mac-arm64 ;;
+            x86_64) XR_PRESET=mac-amd64 ;;
+            *)
+                echo "macOS: only Apple silicon (arm64) and Intel (x86_64) are set up, this is $(uname -m)" >&2
+                exit 1
+                ;;
+        esac
         ;;
     *)
         XR_OS=linux

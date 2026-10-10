@@ -29,8 +29,8 @@ later. To build the AppImage yourself: `rexglue/installer/make-appimage.sh`
 cd rexglue && ./run.sh --plume
 ```
 
-The same works on a Mac with Apple silicon, and there is an installer app for
-it too; SETUP.md has what both need.
+The same works on a Mac, Apple silicon or Intel, and there is an installer app
+for it too; SETUP.md has what both need.
 
 That verifies the image, extracts it, builds the SDK and builds the title.
 [`SETUP.md`](SETUP.md) covers the steps separately, what each one does, and what

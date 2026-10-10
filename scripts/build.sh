@@ -112,7 +112,7 @@ if [ "$XR_OS" = windows ]; then
     generator="-G Ninja"
 fi
 march=-march=x86-64-v2
-if [ "$XR_OS" = mac ]; then
+if [ "$XR_PRESET" = mac-arm64 ]; then
     # The SDK's mac-arm64 preset builds for this baseline as well.
     march=-march=armv8-a
 fi

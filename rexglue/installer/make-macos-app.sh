@@ -4,7 +4,7 @@
 # make-appimage.sh.
 #
 #   XERENGE_PAYLOAD=<dir> ./installer/make-macos-app.sh
-#       ->   installer/Burnout_Revenge_Installer-macos-arm64.zip
+#       ->   installer/Burnout_Revenge_Installer-macos-arm64.zip (or -x86_64, on Intel)
 #
 # The payload directory holds bin/ (burnout, the libraries beside it and the
 # vulkan/ directory the SDK stages there) and tools/extract-image. Needs Qt 6
@@ -69,7 +69,7 @@ fi
 codesign --force --deep --sign - "$app"
 codesign --verify --deep --strict "$app"
 
-out="$here/Burnout_Revenge_Installer-macos-arm64.zip"
+out="$here/Burnout_Revenge_Installer-macos-$(uname -m).zip"
 rm -f "$out"
 ditto -c -k --keepParent "$app" "$out"
 echo "built: $out"

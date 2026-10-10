@@ -396,10 +396,10 @@ jobs:
           retention-days: 7
           if-no-files-found: error
 
-  # macOS (Apple Silicon only, see SETUP.md): the SDK builds its own Vulkan
-  # loader and MoltenVK and stages them beside the game, so Homebrew only
-  # supplies the build tools and Qt for the installer, no Vulkan or windowing
-  # packages. GitHub's macOS runners are Apple Silicon.
+  # macOS, Apple silicon: the SDK builds its own Vulkan loader and MoltenVK
+  # and stages them beside the game, so Homebrew only supplies the build
+  # tools and Qt for the installer, no Vulkan or windowing packages. See
+  # macos-x86_64 below for Intel.
   macos-arm64:
     # macos-14's default Xcode is 15.x (AppleClang 15); the SDK needs AppleClang
     # 16+ (Xcode 16+) for C++23. macos-15 defaults to a new enough Xcode.
@@ -493,6 +493,108 @@ jobs:
           retention-days: 7
           if-no-files-found: error
 
+  # Intel Mac. GitHub's free Intel runner stops at macOS Ventura (macos-13),
+  # whose bundled Xcode cannot be newer than 15 - Xcode 16 itself needs Sonoma
+  # 14.5+ to even install, so system clang there is always too old (the SDK
+  # requires AppleClang 16+). Its check accepts any Clang 18+ too, not only
+  # Apple's, so Homebrew's own LLVM stands in - the same trick linux-amd64
+  # uses with its own clang-20 instead of Ubuntu's default.
+  macos-x86_64:
+    runs-on: macos-13
+    env:
+      CC: clang
+      CXX: clang++
+      CMAKE_C_COMPILER_LAUNCHER: sccache
+      CMAKE_CXX_COMPILER_LAUNCHER: sccache
+    steps:
+      - uses: actions/checkout@v6
+
+      - name: etcpak
+        run: git submodule update --init --depth 1 rexglue/thirdparty/etcpak
+
+      - name: Install build dependencies
+        run: brew install cmake ninja pkgconf qt llvm
+
+      - name: Use Homebrew's LLVM instead of Xcode's clang
+        run: |
+          echo "$(brew --prefix llvm)/bin" >> "$GITHUB_PATH"
+          echo "SDKROOT=$(xcrun --sdk macosx --show-sdk-path)" >> "$GITHUB_ENV"
+
+      - name: Set up sccache
+        uses: hendrikmuhs/ccache-action@v1.2.22
+        with:
+          variant: sccache
+          key: macos-x86_64
+
+      - name: Fetch the build inputs (private)
+        env:
+          ASSETS_TOKEN: ${{ secrets.ASSETS_TOKEN }}
+        run: |
+          if [ -z "$ASSETS_TOKEN" ]; then
+            echo "::error::ASSETS_TOKEN is not set"; exit 1
+          fi
+          git clone --depth 1 "https://x-access-token:${ASSETS_TOKEN}@github.com/shipa-2/xerenge-assets.git" "$RUNNER_TEMP/assets"
+          git -C "$RUNNER_TEMP/assets" remote set-url origin https://github.com/shipa-2/xerenge-assets.git
+          ls -la "$RUNNER_TEMP/assets/game" "$RUNNER_TEMP/assets/game/graphics"
+
+      # See the matching step in linux-amd64 for why: an unchanged fork
+      # restores from cache instead of a full clone and rebuild.
+      - name: Resolve SDK/plume/XenosRecomp commits
+        id: pins
+        run: |
+          echo "sdk=$(git ls-remote https://github.com/shipa-2/rexglue-xerenge.git HEAD | cut -f1)" >> "$GITHUB_OUTPUT"
+          echo "plume=$(git ls-remote https://github.com/shipa-2/plume-xerenge.git HEAD | cut -f1)" >> "$GITHUB_OUTPUT"
+          echo "xenos=$(git ls-remote https://github.com/shipa-2/XenosRecomp-xerenge.git HEAD | cut -f1)" >> "$GITHUB_OUTPUT"
+
+      - name: Cache the SDK checkout and build
+        uses: actions/cache@v4
+        with:
+          path: rexglue-sdk
+          key: sdk-macos-x86_64-${{ steps.pins.outputs.sdk }}
+
+      - name: SDK
+        run: ./scripts/setup-sdk.sh
+
+      - name: Cache plume and XenosRecomp
+        uses: actions/cache@v4
+        with:
+          path: |
+            plume
+            XenosRecomp
+          key: deps-macos-x86_64-${{ steps.pins.outputs.plume }}-${{ steps.pins.outputs.xenos }}
+
+      - name: plume and XenosRecomp
+        run: ./scripts/setup-deps.sh
+
+      - name: Build the game
+        run: ./scripts/build.sh --game "$RUNNER_TEMP/assets/game"
+
+      - name: sccache stats
+        if: always()
+        run: sccache --show-stats || true
+
+      - name: Payload
+        run: |
+          payload="$RUNNER_TEMP/payload"
+          mkdir -p "$payload/bin" "$payload/tools"
+          cp rexglue/build/burnout "$payload/bin/"
+          find rexglue/build rexglue-sdk/out/mac-amd64 -maxdepth 2 -name '*.dylib' -not -path '*/Debug/*' -exec cp -a {} "$payload/bin/" \;
+          cp -R rexglue/build/vulkan "$payload/bin/vulkan"
+          cp tools/bin/extract-image "$payload/tools/"
+          ls -laR "$payload"
+
+      - name: Installer app
+        run: |
+          XERENGE_PAYLOAD="$RUNNER_TEMP/payload" ./rexglue/installer/make-macos-app.sh
+          ls -la rexglue/installer/*.zip
+
+      - uses: actions/upload-artifact@v6
+        with:
+          name: burnout-revenge-installer-macos-x86_64
+          path: rexglue/installer/Burnout_Revenge_Installer-macos-x86_64.zip
+          retention-days: 7
+          if-no-files-found: error
+
   # The lobby server for a self-hosted online game (rexglue/lobby.sh builds the
   # same thing by hand): three source files and no dependencies, so it needs
   # neither the private build inputs nor the game. One artifact carries the
@@ -537,7 +639,7 @@ jobs:
   # that raises VERSION publishes the installers and the lobby server as the
   # latest release.
   release:
-    needs: [linux-amd64, win-amd64, android-arm64, macos-arm64, lobby-server]
+    needs: [linux-amd64, win-amd64, android-arm64, macos-arm64, macos-x86_64, lobby-server]
     if: github.ref == 'refs/heads/main'
     runs-on: ubuntu-24.04
     permissions:
@@ -587,7 +689,7 @@ jobs:
 
           **Android** (arm64, a Vulkan 1.1 GPU - Adreno or Mali): install `Burnout_Revenge-android-arm64.apk`. It opens as the installer: pick your disc image. A Mesa Turnip driver .zip is optional, for Adreno phones whose own driver misbehaves.
 
-          **macOS** (Apple silicon only): download `Burnout_Revenge_Installer-macos-arm64.zip`, unzip it and run the app inside. It puts `Burnout Revenge.app` in `~/Applications`, so the game starts from Launchpad or Spotlight. The app is signed ad hoc, so macOS stops it the first time it is opened after a download; allow it under System Settings, Privacy & Security, Open Anyway. The installed game logs to `~/Library/Logs/xerenge-burnout/`.
+          **macOS**: download `Burnout_Revenge_Installer-macos-arm64.zip` (Apple silicon) or `Burnout_Revenge_Installer-macos-x86_64.zip` (Intel), unzip it and run the app inside. It puts `Burnout Revenge.app` in `~/Applications`, so the game starts from Launchpad or Spotlight. The app is signed ad hoc, so macOS stops it the first time it is opened after a download; allow it under System Settings, Privacy & Security, Open Anyway. The installed game logs to `~/Library/Logs/xerenge-burnout/`.
 
           **Your own online server:** `ealobby-linux-amd64` or `ealobby-win-amd64.exe` is a lobby server for the online mode. Run it on a machine whose TCP ports 31860 and 31861 the players can reach, and start each game with `--lobby-server=<that machine>`. Without it, the copies on one LAN find each other's games with no server at all.
 
@@ -604,5 +706,6 @@ jobs:
             artifacts/Burnout_Revenge_Installer-win-amd64.exe \
             artifacts/Burnout_Revenge-android-arm64.apk \
             artifacts/Burnout_Revenge_Installer-macos-arm64.zip \
+            artifacts/Burnout_Revenge_Installer-macos-x86_64.zip \
             artifacts/ealobby-linux-amd64 \
             artifacts/ealobby-win-amd64.exe

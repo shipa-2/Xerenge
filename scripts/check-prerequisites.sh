@@ -37,6 +37,17 @@ if [ "$(uname -s)" = Darwin ]; then
     # them beside the game; there is no X11 or Wayland to look for.
     echo "libraries:"
     echo "  (none needed on macOS)"
+
+    # The SDK needs Clang 18+ (either LLVM's own, or AppleClang 16+/Xcode 16+)
+    # for C++23. Older Xcode leaves the system clang too old - common on an
+    # Intel Mac, which Xcode 16 does not support installing on at all (it
+    # needs macOS Sonoma 14.5+) - so Homebrew's own LLVM is the way out,
+    # independent of Xcode's version.
+    apple_clang=$(clang --version 2>/dev/null | sed -n 's/.*Apple clang version \([0-9]*\).*/\1/p')
+    if [ -n "$apple_clang" ] && [ "$apple_clang" -lt 16 ]; then
+        printf '  %-16s MISSING - Xcode/CLT clang is too old (%s, need AppleClang 16+ or Xcode 16+); run: brew install llvm, then put it ahead of Xcode'"'"'s: export PATH="$(brew --prefix llvm)/bin:$PATH"\n' "clang" "$apple_clang"
+        missing=$((missing + 1))
+    fi
 else
     echo "libraries:"
     need_library vulkan      "the Vulkan loader and headers"

@@ -37,20 +37,33 @@ sudo pacman -S --needed git cmake ninja clang pkgconf vulkan-icd-loader vulkan-h
 The installer builds from source too, so it needs the same packages; it runs the
 check first and says what is missing.
 
-**On a Mac.** Apple silicon only, and so far tried on one machine: an M5 with
-macOS 26.7 and the Command Line Tools, without a full Xcode. The SDK builds its
-own Vulkan loader and MoltenVK and puts them next to the game, so Homebrew only
-has to supply the build tools:
+**On a Mac.** Apple silicon tried on one machine: an M5 with macOS 26.7 and the
+Command Line Tools, without a full Xcode. Intel is not tried on real hardware,
+only built in CI (see below); `check-prerequisites.sh` and the build itself
+should work the same way. The SDK builds its own Vulkan loader and MoltenVK and
+puts them next to the game, so Homebrew only has to supply the build tools:
 
 ```
 xcode-select --install
 brew install cmake ninja pkgconf
 ```
 
+The SDK needs Clang 18+ for C++23: AppleClang 16+ (Xcode 16+), or any Clang
+18+ of your own - the scripts just run `clang`/`clang++`, so the fix is to put
+a newer one ahead of Xcode's on `PATH`. On an Intel Mac Xcode 16 needs macOS
+Sonoma 14.5+ to install at all, so on an older system:
+
+```
+brew install llvm
+export PATH="$(brew --prefix llvm)/bin:$PATH"
+```
+
+before building - `check-prerequisites.sh` says so when the system clang is
+too old.
+
 Only plume draws on a Mac. Xenia's renderer comes up, but the picture stays
 black (MoltenVK has no geometry shaders and cannot turn primitive restart off),
-so the macOS installer does not offer it. `platform.sh` refuses an Intel Mac,
-where nothing has been tried.
+so the macOS installer does not offer it.
 
 ## The installer
 
