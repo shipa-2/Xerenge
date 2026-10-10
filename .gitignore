@@ -41,6 +41,8 @@ rexglue/build-android/
 rexglue/logs/
 rexglue/installer/build/
 rexglue/installer/*.AppImage
+rexglue/installer/build-macos/
+rexglue/installer/*.zip
 __pycache__/
 
 # C++ setup/shader tools (built by scripts/build-tools.sh)

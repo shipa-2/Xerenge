@@ -94,6 +94,13 @@ if [ -n "$generate_only" ]; then
     exit 0
 fi
 
+# etcpak is a submodule of this repository, and a clone without
+# --recurse-submodules leaves it empty; CMake then stops at xerenge-etcpak.
+if [ ! -f "$root/rexglue/thirdparty/etcpak/ProcessRGB.cpp" ]; then
+    echo "== fetching etcpak"
+    retry git -C "$root" submodule update --init --depth 1 rexglue/thirdparty/etcpak
+fi
+
 echo "== configuring"
 # Two flags are not optional and are not in the SDK's own project template:
 # the SSSE3 baseline, because the SDK's memory code uses those intrinsics while
@@ -104,11 +111,16 @@ generator=
 if [ "$XR_OS" = windows ]; then
     generator="-G Ninja"
 fi
+march=-march=x86-64-v2
+if [ "$XR_OS" = mac ]; then
+    # The SDK's mac-arm64 preset builds for this baseline as well.
+    march=-march=armv8-a
+fi
 cmake -S "$project" -B "$project/build" $generator \
       -DREXSDK_DIR="$sdk" \
       -DCMAKE_BUILD_TYPE=Release \
       -DCMAKE_C_COMPILER=clang -DCMAKE_CXX_COMPILER=clang++ \
-      -DCMAKE_C_FLAGS=-march=x86-64-v2 -DCMAKE_CXX_FLAGS=-march=x86-64-v2
+      -DCMAKE_C_FLAGS=$march -DCMAKE_CXX_FLAGS=$march
 
 echo "== building"
 cmake --build "$project/build" -j"$XR_JOBS"

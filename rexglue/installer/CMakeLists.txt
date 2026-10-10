@@ -18,3 +18,11 @@ add_executable(xerenge-installer
     installer_window.h
 )
 target_link_libraries(xerenge-installer PRIVATE Qt6::Widgets Qt6::Concurrent)
+if(APPLE)
+    # An app bundle, so make-macos-app.sh can hand it to macdeployqt.
+    set_target_properties(xerenge-installer PROPERTIES
+        MACOSX_BUNDLE TRUE
+        MACOSX_BUNDLE_BUNDLE_NAME "Burnout Revenge Installer"
+        MACOSX_BUNDLE_GUI_IDENTIFIER "xerenge.installer"
+        MACOSX_BUNDLE_ICON_FILE xerenge)
+endif()

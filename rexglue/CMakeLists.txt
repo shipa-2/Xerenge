@@ -112,6 +112,9 @@ if(WIN32)
 elseif(ANDROID)
     # Nor, in practice, Android's: the game library is loaded apart from it.
     list(APPEND REXGPU_PLUME_SOURCES src/plume_renderer/frame_clock_provider_android.cpp)
+elseif(APPLE)
+    # Nor macOS's, where the plain extern binds to librexruntime's copy.
+    list(APPEND REXGPU_PLUME_SOURCES src/plume_renderer/frame_clock_provider_mac.cpp)
 endif()
 
 # What the renderer needs from each translated shader's HLSL, read at build
@@ -196,6 +199,12 @@ if(NOT TARGET libzstd)
     add_subdirectory("${XENON_RECOMP_ROOT}/thirdparty/zstd/build/cmake" xenos-zstd)
 endif()
 target_link_libraries(rexgpu-plume PRIVATE plume rex::runtime libzstd xxHash::xxhash)
+if(APPLE)
+    # The *Extra and *Bootstrap shader-cache tables are weak and only some
+    # builds have them. ld64 wants every undefined symbol resolved at link time;
+    # an ELF linker leaves these to load time, where a missing one reads as null.
+    target_link_options(rexgpu-plume PRIVATE "LINKER:-undefined,dynamic_lookup")
+endif()
 # etcpak's ETC2 encoder: on a GPU without BC textures (most phones) the title's
 # DXT textures are re-encoded to ETC2 rather than left four to eight times
 # larger as RGBA8. Just the encoder, not its tool.

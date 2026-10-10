@@ -37,6 +37,21 @@ sudo pacman -S --needed git cmake ninja clang pkgconf vulkan-icd-loader vulkan-h
 The installer builds from source too, so it needs the same packages; it runs the
 check first and says what is missing.
 
+**On a Mac.** Apple silicon only, and so far tried on one machine: an M5 with
+macOS 26.7 and the Command Line Tools, without a full Xcode. The SDK builds its
+own Vulkan loader and MoltenVK and puts them next to the game, so Homebrew only
+has to supply the build tools:
+
+```
+xcode-select --install
+brew install cmake ninja pkgconf
+```
+
+Only plume draws on a Mac. Xenia's renderer comes up, but the picture stays
+black (MoltenVK has no geometry shaders and cannot turn primitive restart off),
+so the macOS installer does not offer it. `platform.sh` refuses an Intel Mac,
+where nothing has been tried.
+
 ## The installer
 
 `Burnout_Revenge_Installer-x86_64.AppImage` is the shortest way. It asks for:
@@ -76,6 +91,18 @@ Burnout_Revenge_Installer-x86_64.AppImage --iso <image.iso> --path <directory> [
 To build the AppImage from a checkout: `rexglue/installer/make-appimage.sh`,
 which needs Qt 6, `linuxdeploy` and `linuxdeploy-plugin-qt` (on Arch, from the
 AUR).
+
+On a Mac the installer is `Burnout_Revenge_Installer-macos-arm64.zip`, with the
+app inside. It does the same, but instead of the shortcuts it puts
+`Burnout Revenge.app` in `~/Applications`, so the game starts from Launchpad or
+Spotlight without a terminal. The app is signed ad hoc, not by a known
+developer, so macOS stops it the first time it is opened after a download;
+allow it under System Settings, Privacy & Security, Open Anyway. The
+installed game logs to `~/Library/Logs/xerenge-burnout/`. To build it from a
+checkout:
+`XERENGE_PAYLOAD=<dir> rexglue/installer/make-macos-app.sh`, with Qt 6 from
+Homebrew (`brew install qt`); the app carries its own copy, so players do not
+need it.
 
 ## One command
 

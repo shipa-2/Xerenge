@@ -11,6 +11,16 @@ case "$(uname -s)" in
         XR_PRESET=win-amd64
         XR_EXE=.exe
         ;;
+    Darwin)
+        # Apple silicon only: nobody has built or run this on an Intel Mac.
+        if [ "$(uname -m)" != arm64 ]; then
+            echo "macOS: only Apple silicon (arm64) is set up, this is $(uname -m)" >&2
+            exit 1
+        fi
+        XR_OS=mac
+        XR_PRESET=mac-arm64
+        XR_EXE=
+        ;;
     *)
         XR_OS=linux
         XR_PRESET=linux-amd64
@@ -19,7 +29,7 @@ case "$(uname -s)" in
 esac
 # XR_JOBS may be set to fewer: the generated code is large, and a machine with
 # little memory runs out of it at one job per core.
-XR_JOBS=${XR_JOBS:-$(nproc 2>/dev/null || echo 4)}
+XR_JOBS=${XR_JOBS:-$(nproc 2>/dev/null || sysctl -n hw.ncpu 2>/dev/null || echo 4)}
 
 # Every path the scripts build from $root reaches native programs too (CMake
 # options, the manifest), and those read D:/..., not the shell's /d/...

@@ -32,10 +32,17 @@ need_command clang++   "likewise"
 need_command pkg-config "finding libraries"
 
 echo
-echo "libraries:"
-need_library vulkan      "the Vulkan loader and headers"
-need_library x11-xcb     "the SDK window code requires it unconditionally"
-need_library wayland-client "required to build, even when running under X11"
+if [ "$(uname -s)" = Darwin ]; then
+    # The SDK builds its own Vulkan loader and MoltenVK on a Mac and stages
+    # them beside the game; there is no X11 or Wayland to look for.
+    echo "libraries:"
+    echo "  (none needed on macOS)"
+else
+    echo "libraries:"
+    need_library vulkan      "the Vulkan loader and headers"
+    need_library x11-xcb     "the SDK window code requires it unconditionally"
+    need_library wayland-client "required to build, even when running under X11"
+fi
 
 echo
 echo "to run:"
@@ -55,6 +62,10 @@ if [ "$missing" -eq 0 ]; then
     echo "everything is in place."
 else
     echo "missing: $missing."
-    echo "on Arch: sudo pacman -S --needed git cmake ninja clang pkgconf vulkan-icd-loader vulkan-headers libx11 libxcb wayland"
+    if [ "$(uname -s)" = Darwin ]; then
+        echo "on macOS: xcode-select --install, then brew install cmake ninja pkgconf"
+    else
+        echo "on Arch: sudo pacman -S --needed git cmake ninja clang pkgconf vulkan-icd-loader vulkan-headers libx11 libxcb wayland"
+    fi
     exit 1
 fi

@@ -255,6 +255,7 @@ bool PlumeGraphicsSystem::InitializePlumeDevice() {
   // backend builds its instance itself and never did it, so there was no
   // overlay and F12 captured nothing. The library is only present where
   // RenderDoc is installed, so elsewhere this does nothing.
+#if !REX_PLATFORM_MAC  // no RenderDoc on macOS: the SDK leaves its API type opaque there
   if (!renderdoc_api_) {
     renderdoc_api_ = rex::ui::RenderDocAPI::CreateIfConnected();
     if (renderdoc_api_ && renderdoc_api_->api_1_0_0()) {
@@ -266,6 +267,7 @@ bool PlumeGraphicsSystem::InitializePlumeDevice() {
       REXLOG_INFO("plume: RenderDoc loaded - F12 captures to {}/", capture_dir);
     }
   }
+#endif
 
 #if defined(__ANDROID__)
   UseAndroidCustomVulkanDriver();
@@ -1697,6 +1699,7 @@ void PlumeGraphicsSystem::PresentGuestFrame(uint32_t width, uint32_t height) {
                          std::memory_order_relaxed);
 
   const uint64_t presented_frame = frame_counter_.fetch_add(1, std::memory_order_relaxed) + 1;
+#if !REX_PLATFORM_MAC
   // A RenderDoc capture of chosen frames, without anyone at the keyboard:
   // XERENGE_CAPTURE_FRAME=<n>[,<n>...] asks RenderDoc for the next frame once
   // this many have been presented.
@@ -1767,6 +1770,7 @@ void PlumeGraphicsSystem::PresentGuestFrame(uint32_t width, uint32_t height) {
       }
     }
   }
+#endif
 
   // VdSwap calls this on a guest thread, so waiting for the UI thread to
   // finish drawing spends the title's own time: measured at 12 ms a frame.

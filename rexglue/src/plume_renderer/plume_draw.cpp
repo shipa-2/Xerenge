@@ -4822,6 +4822,9 @@ void PlumeDrawContext::UploadLayeredTexture(plume::RenderCommandList* list, uint
     plume::RenderTextureDesc desc = plume::RenderTextureDesc::Texture(
         plume::RenderTextureDimension::TEXTURE_2D, width, height, 1, 1, layers, host_format);
     desc.committed = true;
+    // The old view first: its destructor reaches the device through its
+    // texture, which the assignment below frees.
+    tex.view.reset();
     tex.texture = device_->createTexture(desc);
     if (!tex.texture) {
       return;
@@ -5360,6 +5363,9 @@ void PlumeDrawContext::ResolveRenderTarget(plume::RenderCommandList* list,
              : plume::RenderTextureDesc::Texture2D(dest_width, dest_height, 1,
                                                    kColorTargetFormat);
     desc.committed = true;
+    // The old view first: its destructor reaches the device through its
+    // texture, which the assignment below frees.
+    target.view.reset();
     target.texture = device_->createTexture(desc);
     if (!target.texture) {
       return;
