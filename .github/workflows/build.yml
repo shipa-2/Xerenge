@@ -639,7 +639,11 @@ jobs:
   # that raises VERSION publishes the installers and the lobby server as the
   # latest release.
   release:
-    needs: [linux-amd64, win-amd64, android-arm64, macos-arm64, macos-x86_64, lobby-server]
+    # macos-x86_64 isn't in here: GitHub's last Intel runner pool is small and
+    # the queue for it can run long, which would hold the whole release
+    # hostage to a job none of the other platforms depend on. It still builds
+    # on every push; its zip just lands in a later release once it's done.
+    needs: [linux-amd64, win-amd64, android-arm64, macos-arm64, lobby-server]
     if: github.ref == 'refs/heads/main'
     runs-on: ubuntu-24.04
     permissions:
@@ -689,12 +693,12 @@ jobs:
 
           **Android** (arm64, a Vulkan 1.1 GPU - Adreno or Mali): install `Burnout_Revenge-android-arm64.apk`. It opens as the installer: pick your disc image. A Mesa Turnip driver .zip is optional, for Adreno phones whose own driver misbehaves.
 
-          **macOS**: download `Burnout_Revenge_Installer-macos-arm64.zip` (Apple silicon) or `Burnout_Revenge_Installer-macos-x86_64.zip` (Intel), unzip it and run the app inside. It puts `Burnout Revenge.app` in `~/Applications`, so the game starts from Launchpad or Spotlight. The app is signed ad hoc, so macOS stops it the first time it is opened after a download; allow it under System Settings, Privacy & Security, Open Anyway. The installed game logs to `~/Library/Logs/xerenge-burnout/`.
+          **macOS** (Apple silicon): download `Burnout_Revenge_Installer-macos-arm64.zip`, unzip it and run the app inside. It puts `Burnout Revenge.app` in `~/Applications`, so the game starts from Launchpad or Spotlight. The app is signed ad hoc, so macOS stops it the first time it is opened after a download; allow it under System Settings, Privacy & Security, Open Anyway. The installed game logs to `~/Library/Logs/xerenge-burnout/`. An Intel build is on the way, held up only by a long CI queue for that runner - it'll follow in a later release.
 
           **Online play works out of the box** - the installer already points at a shared lobby server (`94639.snk.wtf`), so you do not need to run your own. **Your own online server, if you want one instead:** `ealobby-linux-amd64` or `ealobby-win-amd64.exe` is a lobby server for the online mode. Run it on a machine whose TCP ports 31860 and 31861 the players can reach, and point the installer's "Server address" field at it (or start the game with `--lobby-server=<that machine>`).
 
           What is new since 0.4.0:
-          - **macOS**, Apple silicon and Intel: the SDK builds its own Vulkan loader and MoltenVK (via plume's new SDL/Vulkan-on-Metal path) and stages them next to the game, so the installer app needs nothing but your disc image.
+          - **macOS**, Apple silicon for now (Intel to follow): the SDK builds its own Vulkan loader and MoltenVK (via plume's new SDL/Vulkan-on-Metal path) and stages them next to the game, so the installer app needs nothing but your disc image.
           - The installer's render resolution can be any WIDTHxHEIGHT now, not just the fixed presets.
           - Online multiplayer fixes: a missing lobby cvar that could fail the build, and a crash from a malformed `IDENT` field are both fixed; a texture-slot regression that stretched some textures into black triangles is reverted.
           - CI is considerably faster: the SDK and the plume/XenosRecomp forks are cached by commit instead of being cloned and rebuilt on every run.
@@ -706,6 +710,5 @@ jobs:
             artifacts/Burnout_Revenge_Installer-win-amd64.exe \
             artifacts/Burnout_Revenge-android-arm64.apk \
             artifacts/Burnout_Revenge_Installer-macos-arm64.zip \
-            artifacts/Burnout_Revenge_Installer-macos-x86_64.zip \
             artifacts/ealobby-linux-amd64 \
             artifacts/ealobby-win-amd64.exe
