@@ -92,6 +92,8 @@ class InstallerWindow : public QWidget {
   QCheckBox* culling_box_ = nullptr;
   QCheckBox* reflection_split_box_ = nullptr;
   QComboBox* resolution_combo_ = nullptr;
+  // Shown only when resolution_combo_ is set to "Custom": any WxH in pixels.
+  QLineEdit* resolution_custom_edit_ = nullptr;
   QComboBox* anisotropy_combo_ = nullptr;
   QCheckBox* fps_box_ = nullptr;
   QCheckBox* fps30_box_ = nullptr;

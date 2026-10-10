@@ -13,7 +13,7 @@ root=$(cd "$(dirname "$0")/.." && pwd)
 . "$root/scripts/platform.sh"
 plume="$root/plume"
 xenos="$root/XenosRecomp"
-plume_remote=${XERENGE_PLUME_REMOTE:-https://github.com/shipa-2/plume.git}
+plume_remote=${XERENGE_PLUME_REMOTE:-https://github.com/shipa-2/plume-xerenge.git}
 xenos_remote=${XERENGE_XENOSRECOMP_REMOTE:-https://github.com/shipa-2/XenosRecomp-xerenge.git}
 
 if [ ! -d "$plume/.git" ]; then

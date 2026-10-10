@@ -550,9 +550,20 @@ InstallerWindow::InstallerWindow(QWidget* parent) : QWidget(parent) {
   resolution_combo_->addItem("960x540", "960x540");
   resolution_combo_->addItem("854x480", "854x480");
   resolution_combo_->addItem("640x360", "640x360");
+  resolution_combo_->addItem(tr("Custom"), "custom");
   resolution_combo_->setToolTip(tr("Draw the frame at this size and scale it onto the window. "
                                    "1280x720 is the size the game renders at on the console."));
   resolution_row->addWidget(resolution_combo_, 1);
+  resolution_custom_edit_ = new QLineEdit;
+  resolution_custom_edit_->setPlaceholderText(tr("e.g. 2560x1440"));
+  resolution_custom_edit_->setValidator(
+      new QRegularExpressionValidator(QRegularExpression("\\d{1,5}x\\d{1,5}"), resolution_custom_edit_));
+  resolution_custom_edit_->setToolTip(tr("Any width and height in pixels, as WIDTHxHEIGHT."));
+  resolution_custom_edit_->setVisible(false);
+  resolution_row->addWidget(resolution_custom_edit_, 1);
+  connect(resolution_combo_, &QComboBox::currentIndexChanged, this, [this] {
+    resolution_custom_edit_->setVisible(resolution_combo_->currentData().toString() == "custom");
+  });
   hacks_layout->addLayout(resolution_row);
   auto* anisotropy_row = new QHBoxLayout;
   anisotropy_row->addWidget(new QLabel(tr("Anisotropic filtering")));
@@ -866,7 +877,17 @@ void InstallerWindow::LoadSettings(const QString& path) {
   flag("packed_vertices", packed_vertices_box_);
   flag("culling", culling_box_);
   flag("reflection_split", reflection_split_box_);
-  choice("render_resolution", resolution_combo_);
+  if (values.contains("render_resolution")) {
+    const QString value = values.value("render_resolution");
+    const int index = resolution_combo_->findData(value);
+    if (index >= 0) {
+      resolution_combo_->setCurrentIndex(index);
+    } else if (!value.isEmpty()) {
+      resolution_combo_->setCurrentIndex(resolution_combo_->findData("custom"));
+      resolution_custom_edit_->setText(value);
+    }
+    resolution_custom_edit_->setVisible(resolution_combo_->currentData().toString() == "custom");
+  }
   choice("anisotropy", anisotropy_combo_);
   flag("fps_counter", fps_box_);
   flag("fps_30", fps30_box_);
@@ -963,7 +984,11 @@ void InstallerWindow::StartInstall() {
         << "packed_vertices = " << (packed_vertices_box_->isChecked() ? "true" : "false") << "\n"
         << "culling = " << (culling_box_->isChecked() ? "true" : "false") << "\n"
         << "reflection_split = " << (reflection_split_box_->isChecked() ? "true" : "false") << "\n"
-        << "render_resolution = " << resolution_combo_->currentData().toString() << "\n"
+        << "render_resolution = "
+        << (resolution_combo_->currentData().toString() == "custom"
+                ? resolution_custom_edit_->text().trimmed()
+                : resolution_combo_->currentData().toString())
+        << "\n"
         << "anisotropy = " << anisotropy_combo_->currentData().toString() << "\n"
         << "fps_counter = " << (fps_box_->isChecked() ? "true" : "false") << "\n"
         << "fps_30 = " << (fps30_box_->isChecked() ? "true" : "false") << "\n"
