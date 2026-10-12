@@ -1143,22 +1143,21 @@ struct PlumeMenu::State {
 
   void Draw(uint32_t width_in, uint32_t height_in) {
     ImDrawList* list = ImGui::GetForegroundDrawList();
-#ifdef __ANDROID__
-    // Fingers are wider than a mouse's point: everything larger, and the list
-    // scrolls under a thumb.
-    const float s = std::max(float(height) / 720.0f, 0.4f) * 1.5f;
-#else
-    const float s = std::max(float(height) / 720.0f, 0.4f);
-#endif
-    scale = s;
     width = width_in;
     height = height_in;
+    // The panel is laid out 940 by 640 and scaled to fill this frame but for a
+    // margin, whichever of the two runs out first: the height on any screen
+    // wider than 3:2, which a 16:9 one, the Deck's 16:10 and a phone's 20:9
+    // all are. The same on every machine: the whole layout is inside the
+    // panel, and it is as large as that allows.
+    const float s = std::min(float(width) * 0.94f / 940.0f, float(height) * 0.94f / 640.0f);
+    scale = s;
     hits.clear();
     fade = std::clamp(open_time / 0.15f, 0.0f, 1.0f);
 
     list->AddRectFilled(ImVec2(0, 0), ImVec2(float(width), float(height)), Colour(0, 0, 0, 0.45f));
-    const float panel_w = std::min(float(width) * 0.94f, 940 * s);
-    const float panel_h = std::min(float(height) * 0.94f, 640 * s);
+    const float panel_w = 940 * s;
+    const float panel_h = 640 * s;
     const float x = (float(width) - panel_w) / 2;
     const float y = (float(height) - panel_h) / 2;
     list->AddRectFilled(ImVec2(x, y), ImVec2(x + panel_w, y + panel_h), Colour(18, 18, 24, 0.95f),
@@ -1575,8 +1574,8 @@ ImDrawData* PlumeMenu::Frame(uint32_t width, uint32_t height) {
       state.Draw(width, height);
     }
     if (overlay) {
-      // 17 points at 720 high, as large again on a phone (the menu's own
-      // factor there), and no smaller than that for a small frame to be read.
+      // 17 points at 720 high, half as large again on a phone, and no smaller
+      // than that for a small frame to be read.
 #ifdef __ANDROID__
       constexpr float kTouch = 1.5f;
 #else
