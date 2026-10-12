@@ -11,6 +11,7 @@
 // plugin is a library of its own, so it is found by its exported function
 // rather than linked. Under the xenos renderer there is none, and nothing here
 // does anything.
+#include <atomic>
 #include <cstdint>
 #include <cstring>
 #include <filesystem>
@@ -33,8 +34,15 @@ extern "C" void __imp__sub_825AFE90(PPCContext& __restrict, uint8_t*);
 void* xerenge::FindMenuSymbol(const char* name) {
 #if defined(__ANDROID__)
   // The plugin is a library of the app, found by its name among those loaded.
-  static void* const library = dlopen("librexgpu-plume.so", RTLD_LAZY | RTLD_NOLOAD);
-  return library ? dlsym(library, name) : nullptr;
+  // The SDK loads it when it brings the renderer up, and the touch view asks
+  // from its first moment, before that: only a library found is remembered.
+  static std::atomic<void*> library{nullptr};
+  void* handle = library.load(std::memory_order_acquire);
+  if (!handle) {
+    handle = dlopen("librexgpu-plume.so", RTLD_LAZY | RTLD_NOLOAD);
+    library.store(handle, std::memory_order_release);
+  }
+  return handle ? dlsym(handle, name) : nullptr;
 #else
 #if defined(_WIN32)
   const char* file = "rexgpu-plume.dll";

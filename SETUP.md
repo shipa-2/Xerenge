@@ -365,7 +365,10 @@ close, X for an item's default, LB and RB for the previous and next page.
 Keyboard: arrows, Enter, Esc, Delete for the default, Tab or Page Up and Page
 Down for the page. The mouse works too: click, and the wheel scrolls.
 
-On Android a pad's Back and Start together open it. Android has no Windowed,
+On Android it opens from the menu button of the on-screen controls (top right),
+Settings, as well as by a pad's Back and Start together. On a touch screen an
+item is changed by tapping it and the list scrolls by dragging; the on-screen
+controls are not drawn while it is open. Android has no Windowed,
 Renderer or Controls items, and its anisotropic filtering goes to 8x at most,
 4x unless set. Its `xerenge.conf` is the one in the app's files directory, and
 the app's own settings screen keeps what the menu wrote.

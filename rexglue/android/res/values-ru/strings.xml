@@ -31,6 +31,7 @@
     <string name="etc2_textures">Текстуры в ETC2</string>
     <string name="etc2_textures_tip">Перекодировать BC (DXT) текстуры игры в ETC2 на процессоре, даже если GPU заявляет поддержку BC. Для GPU, который рисует их неправильно (чёрные или серые пятна). Текстуры грузятся дольше, качество чуть хуже; на Adreno 5xx включается само.</string>
     <string name="press_back_to_exit">Нажмите ещё раз, чтобы выйти из игры</string>
+    <string name="game_settings">Настройки</string>
     <string name="edit_layout">Изменить раскладку</string>
     <string name="close">Закрыть</string>
     <string name="render_resolution">Разрешение рендера</string>

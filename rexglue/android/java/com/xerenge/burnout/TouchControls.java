@@ -29,10 +29,14 @@ import java.util.Locale;
  *   right, middle  A B X Y
  *   top corners    LB and RB; top middle Back and Start (drawn as the Xbox
  *                  View and Menu glyphs)
- *   top right      the menu: edit layout
+ *   top right      the menu: the game's settings, edit layout
  *
  * Edit layout lets every button, the stick and the menu be dragged and resized;
  * the result is kept in touch_layout.conf beside xerenge.conf.
+ *
+ * The game's settings menu (plume_menu.cpp) takes the whole screen while it is
+ * open, whether this opened it or a pad did: nothing is drawn over it, and the
+ * touches go to it - a tap on an item, a drag to scroll - instead of the pad.
  */
 final class TouchControls extends View {
     // SDL_GamepadButton and SDL_GamepadAxis.
@@ -42,6 +46,9 @@ final class TouchControls extends View {
     private static native boolean nativeAttach();
     private static native void nativeButton(int button, boolean down);
     private static native void nativeAxis(int axis, float value);
+    private static native boolean nativeMenuVisible();
+    static native void nativeMenuToggle();
+    private static native void nativeMenuPointer(int event, float x, float y);
 
     /** A round control: a button, a trigger pressed all the way, the stick's place, or the menu. */
     private static final class Control {
@@ -113,6 +120,10 @@ final class TouchControls extends View {
     private final Paint text = new Paint(Paint.ANTI_ALIAS_FLAG);
     private final int alpha;
     private final Handler handler = new Handler(Looper.getMainLooper());
+    // Whether the game's settings menu was open when last asked, and whether it
+    // had the touches at the last event: the controls are let go of when it
+    // takes them, so nothing is left held down under it.
+    private boolean menuOpen, menuHadTouches;
 
     TouchControls(Context context, int opacityPercent, boolean padVisible, MenuListener menuListener) {
         super(context);
@@ -131,6 +142,19 @@ final class TouchControls extends View {
                 if (!nativeAttach()) {
                     handler.postDelayed(this, 500);
                 }
+            }
+        });
+        // A pad opens the settings menu too: asked ten times a second, so the
+        // controls are gone from over it and come back when it closes.
+        handler.post(new Runnable() {
+            @Override
+            public void run() {
+                boolean open = nativeMenuVisible();
+                if (open != menuOpen) {
+                    menuOpen = open;
+                    invalidate();
+                }
+                handler.postDelayed(this, 100);
             }
         });
     }
@@ -235,6 +259,9 @@ final class TouchControls extends View {
 
     @Override
     protected void onDraw(Canvas canvas) {
+        if (menuOpen && !editing) {
+            return;
+        }
         if (padVisible) {
             // The stick: its base, and the knob where the thumb is.
             paintColor(false, 0.5f);
@@ -447,6 +474,10 @@ final class TouchControls extends View {
         if (editing) {
             return editTouch(event);
         }
+        if (nativeMenuVisible()) {
+            return menuTouch(event);
+        }
+        menuHadTouches = false;
         if (!padVisible) {
             // Only the menu button takes touches; the rest belongs to the game below.
             int a = event.getActionMasked();
@@ -513,6 +544,33 @@ final class TouchControls extends View {
                 break;
         }
         invalidate();
+        return true;
+    }
+
+    // The settings menu's: the first finger is its pointer.
+    private boolean menuTouch(MotionEvent event) {
+        if (!menuHadTouches) {
+            menuHadTouches = true;
+            for (int i = 0; i < pointers.size(); ++i) {
+                press(pointers.valueAt(i), false);
+            }
+            pointers.clear();
+            releaseStick();
+        }
+        int action = event.getActionMasked();
+        float x = event.getX(0) / Math.max(1, getWidth());
+        float y = event.getY(0) / Math.max(1, getHeight());
+        if (action == MotionEvent.ACTION_DOWN) {
+            nativeMenuPointer(0, x, y);
+        } else if (action == MotionEvent.ACTION_MOVE) {
+            nativeMenuPointer(1, x, y);
+        } else if (action == MotionEvent.ACTION_UP || action == MotionEvent.ACTION_CANCEL) {
+            nativeMenuPointer(2, x, y);
+        }
+        if (!menuOpen) {
+            menuOpen = true;
+            invalidate();
+        }
         return true;
     }
 
