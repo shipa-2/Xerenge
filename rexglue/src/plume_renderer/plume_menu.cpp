@@ -26,6 +26,7 @@
 #include <rex/system/gpu_plugin.h>
 
 #include "plume_renderer/plume_menu_conf.h"
+#include "plume_renderer/plume_perf.h"
 #include "plume_renderer/plume_postfx.h"
 #include "plume_renderer/plume_settings.h"
 
@@ -484,6 +485,11 @@ struct PlumeMenu::State {
                                     "plume is this project's renderer. This menu is only here "
                                     "with it."));
 #endif
+    advanced.items.push_back(Live(
+        Toggle("Performance overlay", "perf_overlay", false,
+               "FPS and frame-time graph in the corner."),
+        [] { return std::string(BoolText(PerfOverlay())); },
+        [](const std::string& v) { SetPerfOverlay(v == "true"); }));
     advanced.items.push_back(Toggle("Present asynchronously", "async_present", false,
                                     "Hand a frame to the GPU and go on at once. It once showed "
                                     "black frames now and then."));
@@ -1412,22 +1418,118 @@ void PlumeMenu::PushCharacter(char32_t character) {
   pending_characters_.push_back(character);
 }
 
+namespace {
+
+// The frame-time graph: what a frame took, as the title swapped it, and how
+// the host's presents compare. Drawn into the foreground list, so it is on
+// top of the menu when that is open. `fs` is the text size; the panel is laid
+// out in multiples of it, so it scales with the menu.
+void DrawPerf(ImDrawList* list, ImVec2 origin, float fs) {
+  uint64_t times[perf::kSwapHistory];
+  float intervals[perf::kSwapHistory];
+  const size_t n = perf::TitleSwapTimes(times, perf::kSwapHistory);
+  size_t m = 0;
+  for (size_t i = 1; i < n; ++i) {
+    intervals[m++] = float(double(times[i] - times[i - 1]) / 1e6);
+  }
+
+  float fps = 0.0f, last = 0.0f, p50 = 0.0f, p99 = 0.0f, longest = 0.0f;
+  if (m) {
+    // The rate over the last second of swaps.
+    const uint64_t newest = times[n - 1];
+    size_t count = 0;
+    while (count < n && newest - times[n - 1 - count] <= 1000000000ull) {
+      ++count;
+    }
+    const uint64_t span = newest - times[n - count];
+    if (count > 1 && span > 0) {
+      fps = float(double(count - 1) * 1e9 / double(span));
+    }
+    last = intervals[m - 1];
+    float sorted[perf::kSwapHistory];
+    std::copy(intervals, intervals + m, sorted);
+    std::sort(sorted, sorted + m);
+    p50 = sorted[m / 2];
+    p99 = sorted[size_t(float(m - 1) * 0.99f)];
+    longest = sorted[m - 1];
+  }
+
+  // The host's presents in the last whole second: with frame generation or
+  // Crash mode's smoothing this is more than the title's own rate.
+  static auto window_started = std::chrono::steady_clock::now();
+  static uint32_t window_presents = perf::HostPresents();
+  static float window_rate = 0.0f;
+  const auto now = std::chrono::steady_clock::now();
+  const float elapsed = std::chrono::duration<float>(now - window_started).count();
+  if (elapsed >= 1.0f) {
+    const uint32_t presents = perf::HostPresents();
+    window_rate = float(presents - window_presents) / elapsed;
+    window_presents = presents;
+    window_started = now;
+  }
+
+  char line1[128], line2[128];
+  std::snprintf(line1, sizeof(line1), "%.1f fps   %.1f ms", fps, last);
+  std::snprintf(line2, sizeof(line2), "p50 %.1f  p99 %.1f  max %.1f ms   window %.0f/s", p50, p99,
+                longest, window_rate);
+  ImFont* const font = ImGui::GetFont();
+  const auto width_of = [&](const char* text) {
+    return font->CalcTextSizeA(fs, FLT_MAX, 0.0f, text).x;
+  };
+  // As wide as the longer line: a fixed width let the stats run past the
+  // backdrop at larger numbers, a 100 ms stall in the max.
+  const float pad = fs * 0.6f;
+  const float height = fs * 6.4f;
+  const float text_width = std::max(width_of(line1), width_of(line2));
+  const float width = std::max(text_width + 2 * pad, fs * 15.0f);
+  const ImVec2 a = origin;
+  const ImVec2 b(origin.x + width, origin.y + height);
+  list->AddRectFilled(a, b, IM_COL32(8, 8, 10, 200), fs * 0.5f);
+  list->AddText(font, fs, ImVec2(a.x + pad, a.y + pad * 0.7f), IM_COL32(255, 255, 255, 255), line1);
+  list->AddText(font, fs, ImVec2(a.x + pad, a.y + pad * 0.7f + fs * 1.15f),
+                IM_COL32(190, 190, 195, 255), line2);
+
+  // The last 120 intervals against a 50 ms ceiling, the newest on the right;
+  // the line is one frame at 60 Hz.
+  const float graph_x = a.x + pad;
+  const float graph_bottom = b.y - pad;
+  const float graph_height = height - fs * 3.0f - pad;
+  const float graph_width = width - 2 * pad;
+  constexpr int kBars = 120;
+  const float bar_width = graph_width / kBars;
+  for (int i = 0; i < kBars && size_t(i) < m; ++i) {
+    const float v = intervals[m - 1 - size_t(i)];
+    const float f = std::min(v / 50.0f, 1.0f);
+    const ImU32 colour = v <= 17.5f   ? IM_COL32(90, 210, 120, 255)
+                         : v <= 25.0f ? IM_COL32(235, 200, 70, 255)
+                                      : IM_COL32(235, 90, 80, 255);
+    const float right = graph_x + graph_width - float(i) * bar_width;
+    list->AddRectFilled(ImVec2(right - bar_width + 0.5f, graph_bottom - graph_height * f),
+                        ImVec2(right, graph_bottom), colour);
+  }
+  const float line_y = graph_bottom - graph_height * (16.667f / 50.0f);
+  list->AddLine(ImVec2(graph_x, line_y), ImVec2(graph_x + graph_width, line_y),
+                IM_COL32(255, 255, 255, 90));
+}
+
+}  // namespace
+
 ImDrawData* PlumeMenu::Frame(uint32_t width, uint32_t height) {
   const bool wanted = Visible();
-  if (!state_ && !wanted) {
+  // The performance overlay is drawn with the menu closed; with it off, and
+  // the menu closed, nothing here is touched.
+  const bool overlay = settings::PerfOverlay();
+  if (!state_ && !wanted && !overlay) {
     return nullptr;
   }
   if (!state_) {
     state_ = std::make_unique<State>(*this);
   }
   State& state = *state_;
-  if (!wanted) {
-    if (state.open) {
-      state.Closed();
-    }
-    return nullptr;
+  if (!wanted && state.open) {
+    state.Closed();
   }
-  if (width == 0 || height == 0) {
+  if ((!wanted && !overlay) || width == 0 || height == 0) {
     return nullptr;
   }
 
@@ -1455,18 +1557,34 @@ ImDrawData* PlumeMenu::Frame(uint32_t width, uint32_t height) {
           ? 1.0f / 60.0f
           : std::clamp(std::chrono::duration<float>(now - state.last_frame).count(), 0.001f, 0.1f);
   state.last_frame = now;
-  if (!state.open) {
-    state.Opened();
+  if (wanted) {
+    if (!state.open) {
+      state.Opened();
+    }
+    state.Update(seconds);
   }
-  state.Update(seconds);
 
   ImDrawData* data = nullptr;
-  if (Visible()) {
+  const bool menu_shown = wanted && Visible();
+  if (menu_shown || overlay) {
     ImGuiIO& io = ImGui::GetIO();
     io.DisplaySize = ImVec2(float(width), float(height));
     io.DeltaTime = seconds;
     ImGui::NewFrame();
-    state.Draw(width, height);
+    if (menu_shown) {
+      state.Draw(width, height);
+    }
+    if (overlay) {
+      // 17 points at 720 high, as large again on a phone (the menu's own
+      // factor there), and no smaller than that for a small frame to be read.
+#ifdef __ANDROID__
+      constexpr float kTouch = 1.5f;
+#else
+      constexpr float kTouch = 1.0f;
+#endif
+      const float fs = 17.0f * std::clamp(float(height) / 720.0f, 1.0f, 2.2f) * kTouch;
+      DrawPerf(ImGui::GetForegroundDrawList(), ImVec2(fs * 0.6f, fs * 0.6f), fs);
+    }
     ImGui::Render();
     data = ImGui::GetDrawData();
   }

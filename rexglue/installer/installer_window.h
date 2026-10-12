@@ -92,6 +92,7 @@ class InstallerWindow : public QWidget {
   // through an update here.
   QString brightness_ = "1";
   QString shadow_lift_ = "0";
+  QString perf_overlay_ = "false";
   QCheckBox* async_box_ = nullptr;
   QCheckBox* early_submit_box_ = nullptr;
   QCheckBox* packed_vertices_box_ = nullptr;

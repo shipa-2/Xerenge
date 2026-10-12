@@ -30,6 +30,7 @@ struct State {
   std::atomic<uint32_t> sampler_version{1};
   std::atomic<bool> fps_shown{false};
   std::atomic<bool> crash_interpolation{true};
+  std::atomic<bool> perf_overlay{false};
 
   State() {
     // The title's own request is capped at 4 on a phone by default (its GPU
@@ -45,6 +46,9 @@ struct State {
     max_anisotropy = uint32_t(std::clamp<unsigned long>(level, 1, 16));
     const char* fps = std::getenv("XERENGE_FPS_SHOW");
     fps_shown = fps != nullptr && *fps != '\0' && *fps != '0';
+    const char* perf = std::getenv("XERENGE_PERF_OVERLAY");
+    perf_overlay = perf != nullptr && *perf != '\0' && std::strcmp(perf, "0") != 0 &&
+                   std::strcmp(perf, "false") != 0;
     const char* crash = std::getenv("XERENGE_CRASH_INTERPOLATION");
     crash_interpolation =
         crash == nullptr || (std::strcmp(crash, "0") != 0 && std::strcmp(crash, "false") != 0);
@@ -105,6 +109,13 @@ bool FpsShown() {
 }
 void SetFpsShown(bool shown) {
   Get().fps_shown = shown;
+}
+
+bool PerfOverlay() {
+  return Get().perf_overlay.load(std::memory_order_relaxed);
+}
+void SetPerfOverlay(bool shown) {
+  Get().perf_overlay = shown;
 }
 
 bool CrashInterpolation() {
