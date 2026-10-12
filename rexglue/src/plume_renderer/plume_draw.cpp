@@ -43,6 +43,8 @@
 #include <rex/system/xmemory.h>
 
 #include "plume_renderer/plume_passthrough_spirv.h"
+#include "plume_renderer/plume_colour_table.h"
+#include "plume_renderer/plume_settings.h"
 #include "plume_renderer/plume_video_spirv.h"
 #include "plume_renderer/plume_shader_cache.h"
 #include "shader_cache.h"
@@ -2389,6 +2391,8 @@ void PlumeDrawContext::Shutdown() {
   passthrough_ps_.reset();
   sampler_index_by_key_.clear();
   guest_samplers_.clear();
+  retired_samplers_.clear();
+  sampler_version_ = 0;
   next_sampler_ = 1;
   sampler_.reset();
   sampler_set_.reset();
@@ -4841,7 +4845,10 @@ void PlumeDrawContext::UploadLayeredTexture(plume::RenderCommandList* list, uint
   }
   const uint64_t content = XXH3_64bits(src, slice_bytes * layers);
   LayeredTexture& tex = layered_textures_[key];
-  if (tex.texture && tex.content == content) {
+  // A change of the colour settings makes the same table come out differently:
+  // blended again from the title's own bytes.
+  const uint32_t table_version = settings::ColourTableVersion();
+  if (tex.texture && tex.content == content && tex.table_version == table_version) {
     return;
   }
   std::vector<uint8_t> all;
@@ -4861,6 +4868,17 @@ void PlumeDrawContext::UploadLayeredTexture(plume::RenderCommandList* list, uint
     row_bytes = rb;
     row_texels = rt;
     all.insert(all.end(), pixels.begin(), pixels.begin() + size_t(rb) * height);
+  }
+  // A cube of colours, n x n x n: the colour grading table the frame's last
+  // pass looks every pixel up in - the yellow cast. Softened, or taken out,
+  // by the colour grade setting, and brightened by the brightness and the
+  // shadow lift.
+  if (width == height && height == layers && width <= 64 && bpb == 4 &&
+      (host_format == plume::RenderFormat::R8G8B8A8_UNORM ||
+       host_format == plume::RenderFormat::B8G8R8A8_UNORM)) {
+    AdjustColourTable(all.data(), width, row_bytes,
+                      host_format == plume::RenderFormat::B8G8R8A8_UNORM, settings::ColourGrade(),
+                      settings::Brightness(), settings::ShadowLift());
   }
   if (!tex.texture || tex.width != width || tex.height != height || tex.layers != layers) {
     if (tex.index == 0) {
@@ -4924,6 +4942,7 @@ void PlumeDrawContext::UploadLayeredTexture(plume::RenderCommandList* list, uint
   volume_set_->setTexture(tex.index, tex.texture.get(), plume::RenderTextureLayout::SHADER_READ,
                           tex.view.get());
   tex.content = content;
+  tex.table_version = table_version;
 }
 
 uint32_t PlumeDrawContext::SamplerKey(const GuestDrawSnapshot& snap, uint32_t slot) const {
@@ -4934,14 +4953,7 @@ uint32_t PlumeDrawContext::SamplerKey(const GuestDrawSnapshot& snap, uint32_t sl
          (uint32_t(fetch.aniso_filter) << 15) | ((uint32_t(fetch.lod_bias) & 0x3FFu) << 18);
 }
 
-void PlumeDrawContext::EnsureSampler(const GuestDrawSnapshot& snap, uint32_t slot) {
-  if (!device_ || !sampler_set_) {
-    return;
-  }
-  const uint32_t key = SamplerKey(snap, slot);
-  if (sampler_index_by_key_.count(key) != 0 || next_sampler_ >= kBindlessSamplerCount) {
-    return;
-  }
+std::unique_ptr<plume::RenderSampler> PlumeDrawContext::MakeSampler(uint32_t key) {
   using rex::graphics::xenos::ClampMode;
   auto address = [](uint32_t mode) {
     switch (static_cast<ClampMode>(mode)) {
@@ -4979,19 +4991,10 @@ void PlumeDrawContext::EnsureSampler(const GuestDrawSnapshot& snap, uint32_t slo
   // Anisotropy as the fetch asks for it (kMax_1_1 .. kMax_16_1); the road
   // seen along its length needs it to stay sharp once it has mips.
   const uint32_t aniso = (key >> 15) & 7u;
-  // Capped by XERENGE_MAX_ANISOTROPY (1: none) - at 4 on phones by default:
-  // the title asks 8 of the road and the scene, which a phone's GPU pays for
-  // in every pixel of them.
-  static const uint32_t max_anisotropy = [] {
-    const char* v = std::getenv("XERENGE_MAX_ANISOTROPY");
-#ifdef __ANDROID__
-    const unsigned long fallback = 4;
-#else
-    const unsigned long fallback = 16;
-#endif
-    const unsigned long n = v && *v ? std::strtoul(v, nullptr, 10) : fallback;
-    return uint32_t(std::clamp<unsigned long>(n, 1, 16));
-  }();
+  // Capped by the max anisotropy setting (XERENGE_MAX_ANISOTROPY, 1: none) -
+  // at 4 on phones by default: the title asks 8 of the road and the scene,
+  // which a phone's GPU pays for in every pixel of them.
+  const uint32_t max_anisotropy = settings::MaxAnisotropy();
   if (aniso >= 2 && aniso <= 5) {
     desc.maxAnisotropy = std::min(1u << (aniso - 1), max_anisotropy);
     desc.anisotropyEnabled = desc.maxAnisotropy > 1;
@@ -4999,7 +5002,39 @@ void PlumeDrawContext::EnsureSampler(const GuestDrawSnapshot& snap, uint32_t slo
   // 5 fractional bits, signed.
   desc.mipLODBias = float(int32_t((key >> 18) & 0x3FFu) << 22 >> 22) / 32.0f;
   desc.borderColor = plume::RenderBorderColor::TRANSPARENT_BLACK;
-  auto sampler = device_->createSampler(desc);
+  return device_->createSampler(desc);
+}
+
+void PlumeDrawContext::RebuildSamplers() {
+  sampler_version_ = settings::SamplerVersion();
+  for (const auto& [key, index] : sampler_index_by_key_) {
+    auto sampler = MakeSampler(key);
+    if (!sampler) {
+      continue;
+    }
+    sampler_set_->setSampler(index, sampler.get());
+    // The old one may still be read by a frame on the GPU: it goes when a few
+    // frames have passed.
+    retired_samplers_.emplace_back(frame_serial_, std::move(guest_samplers_[index - 1]));
+    guest_samplers_[index - 1] = std::move(sampler);
+  }
+}
+
+void PlumeDrawContext::EnsureSampler(const GuestDrawSnapshot& snap, uint32_t slot) {
+  if (!device_ || !sampler_set_) {
+    return;
+  }
+  if (sampler_version_ != settings::SamplerVersion()) {
+    RebuildSamplers();
+  }
+  while (!retired_samplers_.empty() && retired_samplers_.front().first + 4 < frame_serial_) {
+    retired_samplers_.pop_front();
+  }
+  const uint32_t key = SamplerKey(snap, slot);
+  if (sampler_index_by_key_.count(key) != 0 || next_sampler_ >= kBindlessSamplerCount) {
+    return;
+  }
+  auto sampler = MakeSampler(key);
   if (!sampler) {
     return;
   }

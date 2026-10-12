@@ -55,10 +55,30 @@
 #                       127.0.0.2 and 127.0.0.3 run two copies on one machine.
 #   ./run.sh --windowed runs in a window; --fullscreen (the default) does not.
 #   ./run.sh --fps      frames per second in the top left corner (plume).
+#   ./run.sh --perf     the performance overlay (plume): fps, the frame time and a
+#                       graph of the last 120 frames in the top left corner.
 #   ./run.sh --render-resolution=WIDTHxHEIGHT
 #                       plume draws the frame at this size and scales it onto
 #                       the window, e.g. 1280x720, the size the title renders
 #                       at itself. A hack for slow GPUs.
+#   ./run.sh --colour-grade=AMOUNT
+#                       how much of the title's colour grading (its yellow
+#                       cast) plume keeps, 0 to 1; 1 is the console's look.
+#   ./run.sh --aa=fxaa  anti-aliasing (plume): FXAA over the finished frame, at
+#                       the size it is drawn at. Off by default, as on the console.
+#   ./run.sh --sharpen=AMOUNT
+#                       sharpening (plume): AMD's contrast adaptive sharpening
+#                       over the finished frame, 0 (off, the default) to 1.
+#   ./run.sh --brightness=GAMMA
+#                       a gamma on the 3D picture, 0.7 to 1.6; 1 leaves it as
+#                       the console drew it.
+#   ./run.sh --shadow-lift=AMOUNT
+#                       raises the darkest colours of the 3D picture, 0 to 0.3,
+#                       without brightening the rest; the cars are nearly black.
+#   ./run.sh --menu     the in-game settings menu (plume) open from the start.
+#                       It opens with F1, or Back and Start on a pad, anyway;
+#                       what it changes lasts for the run, as there is no
+#                       xerenge.conf here to save it to (XERENGE_CONF names one).
 #   ./run.sh --async-present
 #                       plume hands a frame to the GPU and lets the title go on
 #                       at once, instead of waiting for the GPU to finish it.
@@ -180,11 +200,18 @@ for arg in "$@"; do
         --lobby-server=*) ONLINE=1; REAL_LOBBY=1; LOBBY_SERVER=${arg#*=} ;;
         --online-address=*) ONLINE_ADDRESS=${arg#*=} ;;
         --render-resolution=*) RENDER_RESOLUTION=${arg#*=} ;;
+        --colour-grade=*) COLOUR_GRADE=${arg#*=} ;;
+        --aa=*) AA=${arg#*=} ;;
+        --sharpen=*) SHARPEN=${arg#*=} ;;
+        --brightness=*) BRIGHTNESS=${arg#*=} ;;
+        --shadow-lift=*) SHADOW_LIFT=${arg#*=} ;;
+        --menu) MENU_OPEN=1 ;;
         --async-present) ASYNC_PRESENT=1 ;;
         --no-early-submit) ACQUIRE_FIRST=1 ;;
         --full-vertices) FULL_VERTICES=1 ;;
         --cull) CULL=1 ;;
         --fps) FPS_SHOW=1 ;;
+        --perf) PERF_OVERLAY=1 ;;
         --windowed) WINDOWED=1 ;;
         --fullscreen) WINDOWED= ;;
         # Any other option goes to the game as it is: its own settings, e.g.
@@ -257,11 +284,18 @@ else
     set -- "$@" --fullscreen
 fi
 [ -n "$RENDER_RESOLUTION" ] && XERENGE_RENDER_RESOLUTION=$RENDER_RESOLUTION && export XERENGE_RENDER_RESOLUTION
+[ -n "$COLOUR_GRADE" ] && XERENGE_COLOUR_GRADE=$COLOUR_GRADE && export XERENGE_COLOUR_GRADE
+[ -n "$AA" ] && XERENGE_AA=$AA && export XERENGE_AA
+[ -n "$SHARPEN" ] && XERENGE_SHARPEN=$SHARPEN && export XERENGE_SHARPEN
+[ -n "$BRIGHTNESS" ] && XERENGE_BRIGHTNESS=$BRIGHTNESS && export XERENGE_BRIGHTNESS
+[ -n "$SHADOW_LIFT" ] && XERENGE_SHADOW_LIFT=$SHADOW_LIFT && export XERENGE_SHADOW_LIFT
+[ -n "$MENU_OPEN" ] && XERENGE_MENU_OPEN=1 && export XERENGE_MENU_OPEN
 [ -n "$ASYNC_PRESENT" ] && XERENGE_ASYNC_PRESENT=1 && export XERENGE_ASYNC_PRESENT
 [ -n "$ACQUIRE_FIRST" ] && XERENGE_ACQUIRE_FIRST=1 && export XERENGE_ACQUIRE_FIRST
 [ -n "$FULL_VERTICES" ] && XERENGE_FULL_VERTICES=1 && export XERENGE_FULL_VERTICES
 [ -n "$CULL" ] && XERENGE_CULL=1 && export XERENGE_CULL
 [ -n "$FPS_SHOW" ] && XERENGE_FPS_SHOW=1 && export XERENGE_FPS_SHOW
+[ -n "$PERF_OVERLAY" ] && XERENGE_PERF_OVERLAY=1 && export XERENGE_PERF_OVERLAY
 # shellcheck disable=SC2086 # a list of options, split on purpose
 [ -n "$GAME_ARGS" ] && set -- "$@" $GAME_ARGS
 

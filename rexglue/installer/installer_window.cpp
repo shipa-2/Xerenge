@@ -26,6 +26,8 @@
 #include <QPushButton>
 #include <QRegularExpression>
 #include <QRegularExpressionValidator>
+#include <QSaveFile>
+#include <QSet>
 #include <QStandardPaths>
 #include <QTabWidget>
 #include <QTextStream>
@@ -77,6 +79,8 @@ constexpr const char* kLauncher = R"SH(#!/bin/sh
 # xerenge.conf beside this file and are read at every start.
 dir=$(cd "$(dirname "$0")" && pwd)
 conf="$dir/xerenge.conf"
+# The in-game menu (F1) writes the settings it changes back into this file.
+export XERENGE_CONF="$conf"
 value() {
     sed -n "s/^[[:space:]]*$1[[:space:]]*=[[:space:]]*//p" "$conf" 2>/dev/null | tail -n 1
 }
@@ -116,7 +120,17 @@ res=$(value render_resolution)
 aniso=$(value anisotropy)
 if [ "$aniso" = off ]; then export XERENGE_MAX_ANISOTROPY=1
 elif [ -n "$aniso" ]; then export XERENGE_MAX_ANISOTROPY="$aniso"; fi
+grade=$(value colour_grade)
+[ -n "$grade" ] && export XERENGE_COLOUR_GRADE="$grade"
+[ "$(value aa)" = fxaa ] && export XERENGE_AA=fxaa
+sharpen=$(value sharpen)
+[ -n "$sharpen" ] && export XERENGE_SHARPEN="$sharpen"
+brightness=$(value brightness)
+[ -n "$brightness" ] && export XERENGE_BRIGHTNESS="$brightness"
+shadow_lift=$(value shadow_lift)
+[ -n "$shadow_lift" ] && export XERENGE_SHADOW_LIFT="$shadow_lift"
 [ "$(value fps_counter)" = true ] && export XERENGE_FPS_SHOW=1
+[ "$(value perf_overlay)" = true ] && export XERENGE_PERF_OVERLAY=1
 [ "$(value fps_30)" = true ] && export XERENGE_FPS_30=1
 [ "$(value frame_generation)" = true ] && export XERENGE_FRAME_GENERATION=120
 [ "$(value crash_interpolation)" = false ] && export XERENGE_CRASH_INTERPOLATION=0
@@ -190,6 +204,8 @@ set "dir=%~dp0"
 set "bloom=false"
 set "motion_blur=false"
 set "renderer=plume"
+rem The in-game menu (F1) writes the settings it changes back into this file.
+set "XERENGE_CONF=%dir%xerenge.conf"
 if exist "%dir%xerenge.conf" (
     for /f "usebackq eol=# tokens=1,2 delims== " %%a in ("%dir%xerenge.conf") do set "%%a=%%b"
 )
@@ -224,7 +240,13 @@ if /i "%culling%"=="true" set "XERENGE_CULL=1"
 if /i "%reflection_split%"=="true" set "XERENGE_REFLECTION_SPLIT=1"
 if defined render_resolution set "XERENGE_RENDER_RESOLUTION=%render_resolution%"
 if /i "%anisotropy%"=="off" (set "XERENGE_MAX_ANISOTROPY=1") else if defined anisotropy set "XERENGE_MAX_ANISOTROPY=%anisotropy%"
+if defined colour_grade set "XERENGE_COLOUR_GRADE=%colour_grade%"
+if /i "%aa%"=="fxaa" set "XERENGE_AA=fxaa"
+if defined sharpen set "XERENGE_SHARPEN=%sharpen%"
+if defined brightness set "XERENGE_BRIGHTNESS=%brightness%"
+if defined shadow_lift set "XERENGE_SHADOW_LIFT=%shadow_lift%"
 if /i "%fps_counter%"=="true" set "XERENGE_FPS_SHOW=1"
+if /i "%perf_overlay%"=="true" set "XERENGE_PERF_OVERLAY=1"
 if /i "%fps_30%"=="true" set "XERENGE_FPS_30=1"
 if /i "%frame_generation%"=="true" set "XERENGE_FRAME_GENERATION=120"
 if /i "%crash_interpolation%"=="false" set "XERENGE_CRASH_INTERPOLATION=0"
@@ -419,18 +441,29 @@ QStringList FilesUnder(const QString& from) {
   return files;
 }
 
+// Through a file beside it renamed over it: the game, which writes what its
+// menu changes into xerenge.conf, never reads half of one.
 bool WriteText(const QString& path, const QString& text, bool executable) {
-  QFile file(path);
-  if (!file.open(QIODevice::WriteOnly | QIODevice::Truncate | QIODevice::Text)) {
+  QSaveFile file(path);
+  if (!file.open(QIODevice::WriteOnly | QIODevice::Text)) {
     return false;
   }
   file.write(text.toUtf8());
-  file.close();
+  if (!file.commit()) {
+    return false;
+  }
   if (executable) {
-    file.setPermissions(file.permissions() | QFileDevice::ExeOwner | QFileDevice::ExeGroup |
-                        QFileDevice::ExeOther);
+    QFile::setPermissions(path, QFile::permissions(path) | QFileDevice::ExeOwner |
+                                    QFileDevice::ExeGroup | QFileDevice::ExeOther);
   }
   return true;
+}
+
+// The key of a `key = value` line of xerenge.conf, empty for any other line.
+QString ConfKey(const QString& line) {
+  const QString text = line.trimmed();
+  const int equals = text.indexOf('=');
+  return text.startsWith('#') || equals <= 0 ? QString() : text.left(equals).trimmed();
 }
 
 // One line for install.log, of what went another way than planned.
@@ -610,6 +643,41 @@ InstallerWindow::InstallerWindow(QWidget* parent) : QWidget(parent) {
                                    "off is fastest."));
   anisotropy_row->addWidget(anisotropy_combo_, 1);
   hacks_layout->addLayout(anisotropy_row);
+  auto* grade_row = new QHBoxLayout;
+  grade_row->addWidget(new QLabel(tr("Colour grading")));
+  grade_combo_ = new QComboBox;
+  grade_combo_->addItem(tr("As on the console"), "1");
+  grade_combo_->addItem(tr("Half"), "0.5");
+  grade_combo_->addItem(tr("Off"), "0");
+  grade_combo_->setCurrentIndex(0);
+  grade_combo_->setToolTip(tr("The game's colour grading, which gives the picture its "
+                              "yellow-brown cast. Half keeps some of its mood; off shows the "
+                              "colours as drawn."));
+  grade_row->addWidget(grade_combo_, 1);
+  hacks_layout->addLayout(grade_row);
+  auto* aa_row = new QHBoxLayout;
+  aa_row->addWidget(new QLabel(tr("Anti-aliasing")));
+  aa_combo_ = new QComboBox;
+  aa_combo_->addItem(tr("Off (as on the console)"), "off");
+  aa_combo_->addItem("FXAA", "fxaa");
+  aa_combo_->setCurrentIndex(0);
+  aa_combo_->setToolTip(tr("Smooths the jagged edges of the picture. A pass over the finished "
+                           "frame: cheap, but it softens it a little, the interface included."));
+  aa_row->addWidget(aa_combo_, 1);
+  hacks_layout->addLayout(aa_row);
+  auto* sharpen_row = new QHBoxLayout;
+  sharpen_row->addWidget(new QLabel(tr("Sharpening")));
+  sharpen_combo_ = new QComboBox;
+  sharpen_combo_->addItem(tr("Off"), "0");
+  sharpen_combo_->addItem(tr("Light"), "0.3");
+  sharpen_combo_->addItem(tr("Medium"), "0.6");
+  sharpen_combo_->addItem(tr("Strong"), "1");
+  sharpen_combo_->setCurrentIndex(0);
+  sharpen_combo_->setToolTip(tr("Contrast adaptive sharpening (AMD's CAS) over the finished "
+                                "frame, which brings back the detail that anti-aliasing or a "
+                                "smaller render size takes. Costs a weak GPU very little."));
+  sharpen_row->addWidget(sharpen_combo_, 1);
+  hacks_layout->addLayout(sharpen_row);
   fps_box_ = new QCheckBox(tr("Frame counter"));
   fps_box_->setToolTip(tr("Frames per second in the top left corner."));
   hacks_layout->addWidget(fps_box_);
@@ -925,6 +993,9 @@ void InstallerWindow::LoadSettings(const QString& path) {
     resolution_custom_edit_->setVisible(resolution_combo_->currentData().toString() == "custom");
   }
   choice("anisotropy", anisotropy_combo_);
+  choice("colour_grade", grade_combo_);
+  choice("aa", aa_combo_);
+  choice("sharpen", sharpen_combo_);
   flag("fps_counter", fps_box_);
   flag("fps_30", fps30_box_);
   flag("frame_generation", framegen_box_);
@@ -1026,6 +1097,11 @@ void InstallerWindow::StartInstall() {
                 : resolution_combo_->currentData().toString())
         << "\n"
         << "anisotropy = " << anisotropy_combo_->currentData().toString() << "\n"
+        << "# How much of the game's colour grading (its yellow cast) is kept: 1, 0.5 or 0\n"
+        << "colour_grade = " << grade_combo_->currentData().toString() << "\n"
+        << "# Anti-aliasing: off or fxaa; sharpening: 0 (off) to 1\n"
+        << "aa = " << aa_combo_->currentData().toString() << "\n"
+        << "sharpen = " << sharpen_combo_->currentData().toString() << "\n"
         << "fps_counter = " << (fps_box_->isChecked() ? "true" : "false") << "\n"
         << "fps_30 = " << (fps30_box_->isChecked() ? "true" : "false") << "\n"
         << "frame_generation = " << (framegen_box_->isChecked() ? "true" : "false") << "\n"
@@ -1278,7 +1354,7 @@ QString InstallerWindow::CopyRuntime(const std::function<void(double)>& progress
 
 QString InstallerWindow::WriteSettings() const {
   const QDir install(install_dir_);
-  const QString settings =
+  QString settings =
       QString("# Burnout Revenge (Xerenge) settings, read by the launcher at every start.\n"
               "# true or false\n"
               "bloom = %1\n"
@@ -1287,6 +1363,26 @@ QString InstallerWindow::WriteSettings() const {
               "renderer = %3\n")
           .arg(bloom_ ? "true" : "false", blur_ ? "true" : "false", xenia_ ? "xenos" : "plume") +
       extra_settings_;
+  // What the file has that nothing here wrote - set in the game's menu, or by
+  // hand - is kept, as the file has it now.
+  QSet<QString> written;
+  for (const QString& line : settings.split('\n')) {
+    written.insert(ConfKey(line));
+  }
+  QString kept;
+  QFile old(install.filePath("xerenge.conf"));
+  if (old.open(QIODevice::ReadOnly | QIODevice::Text)) {
+    while (!old.atEnd()) {
+      const QString line = QString::fromUtf8(old.readLine()).trimmed();
+      const QString key = ConfKey(line);
+      if (!key.isEmpty() && !written.contains(key)) {
+        kept += line + "\n";
+      }
+    }
+  }
+  if (!kept.isEmpty()) {
+    settings += "# Kept as they were: set in the game's menu, or by hand\n" + kept;
+  }
   if (!WriteText(install.filePath("xerenge.conf"), settings, false)) {
     return tr("cannot write %1").arg(install.filePath("xerenge.conf"));
   }

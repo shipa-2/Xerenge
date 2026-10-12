@@ -11,9 +11,11 @@ import java.io.InputStreamReader;
 import java.io.OutputStreamWriter;
 import java.nio.charset.StandardCharsets;
 import java.util.ArrayList;
+import java.util.HashSet;
 import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
+import java.util.Set;
 
 /**
  * xerenge.conf, as the desktop installer writes it and its launcher reads it
@@ -51,6 +53,20 @@ final class Settings {
         {"8x", "8"},
     };
 
+    /** Anti-aliasing: label (null: off) and value. */
+    static final String[][] ANTI_ALIASING = {
+        {null, "off"},
+        {"FXAA", "fxaa"},
+    };
+
+    /** Sharpening: label (null: off) and strength, 0 to 1. */
+    static final String[][] SHARPEN = {
+        {null, "0"},
+        {"30%", "0.3"},
+        {"60%", "0.6"},
+        {"100%", "1"},
+    };
+
     static final String DEFAULT_SERVER = "94639.snk.wtf";
 
     // What the installer's controls hold.
@@ -67,6 +83,8 @@ final class Settings {
     boolean etc2Textures;  // BC (DXT) textures re-encoded as ETC2 even where the GPU takes BC
     String renderResolution = "";
     String anisotropy = "4";  // the title asks 8 of the road; 4 costs a phone less
+    String aa = "off";  // FXAA over the finished frame; off, as on the console
+    String sharpen = "0";  // contrast adaptive sharpening, 0 (off) to 1
     boolean aspect169 = true;  // Android: keep the frame 16:9, black bars on a wider screen
     // On-screen controls (Android only; the desktop has the keyboard instead).
     boolean touchControls = true;
@@ -149,6 +167,12 @@ final class Settings {
         if (v.containsKey("anisotropy") && !v.get("anisotropy").isEmpty()) {
             settings.anisotropy = v.get("anisotropy");
         }
+        if (v.containsKey("aa") && !v.get("aa").isEmpty()) {
+            settings.aa = v.get("aa");
+        }
+        if (v.containsKey("sharpen") && !v.get("sharpen").isEmpty()) {
+            settings.sharpen = v.get("sharpen");
+        }
         settings.aspect169 = flag(v, "aspect_16_9", settings.aspect169);
         settings.fpsCounter = flag(v, "fps_counter", settings.fpsCounter);
         settings.fps30 = flag(v, "fps_30", settings.fps30);
@@ -170,6 +194,13 @@ final class Settings {
 
     private static String tf(boolean value) {
         return value ? "true" : "false";
+    }
+
+    /** The key of a `key = value` line, or null for a comment or a blank line. */
+    private static String keyOf(String line) {
+        line = line.trim();
+        int equals = line.indexOf('=');
+        return line.startsWith("#") || equals <= 0 ? null : line.substring(0, equals).trim();
     }
 
     /** The file, line for line as the desktop installer writes it. */
@@ -201,6 +232,9 @@ final class Settings {
            .append("render_resolution = ").append(renderResolution).append('\n')
            .append("# Anisotropic filtering at most: off, 4 or 8\n")
            .append("anisotropy = ").append(anisotropy).append('\n')
+           .append("# Anti-aliasing: off or fxaa; sharpening: 0 (off) to 1\n")
+           .append("aa = ").append(aa).append('\n')
+           .append("sharpen = ").append(sharpen).append('\n')
            .append("# Keep the frame 16:9 (black bars on a wider screen)\n")
            .append("aspect_16_9 = ").append(tf(aspect169)).append('\n')
            .append("fps_counter = ").append(tf(fpsCounter)).append('\n')
@@ -236,14 +270,44 @@ final class Settings {
                .append("debug_video_gpu = \n")
                .append("debug_noisy = false\n");
         }
+        // What the file has that nothing above wrote - set in the game's menu,
+        // or by hand - is kept, as the file has it now.
+        Set<String> written = new HashSet<>();
+        for (String line : out.toString().split("\n")) {
+            String key = keyOf(line);
+            if (key != null) {
+                written.add(key);
+            }
+        }
         File file = file(context);
+        StringBuilder kept = new StringBuilder();
+        if (file.isFile()) {
+            try (BufferedReader in = new BufferedReader(
+                    new InputStreamReader(new FileInputStream(file), StandardCharsets.UTF_8))) {
+                String line;
+                while ((line = in.readLine()) != null) {
+                    String key = keyOf(line);
+                    if (key != null && !written.contains(key)) {
+                        kept.append(line.trim()).append('\n');
+                    }
+                }
+            } catch (Exception ignored) {
+            }
+        }
+        if (kept.length() > 0) {
+            out.append("# Kept as they were: set in the game's menu, or by hand\n").append(kept);
+        }
+        // Written beside it and renamed over it, so that the game, which writes
+        // what its menu changes into the same file, never reads half of it.
         file.getParentFile().mkdirs();
-        try (OutputStreamWriter writer = new OutputStreamWriter(new FileOutputStream(file), StandardCharsets.UTF_8)) {
+        File temporary = new File(file.getPath() + ".tmp");
+        try (OutputStreamWriter writer = new OutputStreamWriter(new FileOutputStream(temporary), StandardCharsets.UTF_8)) {
             writer.write(out.toString());
-            return true;
         } catch (Exception error) {
+            temporary.delete();
             return false;
         }
+        return temporary.renameTo(file);
     }
 
     // --- the launcher: what the desktop launcher script does with the file ---
@@ -280,8 +344,14 @@ final class Settings {
         if (!value("render_resolution").isEmpty()) env("XERENGE_RENDER_RESOLUTION", value("render_resolution"));
         if ("off".equals(value("anisotropy"))) env("XERENGE_MAX_ANISOTROPY", "1");
         else if (!value("anisotropy").isEmpty()) env("XERENGE_MAX_ANISOTROPY", value("anisotropy"));
+        if ("fxaa".equals(value("aa"))) env("XERENGE_AA", "fxaa");
+        if (!value("sharpen").isEmpty()) env("XERENGE_SHARPEN", value("sharpen"));
         if (!"false".equals(value("aspect_16_9"))) env("XERENGE_ASPECT_16_9", "1");
+        if (!value("colour_grade").isEmpty()) env("XERENGE_COLOUR_GRADE", value("colour_grade"));
+        if (!value("brightness").isEmpty()) env("XERENGE_BRIGHTNESS", value("brightness"));
+        if (!value("shadow_lift").isEmpty()) env("XERENGE_SHADOW_LIFT", value("shadow_lift"));
         if ("true".equals(value("fps_counter"))) env("XERENGE_FPS_SHOW", "1");
+        if ("true".equals(value("perf_overlay"))) env("XERENGE_PERF_OVERLAY", "1");
         if ("true".equals(value("fps_30"))) env("XERENGE_FPS_30", "1");
         if ("true".equals(value("frame_generation"))) env("XERENGE_FRAME_GENERATION", "120");
         if ("false".equals(value("crash_interpolation"))) env("XERENGE_CRASH_INTERPOLATION", "0");

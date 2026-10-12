@@ -32,6 +32,11 @@ cd rexglue && ./run.sh --plume
 The same works on a Mac, Apple silicon or Intel, and there is an installer app
 for it too; SETUP.md has what both need.
 
+In the game, **F1** (or Back and Start on a pad) opens a settings menu with
+plume: every setting of `xerenge.conf`, some applied at once - colour grading,
+brightness, shadow lift, anisotropic filtering, the FPS counter - the rest saved
+for the next start. See "The settings menu" in SETUP.md.
+
 That verifies the image, extracts it, builds the SDK and builds the title.
 [`SETUP.md`](SETUP.md) covers the steps separately, what each one does, and what
 to do when something goes wrong. The scripts are:
@@ -116,6 +121,14 @@ the same moment.
 
 Textures are loaded with their full mip chains from the title's memory, and
 sampled with the filtering and anisotropy the title asks for.
+
+The frame can be anti-aliased and sharpened as it is presented
+(`plume_postfx.cpp`): FXAA, after NVIDIA's FXAA 3.11, and AMD's FidelityFX CAS,
+two full-screen passes from the scene target through a pair of intermediate
+targets, then the usual copy onto the window. Both are off by default - the
+console had neither, and with them off nothing is recorded. The settings are
+live (`SetAntiAliasing`, `SetSharpening`, read once a frame); `XERENGE_AA` and
+`XERENGE_SHARPEN` set where they start.
 
 The frame is drawn at the window's resolution rather than the console's 720p,
 and the copies of it the post-processing reads are kept at that size. A pass

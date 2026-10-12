@@ -10,6 +10,10 @@
 
 #include "diagnostics.h"
 #include "plume_renderer/plume_framegen.h"
+#include "plume_renderer/plume_menu.h"
+#include "plume_renderer/plume_menu_draw.h"
+#include "plume_renderer/plume_perf.h"
+#include "plume_renderer/plume_settings.h"
 
 #include <SDL3/SDL.h>
 #include <SDL3/SDL_vulkan.h>
@@ -32,15 +36,6 @@ namespace {
 // frame that missed a vblank by that much was held to the next - 30 fps.
 constexpr uint32_t kBufferCount = 3;
 constexpr plume::RenderFormat kSwapchainFormat = kColorTargetFormat;
-
-// XERENGE_FPS_SHOW=1: presents per second, in the top left corner.
-bool FpsShown() {
-  static const bool shown = [] {
-    const char* text = std::getenv("XERENGE_FPS_SHOW");
-    return text != nullptr && *text != '\0' && *text != '0';
-  }();
-  return shown;
-}
 
 // The counter, drawn as seven-segment digits made of cleared rectangles: no
 // font, no texture and no pipeline, so it costs nothing to draw and cannot
@@ -269,6 +264,7 @@ bool PlumeSwapchain::Initialize(plume::RenderDevice* device, SDL_Window* window,
   }
 
   device_ = device;
+  post_fx_.SetDevice(device);
   window_ = window;
   native_window_ = native_window;
 
@@ -549,6 +545,7 @@ void PlumeSwapchain::WaitForFrames() {
 
 void PlumeSwapchain::Shutdown() {
   WaitForFrames();
+  post_fx_.Shutdown();
   ready_ = false;
   framebuffers_.clear();
   release_semaphores_.clear();
@@ -608,6 +605,8 @@ void PlumeSwapchain::CreateFramebuffers() {
   render_height_ = height;
   depth_texture_.reset();
   scene_framebuffer_.reset();
+  // Its set reads the scene target, which is about to go.
+  post_fx_.ReleaseTargets();
   scene_texture_.reset();
   scene_texture1_.reset();
   if (width != 0 && height != 0) {
@@ -892,6 +891,21 @@ void PlumeSwapchain::CheckProbe() {
   }
 }
 
+void PlumeSwapchain::DrawMenu(plume::RenderCommandList* list, ImDrawData* data,
+                              const plume::RenderFramebuffer* framebuffer, uint32_t width,
+                              uint32_t height, uint32_t color_count, bool depth) {
+  if (!menu_draw_ && !menu_draw_failed_) {
+    menu_draw_ = std::make_unique<PlumeMenuDraw>();
+    if (!menu_draw_->Initialize(device_)) {
+      menu_draw_.reset();
+      menu_draw_failed_ = true;
+    }
+  }
+  if (menu_draw_) {
+    menu_draw_->Draw(list, data, {framebuffer, width, height, color_count, depth});
+  }
+}
+
 void PlumeSwapchain::ClearAndPresent(float r, float g, float b, float a, DrawEncodeFn encode,
                                      void* encode_context, ResolveFn resolve, bool hold) {
   hold = hold && scene_texture_ != nullptr;
@@ -945,6 +959,15 @@ void PlumeSwapchain::ClearAndPresent(float r, float g, float b, float a, DrawEnc
   ResizeIfNeeded();
   if (!ready_ || framebuffers_.empty()) {
     return;
+  }
+
+  // FXAA and sharpening are read once for the frame, so a change from the
+  // menu lands between two frames. Turned off, their targets are given back -
+  // with every frame done, the other set's too.
+  const PlumePostFx::Settings post = PlumePostFx::Settings::Current();
+  if (!post.Any() && post_fx_.HasTargets()) {
+    WaitForFrames();
+    post_fx_.ReleaseTargets();
   }
 
   // With a scene target the frame is recorded and handed to the GPU before a
@@ -1090,11 +1113,32 @@ void PlumeSwapchain::ClearAndPresent(float r, float g, float b, float a, DrawEnc
     encode(encode_context, command_list_.get(), width, height, draw_target, pass);
   }
 
-  const uint32_t fps = FpsShown() ? CountFps() : 0;
-  if (FpsShown() && !scene_texture_) {
-    // Drawn straight into the swap chain image: the counter goes on last.
+  const uint32_t fps = settings::FpsShown() ? CountFps() : 0;
+
+  // A snapshot is of the scene target, where the menu is not drawn (it goes
+  // on the window's image, after the copy). To show it in one, the menu is
+  // drawn into the target for the frame the snapshot is taken of.
+  double snapshot_seconds = 0.0;
+  const bool snapshot_now =
+      scene_texture_ && snapshot_pending_ < 0.0 && SnapshotDue(&snapshot_seconds);
+  PlumeMenu& menu = PlumeMenu::Get();
+  // The menu, or the performance overlay that is drawn with it (and without).
+  const bool menu_drawn = menu.Visible() || settings::PerfOverlay();
+  const bool menu_in_target = snapshot_now && menu_drawn;
+  ImDrawData* const menu_data =
+      menu_drawn ? menu.Frame(menu_in_target ? width : window_width,
+                              menu_in_target ? height : window_height)
+                 : nullptr;
+  if (!scene_texture_ && (settings::FpsShown() || menu_data)) {
+    // Drawn straight into the swap chain image: the counter and the menu go on last.
     command_list_->setFramebuffer(draw_framebuffer);
-    DrawFpsCounter(command_list_.get(), height, fps);
+    if (settings::FpsShown()) {
+      DrawFpsCounter(command_list_.get(), height, fps);
+    }
+    if (menu_data) {
+      DrawMenu(command_list_.get(), menu_data, draw_framebuffer, width, height, 1,
+               depth_texture_ != nullptr);
+    }
   }
   // Closing the pass is what makes copying out of the target legal: while it
   // is bound for writing, moving it to a copy source is not.
@@ -1103,6 +1147,34 @@ void PlumeSwapchain::ClearAndPresent(float r, float g, float b, float a, DrawEnc
   if (resolve && scene_texture_) {
     resolve(encode_context, command_list_.get(), width, height, draw_target, RenderPassBreak{});
   }
+  if (menu_data && menu_in_target) {
+    // Last, so that the copy of the title's front buffer over the target (the
+    // resolve above) does not take it away. Attachments as the frame began.
+    if (depth_texture_) {
+      const plume::RenderTextureBarrier attachments[3] = {
+          plume::RenderTextureBarrier(draw_target, plume::RenderTextureLayout::COLOR_WRITE),
+          plume::RenderTextureBarrier(depth_texture_.get(),
+                                      plume::RenderTextureLayout::DEPTH_WRITE),
+          plume::RenderTextureBarrier(second_target, plume::RenderTextureLayout::COLOR_WRITE)};
+      command_list_->barriers(plume::RenderBarrierStage::GRAPHICS, nullptr, 0, attachments,
+                              second_target ? 3 : 2);
+    } else {
+      command_list_->barriers(
+          plume::RenderBarrierStage::GRAPHICS,
+          plume::RenderTextureBarrier(draw_target, plume::RenderTextureLayout::COLOR_WRITE));
+    }
+    DrawMenu(command_list_.get(), menu_data, draw_framebuffer, width, height,
+             second_target ? 2 : 1, depth_texture_ != nullptr);
+    command_list_->setFramebuffer(nullptr);
+  }
+
+  // What goes to the window: the scene target, or - FXAA and sharpening on -
+  // the target they left it in, at the same size. Recorded in the frame's own
+  // list, so that when the copy waits for the image the passes do not.
+  plume::RenderTexture* const shown = scene_texture_
+                                          ? post_fx_.Record(command_list_.get(), draw_target,
+                                                            width, height, post)
+                                          : draw_target;
 
   // Where the copy onto the swap chain image is recorded: the frame's own
   // list, or - split - the small list submitted after the image is acquired.
@@ -1110,7 +1182,7 @@ void PlumeSwapchain::ClearAndPresent(float r, float g, float b, float a, DrawEnc
   if (split) {
     command_list_->barriers(
         plume::RenderBarrierStage::COPY,
-        plume::RenderTextureBarrier(draw_target, plume::RenderTextureLayout::COPY_SOURCE));
+        plume::RenderTextureBarrier(shown, plume::RenderTextureLayout::COPY_SOURCE));
     command_list_->end();
     const plume::RenderCommandList* scene_list = command_list_.get();
     command_queue_->executeCommandLists(&scene_list, 1, nullptr, 0, nullptr, 0, scene_fence_.get());
@@ -1135,7 +1207,7 @@ void PlumeSwapchain::ClearAndPresent(float r, float g, float b, float a, DrawEnc
 
   if (scene_texture_) {
     const plume::RenderTextureBarrier to_copy[2] = {
-        plume::RenderTextureBarrier(draw_target, plume::RenderTextureLayout::COPY_SOURCE),
+        plume::RenderTextureBarrier(shown, plume::RenderTextureLayout::COPY_SOURCE),
         plume::RenderTextureBarrier(swapchain_texture, plume::RenderTextureLayout::COPY_DEST)};
     out->barriers(plume::RenderBarrierStage::COPY, nullptr, 0, to_copy, 2);
     if (probe_mapped_ && width >= 64 && height >= 64) {
@@ -1145,12 +1217,11 @@ void PlumeSwapchain::ClearAndPresent(float r, float g, float b, float a, DrawEnc
           plume::RenderTextureCopyLocation::PlacedFootprint(probe_buffer_.get(),
                                                             kColorTargetFormat,
                                                             64, 64, 1, 64, 0),
-          plume::RenderTextureCopyLocation::Subresource(draw_target, 0, 0), 0, 0, 0, &box);
+          plume::RenderTextureCopyLocation::Subresource(shown, 0, 0), 0, 0, 0, &box);
       probe_pending_ = true;
       probe_summary_ = g_plume_frame_summary;
     }
-    double snapshot_seconds = 0.0;
-    if (snapshot_pending_ < 0.0 && SnapshotDue(&snapshot_seconds)) {
+    if (snapshot_now) {
       if (!snapshot_buffer_ || snapshot_width_ != width || snapshot_height_ != height) {
         if (snapshot_buffer_ && snapshot_mapped_) {
           snapshot_buffer_->unmap();
@@ -1166,7 +1237,7 @@ void PlumeSwapchain::ClearAndPresent(float r, float g, float b, float a, DrawEnc
             plume::RenderTextureCopyLocation::PlacedFootprint(snapshot_buffer_.get(),
                                                               kColorTargetFormat, width, height,
                                                               1, width, 0),
-            plume::RenderTextureCopyLocation::Subresource(draw_target, 0, 0));
+            plume::RenderTextureCopyLocation::Subresource(shown, 0, 0));
         snapshot_pending_ = snapshot_seconds;
       }
     }
@@ -1174,7 +1245,7 @@ void PlumeSwapchain::ClearAndPresent(float r, float g, float b, float a, DrawEnc
     // the window, filtered; at the window's own size it is a straight copy.
     if (width != window_width || height != window_height) {
       const plume::RenderRect letterbox = AspectRect(window_width, window_height);
-      if (!out->blitTexture(swapchain_texture, draw_target, true, FixedAspect() ? &letterbox : nullptr)) {
+      if (!out->blitTexture(swapchain_texture, shown, true, FixedAspect() ? &letterbox : nullptr)) {
         static bool warned = false;
         if (!warned) {
           warned = true;
@@ -1182,16 +1253,24 @@ void PlumeSwapchain::ClearAndPresent(float r, float g, float b, float a, DrawEnc
         }
       }
     } else {
-      out->copyTexture(swapchain_texture, draw_target);
+      out->copyTexture(swapchain_texture, shown);
     }
     // On the image shown, after the copy: drawn into the target, the counter
-    // would go wherever the title copies that target to.
-    if (FpsShown()) {
+    // and the menu would go wherever the title copies that target to.
+    const bool menu_on_image = menu_data && !menu_in_target;
+    if (settings::FpsShown() || menu_on_image) {
       out->barriers(plume::RenderBarrierStage::GRAPHICS,
                     plume::RenderTextureBarrier(swapchain_texture,
                                                 plume::RenderTextureLayout::COLOR_WRITE));
       out->setFramebuffer(framebuffer);
-      DrawFpsCounter(out, window_height, fps);
+      if (settings::FpsShown()) {
+        DrawFpsCounter(out, window_height, fps);
+      }
+      if (menu_on_image) {
+        // The window's images carry the depth target only when it is theirs in size.
+        DrawMenu(out, menu_data, framebuffer, window_width, window_height, 1,
+                 depth_texture_ != nullptr && width == window_width && height == window_height);
+      }
       out->setFramebuffer(nullptr);
     }
   }
@@ -1216,6 +1295,7 @@ void PlumeSwapchain::ClearAndPresent(float r, float g, float b, float a, DrawEnc
                                       submit_fence_.get());
   const auto submit_started = std::chrono::steady_clock::now();
   swap_chain_->present(image_index, &release_semaphore, 1);
+  perf::NoteHostPresent();
   const auto present_done = std::chrono::steady_clock::now();
   submit_pending_ = true;
   // Waiting here, for the frame just submitted, is the default. Leaving the

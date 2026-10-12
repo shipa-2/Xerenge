@@ -32,6 +32,7 @@
     <string name="etc2_textures">Textures as ETC2</string>
     <string name="etc2_textures_tip">Re-encode the game\'s BC (DXT) textures as ETC2 on the processor even where the GPU says it takes BC. For a GPU that draws them wrongly (black or grey patches). Slower texture loading, slightly worse quality; Adreno 5xx gets it anyway.</string>
     <string name="press_back_to_exit">Press back again to exit the game</string>
+    <string name="game_settings">Settings</string>
     <string name="edit_layout">Edit layout</string>
     <string name="close">Close</string>
     <string name="render_resolution">Render resolution</string>
@@ -40,6 +41,11 @@
     <string name="anisotropy">Anisotropic filtering</string>
     <string name="anisotropy_off">Off</string>
     <string name="anisotropy_tip">Keeps the road sharp into the distance. The game asks for 8x; 4x looks nearly the same and costs the phone\'s GPU less; off is fastest.</string>
+    <string name="anti_aliasing">Anti-aliasing</string>
+    <string name="postfx_off">Off</string>
+    <string name="anti_aliasing_tip">FXAA smooths the jagged edges of the picture, in a pass over the finished frame. It costs the phone\'s GPU a little and softens the picture, the interface too.</string>
+    <string name="sharpening">Sharpening</string>
+    <string name="sharpening_tip">Contrast adaptive sharpening over the finished frame: brings back detail that anti-aliasing or a lower render resolution takes. Cheap, a little less than FXAA.</string>
     <string name="aspect_16_9">Keep 16:9</string>
     <string name="aspect_16_9_tip">The frame keeps the console\'s 16:9 shape, with black bars on a wider screen. Off, the game fills a wider screen: you see more to either side, with nothing stretched, and the interface stays in the middle at 16:9.</string>
     <string name="fps_counter">Frame counter</string>

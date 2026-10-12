@@ -37,6 +37,8 @@ public class BurnoutActivity extends SDLActivity {
         String driver = getSharedPreferences(InstallerActivity.PREFS, MODE_PRIVATE)
                 .getString(InstallerActivity.PREF_DRIVER, null);
         try {
+            // Where the in-game menu writes the settings it changes back to.
+            Os.setenv("XERENGE_CONF", Settings.file(this).getAbsolutePath(), true);
             if (driver != null && new File(driver).isFile()) {
                 Os.setenv("XERENGE_VULKAN_DRIVER", driver, true);
                 Os.setenv("XERENGE_NATIVE_LIB_DIR", getApplicationInfo().nativeLibraryDir, true);
@@ -46,14 +48,22 @@ public class BurnoutActivity extends SDLActivity {
         } catch (Exception ignored) {
         }
         super.onCreate(state);
-        // The on-screen pad, over SDL's surface, with a menu button at its top right
-        // whose one entry is the layout editor (drag and resize every control; kept
-        // in touch_layout.conf). From PredatorWoah's XerengePlus fork.
+        // The on-screen pad, over SDL's surface, with a menu button at its top right:
+        // the game's settings menu (plume_menu.cpp), and the layout editor (drag
+        // and resize every control; kept in touch_layout.conf). The pad and the
+        // editor are from PredatorWoah's XerengePlus fork.
         if (settings.touchControls && mLayout != null) {
             final TouchControls[] pad = new TouchControls[1];
             pad[0] = new TouchControls(this, settings.touchOpacity, true, () ->
                     new android.app.AlertDialog.Builder(this)
-                            .setItems(new String[] {getString(R.string.edit_layout)}, (d, which) -> pad[0].beginEdit())
+                            .setItems(new String[] {getString(R.string.game_settings), getString(R.string.edit_layout)},
+                                    (d, which) -> {
+                                        if (which == 0) {
+                                            TouchControls.nativeMenuToggle();
+                                        } else {
+                                            pad[0].beginEdit();
+                                        }
+                                    })
                             .setNegativeButton(R.string.close, null)
                             .show());
             mLayout.addView(pad[0],

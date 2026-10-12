@@ -5,6 +5,8 @@
 #pragma once
 
 #include "plume_renderer/plume_draw.h"
+#include "plume_renderer/plume_menu_draw.h"
+#include "plume_renderer/plume_postfx.h"
 
 #include <cstdint>
 #include <memory>
@@ -26,6 +28,8 @@ class RenderFramebuffer;
 class RenderSwapChain;
 class RenderTexture;
 }  // namespace plume
+
+struct ImDrawData;
 
 namespace rex::plume_renderer {
 
@@ -194,6 +198,14 @@ class PlumeSwapchain {
   double snapshot_pending_ = -1.0;
   bool SnapshotDue(double* seconds);
   void SaveSnapshot();
+  // The in-game menu (plume_menu.h) onto a framebuffer of this size, which
+  // has this many colour attachments and a depth one or not. Lets go of the
+  // framebuffer and binds it again; `list` must be recording.
+  std::unique_ptr<PlumeMenuDraw> menu_draw_;
+  bool menu_draw_failed_ = false;
+  void DrawMenu(plume::RenderCommandList* list, ImDrawData* data,
+                const plume::RenderFramebuffer* framebuffer, uint32_t width, uint32_t height,
+                uint32_t color_count, bool depth);
   std::unique_ptr<plume::RenderSwapChain> swap_chain_;
   std::unique_ptr<plume::RenderCommandSemaphore> acquire_semaphore_;
   std::vector<std::unique_ptr<plume::RenderCommandSemaphore>> release_semaphores_;
@@ -213,6 +225,8 @@ class PlumeSwapchain {
   // followed (see PlumeSecondTargetEnabled).
   std::unique_ptr<plume::RenderTexture> scene_texture1_;
   std::unique_ptr<plume::RenderFramebuffer> scene_framebuffer_;
+  // FXAA and sharpening, over the scene target on its way to the window.
+  PlumePostFx post_fx_;
   // The size the frame is drawn at: the scene target's. The window's, unless
   // XERENGE_RENDER_RESOLUTION asks for another; the frame is then scaled onto
   // the window when it is presented.

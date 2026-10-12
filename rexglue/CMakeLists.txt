@@ -24,6 +24,7 @@ set(BURNOUT_SOURCES
     src/game_timing.cpp
     src/plume_d3d_hooks.cpp
     src/widescreen.cpp
+    src/menu_input.cpp
 )
 
 if(WIN32)
@@ -98,9 +99,16 @@ set(REXGPU_PLUME_SOURCES
     src/plume_renderer/plume_graphics_system.cpp
     src/plume_renderer/plume_shader_cache.cpp
     src/plume_renderer/plume_swapchain.cpp
+    src/plume_renderer/plume_postfx.cpp
     src/plume_renderer/plume_draw.cpp
     src/plume_renderer/plume_interp.cpp
     src/plume_renderer/plume_framegen.cpp
+    src/plume_renderer/plume_perf.cpp
+    src/plume_renderer/plume_settings.cpp
+    src/plume_renderer/plume_colour_table.cpp
+    src/plume_renderer/plume_menu.cpp
+    src/plume_renderer/plume_menu_conf.cpp
+    src/plume_renderer/plume_menu_draw.cpp
     src/plume_renderer/plugin_main.cpp
     src/plume_renderer/shader_source_info.cpp
     "${XENON_RECOMP_ROOT}/thirdparty/smol-v/source/smolv.cpp"
@@ -198,7 +206,8 @@ if(NOT TARGET libzstd)
     set(ZSTD_BUILD_STATIC ON CACHE BOOL "" FORCE)
     add_subdirectory("${XENON_RECOMP_ROOT}/thirdparty/zstd/build/cmake" xenos-zstd)
 endif()
-target_link_libraries(rexgpu-plume PRIVATE plume rex::runtime libzstd xxHash::xxhash)
+# The in-game menu is drawn with the SDK's own copy of Dear ImGui.
+target_link_libraries(rexgpu-plume PRIVATE plume rex::runtime libzstd xxHash::xxhash imgui::imgui)
 if(APPLE)
     # The *Extra and *Bootstrap shader-cache tables are weak and only some
     # builds have them. ld64 wants every undefined symbol resolved at link time;

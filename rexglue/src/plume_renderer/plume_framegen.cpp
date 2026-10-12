@@ -22,6 +22,7 @@
 // (a part torn off) is drawn as it is; when most of what moved jumped - a
 // camera cut, a restart - the whole frame is.
 #include "plume_renderer/plume_framegen.h"
+#include "plume_renderer/plume_settings.h"
 
 #include <algorithm>
 #include <cmath>
@@ -128,11 +129,7 @@ bool FrameGenerationEnabled() {
 }
 
 bool CrashInterpolationEnabled() {
-  static const bool on = [] {
-    const char* v = std::getenv("XERENGE_CRASH_INTERPOLATION");
-    return v == nullptr || (std::strcmp(v, "0") != 0 && std::strcmp(v, "false") != 0);
-  }();
-  return on;
+  return settings::CrashInterpolation();
 }
 
 uint32_t FrameGenerationTarget() {

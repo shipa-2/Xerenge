@@ -4,6 +4,7 @@
  */
 #include <set>
 #include "plume_renderer/plume_graphics_system.h"
+#include "plume_renderer/plume_menu.h"
 #include "diagnostics.h"
 
 #include <cmath>
@@ -40,6 +41,7 @@
 #include "plume_renderer/plume_framegen.h"
 #include "plume_renderer/plume_interp.h"
 #include "plume_renderer/plume_parallel.h"
+#include "plume_renderer/plume_perf.h"
 #include "plume_renderer/plume_shader_cache.h"
 #include "plume_renderer/plume_swapchain.h"
 #include "shader_cache.h"
@@ -341,6 +343,9 @@ void PlumeGraphicsSystem::AttachPresentationWindow(ui::Window* window) {
     swapchain_.reset();
     return;
   }
+
+  // The keyboard for the in-game menu comes from the same window.
+  PlumeMenu::Get().AttachWindow(window_);
 
   draw_context_ = std::make_unique<PlumeDrawContext>();
   if (!draw_context_->Initialize(render_device_.get())) {
@@ -1707,6 +1712,9 @@ void PlumeGraphicsSystem::PresentGuestFrame(uint32_t width, uint32_t height) {
   g_title_tid.store(int(gettid()), std::memory_order_relaxed);
 #endif
   PaceSwapToVblank();
+  // After the pacing, which is what holds the title to its frame rate: the
+  // interval to the last swap is then the frame the player saw.
+  perf::NoteTitleSwap();
   last_present_ms_.store(static_cast<uint64_t>(
                              std::chrono::duration_cast<std::chrono::milliseconds>(
                                  std::chrono::steady_clock::now().time_since_epoch())
