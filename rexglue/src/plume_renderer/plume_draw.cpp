@@ -3303,7 +3303,7 @@ bool PlumeDrawContext::AllocateCacheRegion(uint32_t count, uint32_t* offset) {
   for (int attempt = 0; attempt < 16; ++attempt) {
     if (head + count > kCacheVertexCount) {
       if (wrapped) {
-        return false;
+        break;
       }
       head = 0;
       wrapped = true;
@@ -3344,6 +3344,13 @@ bool PlumeDrawContext::AllocateCacheRegion(uint32_t count, uint32_t* offset) {
     *offset = head;
     return true;
   }
+  // Sixteen places in a row, each held by a mesh of this frame or the last.
+  // The next search goes on from where this one stopped: it used to start at
+  // the same place again and find the same sixteen, so behind a stretch of
+  // meshes drawn every frame nothing was given a place - "no room" for 32
+  // vertices with most of the buffer stale - and whatever was turned away was
+  // unpacked every frame until those meshes left the picture.
+  cache_used_ = std::min(head, kCacheVertexCount);
   return false;
 }
 
