@@ -62,6 +62,11 @@
 #   ./run.sh --colour-grade=AMOUNT
 #                       how much of the title's colour grading (its yellow
 #                       cast) plume keeps, 0 to 1; 1 is the console's look.
+#   ./run.sh --aa=fxaa  anti-aliasing (plume): FXAA over the finished frame, at
+#                       the size it is drawn at. Off by default, as on the console.
+#   ./run.sh --sharpen=AMOUNT
+#                       sharpening (plume): AMD's contrast adaptive sharpening
+#                       over the finished frame, 0 (off, the default) to 1.
 #   ./run.sh --async-present
 #                       plume hands a frame to the GPU and lets the title go on
 #                       at once, instead of waiting for the GPU to finish it.
@@ -184,6 +189,8 @@ for arg in "$@"; do
         --online-address=*) ONLINE_ADDRESS=${arg#*=} ;;
         --render-resolution=*) RENDER_RESOLUTION=${arg#*=} ;;
         --colour-grade=*) COLOUR_GRADE=${arg#*=} ;;
+        --aa=*) AA=${arg#*=} ;;
+        --sharpen=*) SHARPEN=${arg#*=} ;;
         --async-present) ASYNC_PRESENT=1 ;;
         --no-early-submit) ACQUIRE_FIRST=1 ;;
         --full-vertices) FULL_VERTICES=1 ;;
@@ -262,6 +269,8 @@ else
 fi
 [ -n "$RENDER_RESOLUTION" ] && XERENGE_RENDER_RESOLUTION=$RENDER_RESOLUTION && export XERENGE_RENDER_RESOLUTION
 [ -n "$COLOUR_GRADE" ] && XERENGE_COLOUR_GRADE=$COLOUR_GRADE && export XERENGE_COLOUR_GRADE
+[ -n "$AA" ] && XERENGE_AA=$AA && export XERENGE_AA
+[ -n "$SHARPEN" ] && XERENGE_SHARPEN=$SHARPEN && export XERENGE_SHARPEN
 [ -n "$ASYNC_PRESENT" ] && XERENGE_ASYNC_PRESENT=1 && export XERENGE_ASYNC_PRESENT
 [ -n "$ACQUIRE_FIRST" ] && XERENGE_ACQUIRE_FIRST=1 && export XERENGE_ACQUIRE_FIRST
 [ -n "$FULL_VERTICES" ] && XERENGE_FULL_VERTICES=1 && export XERENGE_FULL_VERTICES

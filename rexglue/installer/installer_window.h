@@ -98,6 +98,8 @@ class InstallerWindow : public QWidget {
   QLineEdit* resolution_custom_edit_ = nullptr;
   QComboBox* anisotropy_combo_ = nullptr;
   QComboBox* grade_combo_ = nullptr;
+  QComboBox* aa_combo_ = nullptr;
+  QComboBox* sharpen_combo_ = nullptr;
   QCheckBox* fps_box_ = nullptr;
   QCheckBox* fps30_box_ = nullptr;
   QCheckBox* framegen_box_ = nullptr;

@@ -51,6 +51,20 @@ final class Settings {
         {"8x", "8"},
     };
 
+    /** Anti-aliasing: label (null: off) and value. */
+    static final String[][] ANTI_ALIASING = {
+        {null, "off"},
+        {"FXAA", "fxaa"},
+    };
+
+    /** Sharpening: label (null: off) and strength, 0 to 1. */
+    static final String[][] SHARPEN = {
+        {null, "0"},
+        {"30%", "0.3"},
+        {"60%", "0.6"},
+        {"100%", "1"},
+    };
+
     static final String DEFAULT_SERVER = "94639.snk.wtf";
 
     // What the installer's controls hold.
@@ -67,6 +81,8 @@ final class Settings {
     boolean etc2Textures;  // BC (DXT) textures re-encoded as ETC2 even where the GPU takes BC
     String renderResolution = "";
     String anisotropy = "4";  // the title asks 8 of the road; 4 costs a phone less
+    String aa = "off";  // FXAA over the finished frame; off, as on the console
+    String sharpen = "0";  // contrast adaptive sharpening, 0 (off) to 1
     boolean aspect169 = true;  // Android: keep the frame 16:9, black bars on a wider screen
     // On-screen controls (Android only; the desktop has the keyboard instead).
     boolean touchControls = true;
@@ -149,6 +165,12 @@ final class Settings {
         if (v.containsKey("anisotropy") && !v.get("anisotropy").isEmpty()) {
             settings.anisotropy = v.get("anisotropy");
         }
+        if (v.containsKey("aa") && !v.get("aa").isEmpty()) {
+            settings.aa = v.get("aa");
+        }
+        if (v.containsKey("sharpen") && !v.get("sharpen").isEmpty()) {
+            settings.sharpen = v.get("sharpen");
+        }
         settings.aspect169 = flag(v, "aspect_16_9", settings.aspect169);
         settings.fpsCounter = flag(v, "fps_counter", settings.fpsCounter);
         settings.fps30 = flag(v, "fps_30", settings.fps30);
@@ -201,6 +223,9 @@ final class Settings {
            .append("render_resolution = ").append(renderResolution).append('\n')
            .append("# Anisotropic filtering at most: off, 4 or 8\n")
            .append("anisotropy = ").append(anisotropy).append('\n')
+           .append("# Anti-aliasing: off or fxaa; sharpening: 0 (off) to 1\n")
+           .append("aa = ").append(aa).append('\n')
+           .append("sharpen = ").append(sharpen).append('\n')
            .append("# Keep the frame 16:9 (black bars on a wider screen)\n")
            .append("aspect_16_9 = ").append(tf(aspect169)).append('\n')
            .append("fps_counter = ").append(tf(fpsCounter)).append('\n')
@@ -280,6 +305,8 @@ final class Settings {
         if (!value("render_resolution").isEmpty()) env("XERENGE_RENDER_RESOLUTION", value("render_resolution"));
         if ("off".equals(value("anisotropy"))) env("XERENGE_MAX_ANISOTROPY", "1");
         else if (!value("anisotropy").isEmpty()) env("XERENGE_MAX_ANISOTROPY", value("anisotropy"));
+        if ("fxaa".equals(value("aa"))) env("XERENGE_AA", "fxaa");
+        if (!value("sharpen").isEmpty()) env("XERENGE_SHARPEN", value("sharpen"));
         if (!"false".equals(value("aspect_16_9"))) env("XERENGE_ASPECT_16_9", "1");
         if ("true".equals(value("fps_counter"))) env("XERENGE_FPS_SHOW", "1");
         if ("true".equals(value("fps_30"))) env("XERENGE_FPS_30", "1");

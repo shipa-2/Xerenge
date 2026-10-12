@@ -5,6 +5,7 @@
 #pragma once
 
 #include "plume_renderer/plume_draw.h"
+#include "plume_renderer/plume_postfx.h"
 
 #include <cstdint>
 #include <memory>
@@ -213,6 +214,8 @@ class PlumeSwapchain {
   // followed (see PlumeSecondTargetEnabled).
   std::unique_ptr<plume::RenderTexture> scene_texture1_;
   std::unique_ptr<plume::RenderFramebuffer> scene_framebuffer_;
+  // FXAA and sharpening, over the scene target on its way to the window.
+  PlumePostFx post_fx_;
   // The size the frame is drawn at: the scene target's. The window's, unless
   // XERENGE_RENDER_RESOLUTION asks for another; the frame is then scaled onto
   // the window when it is presented.

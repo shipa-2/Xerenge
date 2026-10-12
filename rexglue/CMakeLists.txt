@@ -98,6 +98,7 @@ set(REXGPU_PLUME_SOURCES
     src/plume_renderer/plume_graphics_system.cpp
     src/plume_renderer/plume_shader_cache.cpp
     src/plume_renderer/plume_swapchain.cpp
+    src/plume_renderer/plume_postfx.cpp
     src/plume_renderer/plume_draw.cpp
     src/plume_renderer/plume_interp.cpp
     src/plume_renderer/plume_framegen.cpp

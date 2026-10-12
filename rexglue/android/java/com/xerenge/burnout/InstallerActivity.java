@@ -100,7 +100,7 @@ public class InstallerActivity extends Activity {
     private Spinner languageSpinner;
     private CheckBox asyncBox, earlySubmitBox, packedVerticesBox, cullingBox, reflectionSplitBox, etc2Box, fpsBox, fps30Box,
             frameGenBox, crashInterpBox;
-    private Spinner resolutionSpinner, anisotropySpinner;
+    private Spinner resolutionSpinner, anisotropySpinner, aaSpinner, sharpenSpinner;
     private CheckBox aspectBox;
     private TextView gpuStatus;
     private Button driverButton, systemDriverButton;
@@ -398,6 +398,14 @@ public class InstallerActivity extends Activity {
         label(anisotropyRow, getString(R.string.anisotropy), 15, false, Color.WHITE).setPadding(0, 0, dp(12), 0);
         anisotropySpinner = spinner(anisotropyRow, Settings.ANISOTROPY, getString(R.string.anisotropy_off));
         note(hacks, R.string.anisotropy_tip);
+        LinearLayout aaRow = row(hacks);
+        label(aaRow, getString(R.string.anti_aliasing), 15, false, Color.WHITE).setPadding(0, 0, dp(12), 0);
+        aaSpinner = spinner(aaRow, Settings.ANTI_ALIASING, getString(R.string.postfx_off));
+        note(hacks, R.string.anti_aliasing_tip);
+        LinearLayout sharpenRow = row(hacks);
+        label(sharpenRow, getString(R.string.sharpening), 15, false, Color.WHITE).setPadding(0, 0, dp(12), 0);
+        sharpenSpinner = spinner(sharpenRow, Settings.SHARPEN, getString(R.string.postfx_off));
+        note(hacks, R.string.sharpening_tip);
         aspectBox = check(hacks, R.string.aspect_16_9, R.string.aspect_16_9_tip);
         fpsBox = check(hacks, R.string.fps_counter, R.string.fps_counter_tip);
         fps30Box = check(hacks, R.string.fps_30, R.string.fps_30_tip);
@@ -504,6 +512,8 @@ public class InstallerActivity extends Activity {
         resolutionSpinner.setSelection(Math.max(resolution, 0));
         int anisotropy = indexOf(Settings.ANISOTROPY, s.anisotropy);
         anisotropySpinner.setSelection(anisotropy >= 0 ? anisotropy : 1);
+        aaSpinner.setSelection(Math.max(indexOf(Settings.ANTI_ALIASING, s.aa), 0));
+        sharpenSpinner.setSelection(Math.max(indexOf(Settings.SHARPEN, s.sharpen), 0));
         aspectBox.setChecked(s.aspect169);
         fpsBox.setChecked(s.fpsCounter);
         fps30Box.setChecked(s.fps30);
@@ -548,6 +558,8 @@ public class InstallerActivity extends Activity {
         s.etc2Textures = etc2Box.isChecked();
         s.renderResolution = Settings.RESOLUTIONS[resolutionSpinner.getSelectedItemPosition()][1];
         s.anisotropy = Settings.ANISOTROPY[anisotropySpinner.getSelectedItemPosition()][1];
+        s.aa = Settings.ANTI_ALIASING[aaSpinner.getSelectedItemPosition()][1];
+        s.sharpen = Settings.SHARPEN[sharpenSpinner.getSelectedItemPosition()][1];
         s.aspect169 = aspectBox.isChecked();
         s.fpsCounter = fpsBox.isChecked();
         s.fps30 = fps30Box.isChecked();

@@ -260,6 +260,8 @@ Early submit is on unless turned off; the others are off unless asked for.
 ./run.sh --render-resolution=1280x720   draw the frame at this size and scale it
                                         onto the window
 ./run.sh --colour-grade=0.5             keep half of the title's colour grading
+./run.sh --aa=fxaa                      anti-alias the finished frame (FXAA)
+./run.sh --sharpen=0.5                  sharpen the finished frame (CAS), 0 to 1
 ./run.sh --async-present                let the title start its next frame while
                                         the GPU is still drawing this one
 ./run.sh --no-early-submit              turn early submit (below) off
@@ -292,6 +294,18 @@ Early submit is on unless turned off; the others are off unless asked for.
   which is what gives the picture its yellow-brown cast. plume draws that table
   towards a neutral one as it is loaded: 1 keeps the console's look, 0 shows
   the colours as drawn, anything between mixes the two.
+* `--aa=fxaa` (`aa` in `xerenge.conf`, `XERENGE_AA`) and `--sharpen=AMOUNT`
+  (`sharpen`, `XERENGE_SHARPEN`) - two passes over the finished frame, at the
+  size it is drawn at and before it is scaled onto the window: FXAA, which
+  smooths jagged edges, then AMD's contrast adaptive sharpening (CAS), which
+  brings back what FXAA's softness and a smaller `--render-resolution` take.
+  Both are off by default, which is the console's look and costs nothing - no
+  pass is recorded. The interface is part of the same picture, so it is
+  smoothed (and sharpened) with the rest; FXAA leaves text legible, a shade
+  softer. Measured on an Apple M5 at 1280x720: about 0.25 ms of GPU time for
+  FXAA and 0.2 ms for CAS (2560x1440: 0.3 ms each - mostly the pass's fixed
+  cost); on a Steam Deck, estimated at 0.2-0.35 ms and 0.15-0.25 ms. They need
+  the scene target, which `--plume` turns on.
 * `--async-present` - normally the frame is handed to the GPU and the title
   waits for the GPU to finish it before it goes on. With this it goes on at
   once and the wait moves to the start of the next frame, so the title's own

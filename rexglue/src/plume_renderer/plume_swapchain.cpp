@@ -269,6 +269,7 @@ bool PlumeSwapchain::Initialize(plume::RenderDevice* device, SDL_Window* window,
   }
 
   device_ = device;
+  post_fx_.SetDevice(device);
   window_ = window;
   native_window_ = native_window;
 
@@ -549,6 +550,7 @@ void PlumeSwapchain::WaitForFrames() {
 
 void PlumeSwapchain::Shutdown() {
   WaitForFrames();
+  post_fx_.Shutdown();
   ready_ = false;
   framebuffers_.clear();
   release_semaphores_.clear();
@@ -608,6 +610,8 @@ void PlumeSwapchain::CreateFramebuffers() {
   render_height_ = height;
   depth_texture_.reset();
   scene_framebuffer_.reset();
+  // Its set reads the scene target, which is about to go.
+  post_fx_.ReleaseTargets();
   scene_texture_.reset();
   scene_texture1_.reset();
   if (width != 0 && height != 0) {
@@ -947,6 +951,15 @@ void PlumeSwapchain::ClearAndPresent(float r, float g, float b, float a, DrawEnc
     return;
   }
 
+  // FXAA and sharpening are read once for the frame, so a change from the
+  // menu lands between two frames. Turned off, their targets are given back -
+  // with every frame done, the other set's too.
+  const PlumePostFx::Settings post = PlumePostFx::Settings::Current();
+  if (!post.Any() && post_fx_.HasTargets()) {
+    WaitForFrames();
+    post_fx_.ReleaseTargets();
+  }
+
   // With a scene target the frame is recorded and handed to the GPU before a
   // swap chain image is asked for, and only the copy onto that image waits
   // for it. Asked for first, the wait for the display (7-9 ms a race frame
@@ -1104,13 +1117,21 @@ void PlumeSwapchain::ClearAndPresent(float r, float g, float b, float a, DrawEnc
     resolve(encode_context, command_list_.get(), width, height, draw_target, RenderPassBreak{});
   }
 
+  // What goes to the window: the scene target, or - FXAA and sharpening on -
+  // the target they left it in, at the same size. Recorded in the frame's own
+  // list, so that when the copy waits for the image the passes do not.
+  plume::RenderTexture* const shown = scene_texture_
+                                          ? post_fx_.Record(command_list_.get(), draw_target,
+                                                            width, height, post)
+                                          : draw_target;
+
   // Where the copy onto the swap chain image is recorded: the frame's own
   // list, or - split - the small list submitted after the image is acquired.
   plume::RenderCommandList* out = command_list_.get();
   if (split) {
     command_list_->barriers(
         plume::RenderBarrierStage::COPY,
-        plume::RenderTextureBarrier(draw_target, plume::RenderTextureLayout::COPY_SOURCE));
+        plume::RenderTextureBarrier(shown, plume::RenderTextureLayout::COPY_SOURCE));
     command_list_->end();
     const plume::RenderCommandList* scene_list = command_list_.get();
     command_queue_->executeCommandLists(&scene_list, 1, nullptr, 0, nullptr, 0, scene_fence_.get());
@@ -1135,7 +1156,7 @@ void PlumeSwapchain::ClearAndPresent(float r, float g, float b, float a, DrawEnc
 
   if (scene_texture_) {
     const plume::RenderTextureBarrier to_copy[2] = {
-        plume::RenderTextureBarrier(draw_target, plume::RenderTextureLayout::COPY_SOURCE),
+        plume::RenderTextureBarrier(shown, plume::RenderTextureLayout::COPY_SOURCE),
         plume::RenderTextureBarrier(swapchain_texture, plume::RenderTextureLayout::COPY_DEST)};
     out->barriers(plume::RenderBarrierStage::COPY, nullptr, 0, to_copy, 2);
     if (probe_mapped_ && width >= 64 && height >= 64) {
@@ -1145,7 +1166,7 @@ void PlumeSwapchain::ClearAndPresent(float r, float g, float b, float a, DrawEnc
           plume::RenderTextureCopyLocation::PlacedFootprint(probe_buffer_.get(),
                                                             kColorTargetFormat,
                                                             64, 64, 1, 64, 0),
-          plume::RenderTextureCopyLocation::Subresource(draw_target, 0, 0), 0, 0, 0, &box);
+          plume::RenderTextureCopyLocation::Subresource(shown, 0, 0), 0, 0, 0, &box);
       probe_pending_ = true;
       probe_summary_ = g_plume_frame_summary;
     }
@@ -1166,7 +1187,7 @@ void PlumeSwapchain::ClearAndPresent(float r, float g, float b, float a, DrawEnc
             plume::RenderTextureCopyLocation::PlacedFootprint(snapshot_buffer_.get(),
                                                               kColorTargetFormat, width, height,
                                                               1, width, 0),
-            plume::RenderTextureCopyLocation::Subresource(draw_target, 0, 0));
+            plume::RenderTextureCopyLocation::Subresource(shown, 0, 0));
         snapshot_pending_ = snapshot_seconds;
       }
     }
@@ -1174,7 +1195,7 @@ void PlumeSwapchain::ClearAndPresent(float r, float g, float b, float a, DrawEnc
     // the window, filtered; at the window's own size it is a straight copy.
     if (width != window_width || height != window_height) {
       const plume::RenderRect letterbox = AspectRect(window_width, window_height);
-      if (!out->blitTexture(swapchain_texture, draw_target, true, FixedAspect() ? &letterbox : nullptr)) {
+      if (!out->blitTexture(swapchain_texture, shown, true, FixedAspect() ? &letterbox : nullptr)) {
         static bool warned = false;
         if (!warned) {
           warned = true;
@@ -1182,7 +1203,7 @@ void PlumeSwapchain::ClearAndPresent(float r, float g, float b, float a, DrawEnc
         }
       }
     } else {
-      out->copyTexture(swapchain_texture, draw_target);
+      out->copyTexture(swapchain_texture, shown);
     }
     // On the image shown, after the copy: drawn into the target, the counter
     // would go wherever the title copies that target to.

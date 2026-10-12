@@ -117,6 +117,14 @@ the same moment.
 Textures are loaded with their full mip chains from the title's memory, and
 sampled with the filtering and anisotropy the title asks for.
 
+The frame can be anti-aliased and sharpened as it is presented
+(`plume_postfx.cpp`): FXAA, after NVIDIA's FXAA 3.11, and AMD's FidelityFX CAS,
+two full-screen passes from the scene target through a pair of intermediate
+targets, then the usual copy onto the window. Both are off by default - the
+console had neither, and with them off nothing is recorded. The settings are
+live (`SetAntiAliasing`, `SetSharpening`, read once a frame); `XERENGE_AA` and
+`XERENGE_SHARPEN` set where they start.
+
 The frame is drawn at the window's resolution rather than the console's 720p,
 and the copies of it the post-processing reads are kept at that size. A pass
 that shrinks a copy further - the bloom's first step, 1280x720 into 320x180 -

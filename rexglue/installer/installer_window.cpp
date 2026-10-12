@@ -116,6 +116,9 @@ if [ "$aniso" = off ]; then export XERENGE_MAX_ANISOTROPY=1
 elif [ -n "$aniso" ]; then export XERENGE_MAX_ANISOTROPY="$aniso"; fi
 grade=$(value colour_grade)
 [ -n "$grade" ] && export XERENGE_COLOUR_GRADE="$grade"
+[ "$(value aa)" = fxaa ] && export XERENGE_AA=fxaa
+sharpen=$(value sharpen)
+[ -n "$sharpen" ] && export XERENGE_SHARPEN="$sharpen"
 [ "$(value fps_counter)" = true ] && export XERENGE_FPS_SHOW=1
 [ "$(value fps_30)" = true ] && export XERENGE_FPS_30=1
 [ "$(value frame_generation)" = true ] && export XERENGE_FRAME_GENERATION=120
@@ -225,6 +228,8 @@ if /i "%reflection_split%"=="true" set "XERENGE_REFLECTION_SPLIT=1"
 if defined render_resolution set "XERENGE_RENDER_RESOLUTION=%render_resolution%"
 if /i "%anisotropy%"=="off" (set "XERENGE_MAX_ANISOTROPY=1") else if defined anisotropy set "XERENGE_MAX_ANISOTROPY=%anisotropy%"
 if defined colour_grade set "XERENGE_COLOUR_GRADE=%colour_grade%"
+if /i "%aa%"=="fxaa" set "XERENGE_AA=fxaa"
+if defined sharpen set "XERENGE_SHARPEN=%sharpen%"
 if /i "%fps_counter%"=="true" set "XERENGE_FPS_SHOW=1"
 if /i "%fps_30%"=="true" set "XERENGE_FPS_30=1"
 if /i "%frame_generation%"=="true" set "XERENGE_FRAME_GENERATION=120"
@@ -615,6 +620,29 @@ InstallerWindow::InstallerWindow(QWidget* parent) : QWidget(parent) {
                               "colours as drawn."));
   grade_row->addWidget(grade_combo_, 1);
   hacks_layout->addLayout(grade_row);
+  auto* aa_row = new QHBoxLayout;
+  aa_row->addWidget(new QLabel(tr("Anti-aliasing")));
+  aa_combo_ = new QComboBox;
+  aa_combo_->addItem(tr("Off (as on the console)"), "off");
+  aa_combo_->addItem("FXAA", "fxaa");
+  aa_combo_->setCurrentIndex(0);
+  aa_combo_->setToolTip(tr("Smooths the jagged edges of the picture. A pass over the finished "
+                           "frame: cheap, but it softens it a little, the interface included."));
+  aa_row->addWidget(aa_combo_, 1);
+  hacks_layout->addLayout(aa_row);
+  auto* sharpen_row = new QHBoxLayout;
+  sharpen_row->addWidget(new QLabel(tr("Sharpening")));
+  sharpen_combo_ = new QComboBox;
+  sharpen_combo_->addItem(tr("Off"), "0");
+  sharpen_combo_->addItem(tr("Light"), "0.3");
+  sharpen_combo_->addItem(tr("Medium"), "0.6");
+  sharpen_combo_->addItem(tr("Strong"), "1");
+  sharpen_combo_->setCurrentIndex(0);
+  sharpen_combo_->setToolTip(tr("Contrast adaptive sharpening (AMD's CAS) over the finished "
+                                "frame, which brings back the detail that anti-aliasing or a "
+                                "smaller render size takes. Costs a weak GPU very little."));
+  sharpen_row->addWidget(sharpen_combo_, 1);
+  hacks_layout->addLayout(sharpen_row);
   fps_box_ = new QCheckBox(tr("Frame counter"));
   fps_box_->setToolTip(tr("Frames per second in the top left corner."));
   hacks_layout->addWidget(fps_box_);
@@ -931,6 +959,8 @@ void InstallerWindow::LoadSettings(const QString& path) {
   }
   choice("anisotropy", anisotropy_combo_);
   choice("colour_grade", grade_combo_);
+  choice("aa", aa_combo_);
+  choice("sharpen", sharpen_combo_);
   flag("fps_counter", fps_box_);
   flag("fps_30", fps30_box_);
   flag("frame_generation", framegen_box_);
@@ -1034,6 +1064,9 @@ void InstallerWindow::StartInstall() {
         << "anisotropy = " << anisotropy_combo_->currentData().toString() << "\n"
         << "# How much of the game's colour grading (its yellow cast) is kept: 1, 0.5 or 0\n"
         << "colour_grade = " << grade_combo_->currentData().toString() << "\n"
+        << "# Anti-aliasing: off or fxaa; sharpening: 0 (off) to 1\n"
+        << "aa = " << aa_combo_->currentData().toString() << "\n"
+        << "sharpen = " << sharpen_combo_->currentData().toString() << "\n"
         << "fps_counter = " << (fps_box_->isChecked() ? "true" : "false") << "\n"
         << "fps_30 = " << (fps30_box_->isChecked() ? "true" : "false") << "\n"
         << "frame_generation = " << (framegen_box_->isChecked() ? "true" : "false") << "\n"
