@@ -244,6 +244,7 @@ Useful modes:
 ./run.sh --gdb            run under a debugger
 ./run.sh --windowed       run in a window; fullscreen (--fullscreen) is the default
 ./run.sh --fps            frames per second in the top left corner (plume)
+./run.sh --perf           the performance overlay: fps, frame times and a graph
 ./run.sh --menu           the settings menu (below) open from the start (plume)
 ```
 
@@ -374,6 +375,12 @@ are marked *restart* in the menu: they are saved and apply the next time the
 game is started. These apply at once:
 
 * Windowed, FPS counter and Crash mode smoothing (Display).
+* Performance overlay (Advanced): the frame rate and frame time, their 50th and
+  99th percentiles and worst over the last 255 frames, the host's presents a
+  second (`window`, which exceeds the game's rate with frame generation or Crash
+  mode smoothing), and a bar graph of the last 120 frames against 50 ms - green up
+  to 17.5 ms, yellow to 25, red above, a line at 16.7 ms. `perf_overlay` in
+  `xerenge.conf`, `XERENGE_PERF_OVERLAY`, `./run.sh --perf`.
 * Anisotropic filtering (Graphics).
 * Colour grading, Brightness and Shadow lift (Post-processing).
 

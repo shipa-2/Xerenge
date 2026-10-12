@@ -40,6 +40,10 @@ uint32_t SamplerVersion();
 bool FpsShown();
 void SetFpsShown(bool shown);
 
+// XERENGE_PERF_OVERLAY: the frame-time graph in the corner, drawn even with the menu closed.
+bool PerfOverlay();
+void SetPerfOverlay(bool shown);
+
 // XERENGE_CRASH_INTERPOLATION: a frame between each two of Crash mode's thirty.
 bool CrashInterpolation();
 void SetCrashInterpolation(bool on);

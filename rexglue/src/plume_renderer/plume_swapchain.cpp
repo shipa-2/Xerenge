@@ -12,6 +12,7 @@
 #include "plume_renderer/plume_framegen.h"
 #include "plume_renderer/plume_menu.h"
 #include "plume_renderer/plume_menu_draw.h"
+#include "plume_renderer/plume_perf.h"
 #include "plume_renderer/plume_settings.h"
 
 #include <SDL3/SDL.h>
@@ -1121,11 +1122,13 @@ void PlumeSwapchain::ClearAndPresent(float r, float g, float b, float a, DrawEnc
   const bool snapshot_now =
       scene_texture_ && snapshot_pending_ < 0.0 && SnapshotDue(&snapshot_seconds);
   PlumeMenu& menu = PlumeMenu::Get();
-  const bool menu_in_target = snapshot_now && menu.Visible();
+  // The menu, or the performance overlay that is drawn with it (and without).
+  const bool menu_drawn = menu.Visible() || settings::PerfOverlay();
+  const bool menu_in_target = snapshot_now && menu_drawn;
   ImDrawData* const menu_data =
-      menu.Visible() ? menu.Frame(menu_in_target ? width : window_width,
-                                  menu_in_target ? height : window_height)
-                     : nullptr;
+      menu_drawn ? menu.Frame(menu_in_target ? width : window_width,
+                              menu_in_target ? height : window_height)
+                 : nullptr;
   if (!scene_texture_ && (settings::FpsShown() || menu_data)) {
     // Drawn straight into the swap chain image: the counter and the menu go on last.
     command_list_->setFramebuffer(draw_framebuffer);
@@ -1292,6 +1295,7 @@ void PlumeSwapchain::ClearAndPresent(float r, float g, float b, float a, DrawEnc
                                       submit_fence_.get());
   const auto submit_started = std::chrono::steady_clock::now();
   swap_chain_->present(image_index, &release_semaphore, 1);
+  perf::NoteHostPresent();
   const auto present_done = std::chrono::steady_clock::now();
   submit_pending_ = true;
   // Waiting here, for the frame just submitted, is the default. Leaving the

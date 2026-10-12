@@ -351,6 +351,7 @@ final class Settings {
         if (!value("brightness").isEmpty()) env("XERENGE_BRIGHTNESS", value("brightness"));
         if (!value("shadow_lift").isEmpty()) env("XERENGE_SHADOW_LIFT", value("shadow_lift"));
         if ("true".equals(value("fps_counter"))) env("XERENGE_FPS_SHOW", "1");
+        if ("true".equals(value("perf_overlay"))) env("XERENGE_PERF_OVERLAY", "1");
         if ("true".equals(value("fps_30"))) env("XERENGE_FPS_30", "1");
         if ("true".equals(value("frame_generation"))) env("XERENGE_FRAME_GENERATION", "120");
         if ("false".equals(value("crash_interpolation"))) env("XERENGE_CRASH_INTERPOLATION", "0");

@@ -130,6 +130,7 @@ brightness=$(value brightness)
 shadow_lift=$(value shadow_lift)
 [ -n "$shadow_lift" ] && export XERENGE_SHADOW_LIFT="$shadow_lift"
 [ "$(value fps_counter)" = true ] && export XERENGE_FPS_SHOW=1
+[ "$(value perf_overlay)" = true ] && export XERENGE_PERF_OVERLAY=1
 [ "$(value fps_30)" = true ] && export XERENGE_FPS_30=1
 [ "$(value frame_generation)" = true ] && export XERENGE_FRAME_GENERATION=120
 [ "$(value crash_interpolation)" = false ] && export XERENGE_CRASH_INTERPOLATION=0
@@ -245,6 +246,7 @@ if defined sharpen set "XERENGE_SHARPEN=%sharpen%"
 if defined brightness set "XERENGE_BRIGHTNESS=%brightness%"
 if defined shadow_lift set "XERENGE_SHADOW_LIFT=%shadow_lift%"
 if /i "%fps_counter%"=="true" set "XERENGE_FPS_SHOW=1"
+if /i "%perf_overlay%"=="true" set "XERENGE_PERF_OVERLAY=1"
 if /i "%fps_30%"=="true" set "XERENGE_FPS_30=1"
 if /i "%frame_generation%"=="true" set "XERENGE_FRAME_GENERATION=120"
 if /i "%crash_interpolation%"=="false" set "XERENGE_CRASH_INTERPOLATION=0"

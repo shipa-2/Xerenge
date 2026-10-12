@@ -55,6 +55,8 @@
 #                       127.0.0.2 and 127.0.0.3 run two copies on one machine.
 #   ./run.sh --windowed runs in a window; --fullscreen (the default) does not.
 #   ./run.sh --fps      frames per second in the top left corner (plume).
+#   ./run.sh --perf     the performance overlay (plume): fps, the frame time and a
+#                       graph of the last 120 frames in the top left corner.
 #   ./run.sh --render-resolution=WIDTHxHEIGHT
 #                       plume draws the frame at this size and scales it onto
 #                       the window, e.g. 1280x720, the size the title renders
@@ -209,6 +211,7 @@ for arg in "$@"; do
         --full-vertices) FULL_VERTICES=1 ;;
         --cull) CULL=1 ;;
         --fps) FPS_SHOW=1 ;;
+        --perf) PERF_OVERLAY=1 ;;
         --windowed) WINDOWED=1 ;;
         --fullscreen) WINDOWED= ;;
         # Any other option goes to the game as it is: its own settings, e.g.
@@ -292,6 +295,7 @@ fi
 [ -n "$FULL_VERTICES" ] && XERENGE_FULL_VERTICES=1 && export XERENGE_FULL_VERTICES
 [ -n "$CULL" ] && XERENGE_CULL=1 && export XERENGE_CULL
 [ -n "$FPS_SHOW" ] && XERENGE_FPS_SHOW=1 && export XERENGE_FPS_SHOW
+[ -n "$PERF_OVERLAY" ] && XERENGE_PERF_OVERLAY=1 && export XERENGE_PERF_OVERLAY
 # shellcheck disable=SC2086 # a list of options, split on purpose
 [ -n "$GAME_ARGS" ] && set -- "$@" $GAME_ARGS
 
