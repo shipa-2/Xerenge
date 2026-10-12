@@ -73,6 +73,12 @@
     <string name="touch_controls_tip">Полупрозрачные кнопки геймпада поверх игры: стик на левой половине экрана (где коснулся палец — там его центр), RT и LT — газ и тормоз, A B X Y, LB RB, Back и Start. Подключённый геймпад тоже работает.</string>
     <string name="touch_opacity">Непрозрачность кнопок: %1$d%%</string>
     <string name="touch_opacity_tip">Насколько кнопки перекрывают картинку.</string>
+    <string name="vibration">Вибрация</string>
+    <string name="vibration_auto">Авто</string>
+    <string name="vibration_controller">Геймпад</string>
+    <string name="vibration_device">Устройство</string>
+    <string name="vibration_off">Выключено</string>
+    <string name="vibration_tip">Куда идёт вибрация игры. «Геймпад» — моторы самого геймпада. «Устройство» — вибромотор этого устройства: для консоли, у встроенного геймпада которой нет моторов, или для телефона с экранным управлением. «Авто» использует геймпад, если он умеет вибрировать, а иначе — устройство.</string>
     <string name="ready">Готово к установке.</string>
     <string name="install">Установить</string>
     <string name="update">Обновить</string>

@@ -113,6 +113,8 @@ public class InstallerActivity extends Activity {
     private CheckBox touchBox;
     private SeekBar opacityBar;
     private TextView opacityLabel;
+    private Spinner vibrationSpinner;
+    private String[][] vibrationChoices;
     // Below the tabs.
     private ProgressBar progress;
     private TextView status;
@@ -482,6 +484,17 @@ public class InstallerActivity extends Activity {
         page.addView(opacityBar);
         note(page, R.string.touch_opacity_tip);
         touchBox.setOnCheckedChangeListener((b, on) -> opacityBar.setEnabled(on));
+        // The four values of vibration.
+        vibrationChoices = new String[][] {
+            {getString(R.string.vibration_auto), "auto"},
+            {getString(R.string.vibration_controller), "controller"},
+            {getString(R.string.vibration_device), "device"},
+            {getString(R.string.vibration_off), "off"},
+        };
+        LinearLayout vibrationRow = row(page);
+        label(vibrationRow, getString(R.string.vibration), 15, false, Color.WHITE).setPadding(0, 0, dp(12), 0);
+        vibrationSpinner = spinner(vibrationRow, vibrationChoices, "");
+        note(page, R.string.vibration_tip);
         showControls(settings);
         return page;
     }
@@ -525,6 +538,7 @@ public class InstallerActivity extends Activity {
         opacityBar.setProgress(Math.max(0, Math.min(90, s.touchOpacity - 10)));
         opacityLabel.setText(getString(R.string.touch_opacity, opacityBar.getProgress() + 10));
         opacityBar.setEnabled(s.touchControls);
+        vibrationSpinner.setSelection(Math.max(indexOf(vibrationChoices, s.vibration), 0));
     }
 
     private Settings collectSettings() {
@@ -555,6 +569,7 @@ public class InstallerActivity extends Activity {
         s.crashInterpolation = crashInterpBox.isChecked();
         s.touchControls = touchBox.isChecked();
         s.touchOpacity = opacityBar.getProgress() + 10;
+        s.vibration = vibrationChoices[vibrationSpinner.getSelectedItemPosition()][1];
         return s;
     }
 

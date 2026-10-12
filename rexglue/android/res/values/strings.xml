@@ -74,6 +74,12 @@
     <string name="touch_controls_tip">Translucent pad buttons over the game: a stick on the left half (where the thumb lands is its centre), RT and LT for accelerating and braking, A B X Y, LB RB, Back and Start. A connected pad still works.</string>
     <string name="touch_opacity">Button opacity: %1$d%%</string>
     <string name="touch_opacity_tip">How much of the picture the buttons cover.</string>
+    <string name="vibration">Vibration</string>
+    <string name="vibration_auto">Automatic</string>
+    <string name="vibration_controller">Controller</string>
+    <string name="vibration_device">Device</string>
+    <string name="vibration_off">Off</string>
+    <string name="vibration_tip">Where the game\'s rumble goes. Controller is the gamepad\'s own motors. Device is this device\'s vibrator: for a handheld whose built-in pad has no motors, or a phone played on the on-screen controls. Automatic uses the gamepad when it can rumble and the device when it cannot.</string>
     <string name="ready">Ready.</string>
     <string name="install">Install</string>
     <string name="update">Update</string>
