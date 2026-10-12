@@ -10,6 +10,7 @@
 #include <atomic>
 #include <cstring>
 #include <cstdint>
+#include <deque>
 #include <map>
 #include <memory>
 #include <mutex>
@@ -705,6 +706,12 @@ class PlumeDrawContext {
   std::unordered_map<uint32_t, uint32_t> sampler_index_by_key_;
   std::vector<std::unique_ptr<plume::RenderSampler>> guest_samplers_;
   uint32_t next_sampler_ = 1;
+  // The anisotropy setting the samplers were made with (settings::SamplerVersion),
+  // and the ones it replaced, kept until the frames that may read them are done.
+  uint32_t sampler_version_ = 0;
+  std::deque<std::pair<uint64_t, std::unique_ptr<plume::RenderSampler>>> retired_samplers_;
+  std::unique_ptr<plume::RenderSampler> MakeSampler(uint32_t key);
+  void RebuildSamplers();
   uint32_t SamplerKey(const GuestDrawSnapshot& snap, uint32_t slot) const;
   void EnsureSampler(const GuestDrawSnapshot& snap, uint32_t slot);
   // Guest textures with more than one layer - stacked 2D or volume - as 2D
