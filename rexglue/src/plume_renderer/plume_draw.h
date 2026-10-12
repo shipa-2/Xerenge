@@ -792,8 +792,13 @@ class PlumeDrawContext {
     uint32_t count = 0;
     uint64_t index_hash = 0;
     uint64_t data_hash = 0;
+    // Times its vertices were stored again because they had changed. From the
+    // second on the mesh is only watched (count 0, no place): its ranges and
+    // their hash are kept up to date, and it is stored again once a frame
+    // finds them as the frame before left them.
     uint32_t changes = 0;
     uint64_t last_used = 0;  // frame_serial_ of the last frame that drew it
+    uint64_t stored = 0;     // frame_serial_ of the frame that stored it
     std::vector<std::pair<uint32_t, uint32_t>> ranges;  // physical byte [start, end)
     // The first packed vec4 of the first and the last vertex as stored, read
     // back on a hit with XERENGE_VERTEX_TRACE to catch a place someone else
@@ -852,6 +857,7 @@ class PlumeDrawContext {
     uint32_t offset = 0;
     uint32_t count = 0;
     bool unstable = false;  // changes too often to be worth caching
+    bool steady = false;    // watched, not stored, and as the last frame left it
   };
   void UnpackVertices(const GuestDrawSnapshot& snap, const std::vector<VfetchAttr>& attrs,
                       int32_t pos_fetch_const, uint32_t pos_float, uint32_t vertex_count,
@@ -865,6 +871,13 @@ class PlumeDrawContext {
     std::vector<uint32_t> read_lo, read_hi;
     uint32_t fetched = 0, fetch_addr = 0, fetch_type = 0;
   };
+  // A watched mesh's entry brought up to date: no place, what it read now.
+  void WatchMesh(uint64_t key, uint64_t index_hash, bool hashed, uint64_t data_hash,
+                 std::vector<std::pair<uint32_t, uint32_t>>&& ranges);
+  // The entry gives up its place in the cache buffer (kept until the frames
+  // that drew from it are done). Whether it had one.
+  bool RetireMeshPlace(uint64_t key, CachedMesh& entry);
+  void NoteNoCacheRoom(uint32_t count);
   std::unordered_map<const GuestDrawSnapshot*, PreUnpacked> pre_unpacked_;
   std::vector<float> pre_arena_;
   MeshCheck CheckMeshCache(const GuestDrawSnapshot& snap, const std::vector<VfetchAttr>& attrs,
@@ -877,6 +890,8 @@ class PlumeDrawContext {
   // The end of this frame's half of the vertex buffer (see EncodeDraws).
   uint32_t vb_limit_ = 0;
   uint64_t cache_hits_ = 0;
+  uint64_t cache_stores_ = 0;
+  uint64_t cache_watched_ = 0;
   uint64_t cache_misses_ = 0;
   uint64_t cache_resets_ = 0;
   // Vertices are assembled here, in ordinary cached memory, and copied into

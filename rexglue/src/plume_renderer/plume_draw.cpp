@@ -3519,7 +3519,10 @@ PlumeDrawContext::MeshCheck PlumeDrawContext::CheckMeshCache(
     return check;
   }
   check.unstable = it->second.changes >= 2;
-  if (it->second.count == 0 || it->second.index_hash != check.index_hash) {
+  // A mesh that is only watched (see CachedMesh::changes) has no place, but
+  // what it read is hashed all the same: whether it has stopped changing.
+  const bool watched = it->second.count == 0 && check.unstable && !it->second.ranges.empty();
+  if ((it->second.count == 0 && !watched) || it->second.index_hash != check.index_hash) {
     return check;
   }
   uint64_t data_hash = 0;
@@ -3529,6 +3532,10 @@ PlumeDrawContext::MeshCheck PlumeDrawContext::CheckMeshCache(
       return check;
     }
     data_hash = XXH3_64bits_withSeed(host, end - start, data_hash);
+  }
+  if (data_hash == it->second.data_hash && watched) {
+    check.steady = true;
+    return check;
   }
   if (data_hash == it->second.data_hash) {
     // The place must still be this mesh's: an entry whose place was given to
@@ -3591,6 +3598,49 @@ void FillPhase(int phase, std::chrono::steady_clock::time_point& mark) {
       std::chrono::duration_cast<std::chrono::nanoseconds>(now - mark).count(),
       std::memory_order_relaxed);
   mark = now;
+}
+
+// XERENGE_MESH_STORE_ALWAYS=1: a mesh whose vertices changed is stored in the
+// vertex cache again every time, as before, however often that is.
+bool MeshWatching() {
+  static const bool on = std::getenv("XERENGE_MESH_STORE_ALWAYS") == nullptr;
+  return on;
+}
+
+// The bytes a draw's attributes read, as physical [start, end) ranges, merged:
+// what the vertex cache hashes to tell whether the mesh has changed.
+std::vector<std::pair<uint32_t, uint32_t>> MergeReadRanges(const std::vector<uint32_t>& read_lo,
+                                                           const std::vector<uint32_t>& read_hi) {
+  std::vector<std::pair<uint32_t, uint32_t>> ranges;
+  for (size_t ai = 0; ai < read_lo.size(); ++ai) {
+    if (read_lo[ai] <= read_hi[ai]) {
+      ranges.emplace_back(read_lo[ai] << 2, (read_hi[ai] + 4) << 2);
+    }
+  }
+  std::sort(ranges.begin(), ranges.end());
+  std::vector<std::pair<uint32_t, uint32_t>> merged;
+  for (const auto& r : ranges) {
+    if (!merged.empty() && r.first <= merged.back().second) {
+      merged.back().second = std::max(merged.back().second, r.second);
+    } else {
+      merged.push_back(r);
+    }
+  }
+  return merged;
+}
+
+bool HashRanges(memory::Memory* memory, const std::vector<std::pair<uint32_t, uint32_t>>& ranges,
+                uint64_t* out) {
+  uint64_t h = 0;
+  for (const auto& [start, end] : ranges) {
+    const auto* host = memory->TranslatePhysical<const uint8_t*>(start);
+    if (!host || end <= start || end - start > (64u << 20)) {
+      return false;
+    }
+    h = XXH3_64bits_withSeed(host, end - start, h);
+  }
+  *out = h;
+  return true;
 }
 }  // namespace
 
@@ -3976,6 +4026,55 @@ void PlumeDrawContext::UnpackVertices(const GuestDrawSnapshot& snap,
 
 }
 
+void PlumeDrawContext::NoteNoCacheRoom(uint32_t count) {
+  static std::atomic<uint32_t> no_room{0};
+  const uint32_t n = no_room.fetch_add(1, std::memory_order_relaxed) + 1;
+  if (n <= 4 || (n & (n - 1)) == 0) {
+    REXLOG_INFO("plume: vertex cache: no room for {} vertices (head {}, {} meshes, {} retired places), "
+                "drawn uncached ({} so far)",
+                count, cache_used_, mesh_cache_.size(), retired_cache_regions_.size(), n);
+  }
+}
+
+bool PlumeDrawContext::RetireMeshPlace(uint64_t key, CachedMesh& entry) {
+  if (entry.count == 0) {
+    return false;
+  }
+  if (auto at = cache_by_offset_.find(entry.offset);
+      at != cache_by_offset_.end() && at->second == key) {
+    cache_by_offset_.erase(at);
+    retired_cache_regions_.push_back({entry.offset, entry.count, entry.last_used});
+  }
+  // The entry gives up its place at once. It used to keep it until the
+  // new one was stored, so when no room was found (or a read range had no
+  // host page) it went on naming a place the retired list soon handed to
+  // other meshes, and the vertices it had held earlier - a car's undamaged
+  // shape again after a reset or a replay - hit it.
+  entry.count = 0;
+  return true;
+}
+
+// A mesh that keeps changing - the wreck as it crumples, a buffer the title
+// refills every frame under the same key - was stored again every frame,
+// each time in a new place, pushing out meshes that do keep. Such a mesh
+// keeps its entry but no place; what it read and its hash are noted each
+// frame, and the frame whose check finds them unchanged stores it again.
+void PlumeDrawContext::WatchMesh(uint64_t key, uint64_t index_hash, bool hashed,
+                                 uint64_t data_hash,
+                                 std::vector<std::pair<uint32_t, uint32_t>>&& ranges) {
+  CachedMesh& entry = mesh_cache_[key];
+  RetireMeshPlace(key, entry);
+  entry.index_hash = index_hash;
+  entry.data_hash = data_hash;
+  entry.last_used = frame_serial_;
+  if (hashed) {
+    entry.ranges = std::move(ranges);
+  } else {
+    entry.ranges.clear();
+  }
+  ++cache_watched_;
+}
+
 void PlumeDrawContext::CopyVerticesOut(float* dst, const float* staged, uint32_t count) const {
   const uint32_t layout = fill_layout_mask_;
   if (layout == kFullLayoutMask) {
@@ -4117,6 +4216,8 @@ uint32_t PlumeDrawContext::FillVertices(const GuestDrawSnapshot& snap, memory::M
   // The vertex cache: see cache_vb_ and CheckMeshCache.
   last_fill_cache_offset_ = ~0u;
   bool cache_eligible = false;
+  // Eligible, but changing too often to store: only watched (see WatchMesh).
+  bool cache_watch = false;
   uint64_t cache_key = 0;
   uint64_t index_hash = 0;
   // Cached vertices are kept in the layout of the title's own pipeline for the
@@ -4143,27 +4244,37 @@ uint32_t PlumeDrawContext::FillVertices(const GuestDrawSnapshot& snap, memory::M
         FillPhase(0, fill_mark);
         return check.count;
       }
+      // Stored earlier in this very frame, by another draw of the same mesh
+      // (the reflection's faces draw what the scene draws): the check, made
+      // before the frame, could not know. As good as a hit found by that
+      // check - and storing it again would count as a change.
+      if (MeshWatching()) {
+        if (auto e = mesh_cache_.find(check.key);
+            e != mesh_cache_.end() && e->second.count != 0 && e->second.stored == frame_serial_ &&
+            e->second.index_hash == check.index_hash) {
+          const auto owner = cache_by_offset_.find(e->second.offset);
+          if (owner != cache_by_offset_.end() && owner->second == check.key) {
+            ++cache_hits_;
+            e->second.last_used = frame_serial_;
+            last_fill_cache_offset_ = e->second.offset;
+            FillPhase(0, fill_mark);
+            return e->second.count;
+          }
+        }
+      }
       // A mesh whose vertices change from frame to frame - the wreck as it
-      // crumples - is not worth caching; after a couple of changes leave it.
+      // crumples - is not worth caching; after a couple of changes it is only
+      // watched, until a frame finds it as the last one left it.
       if (check.unstable) {
-        cache_eligible = false;
+        if (MeshWatching()) {
+          cache_watch = !check.steady;
+        } else {
+          cache_eligible = false;
+        }
       }
       ++cache_misses_;
     }
   }
-  const auto ranges_hash = [&](const std::vector<std::pair<uint32_t, uint32_t>>& ranges,
-                               uint64_t* out) {
-    uint64_t h = 0;
-    for (const auto& [start, end] : ranges) {
-      const auto* host = memory->TranslatePhysical<const uint8_t*>(start);
-      if (!host || end <= start || end - start > (64u << 20)) {
-        return false;
-      }
-      h = XXH3_64bits_withSeed(host, end - start, h);
-    }
-    *out = h;
-    return true;
-  };
   // Bounds of what each attribute read, for the cache's content check.
   std::vector<uint32_t> read_lo;
   std::vector<uint32_t> read_hi;
@@ -4703,55 +4814,31 @@ uint32_t PlumeDrawContext::FillVertices(const GuestDrawSnapshot& snap, memory::M
     cache_eligible = false;
   }
   uint32_t cache_offset = 0;
+  // Whether the mesh was in the cache with other vertices: a change.
+  bool had_content = false;
   if (cache_eligible && draw_count != 0) {
     // Taken out first: a key re-stored after its vertices changed must not
     // have its old place evicted as someone else's in the allocation below.
-    if (auto old_entry = mesh_cache_.find(cache_key);
-        old_entry != mesh_cache_.end() && old_entry->second.count != 0) {
-      if (auto at = cache_by_offset_.find(old_entry->second.offset);
-          at != cache_by_offset_.end() && at->second == cache_key) {
-        cache_by_offset_.erase(at);
-        retired_cache_regions_.push_back(
-            {old_entry->second.offset, old_entry->second.count, old_entry->second.last_used});
-      }
-      // The entry gives up its place at once. It used to keep it until the
-      // new one was stored, so when no room was found (or a read range had no
-      // host page) it went on naming a place the retired list soon handed to
-      // other meshes, and the vertices it had held earlier - a car's undamaged
-      // shape again after a reset or a replay - hit it.
-      old_entry->second.count = 0;
+    if (auto old_entry = mesh_cache_.find(cache_key); old_entry != mesh_cache_.end()) {
+      had_content = RetireMeshPlace(cache_key, old_entry->second);
     }
-    if (!AllocateCacheRegion(draw_count, &cache_offset)) {
+    if (!cache_watch && !AllocateCacheRegion(draw_count, &cache_offset)) {
       cache_eligible = false;
-      static std::atomic<uint32_t> no_room{0};
-      const uint32_t n = no_room.fetch_add(1, std::memory_order_relaxed) + 1;
-      if (n <= 4 || (n & (n - 1)) == 0) {
-        REXLOG_INFO("plume: vertex cache: no room for {} vertices (head {}, {} meshes, {} retired places), "
-                    "drawn uncached ({} so far)",
-                    draw_count, cache_used_, mesh_cache_.size(), retired_cache_regions_.size(), n);
-      }
+      NoteNoCacheRoom(draw_count);
     }
   }
   if (cache_eligible && draw_count != 0) {
-    std::vector<std::pair<uint32_t, uint32_t>> ranges;
-    for (size_t ai = 0; ai < read_lo.size(); ++ai) {
-      if (read_lo[ai] <= read_hi[ai]) {
-        ranges.emplace_back(read_lo[ai] << 2, (read_hi[ai] + 4) << 2);
-      }
-    }
-    std::sort(ranges.begin(), ranges.end());
-    std::vector<std::pair<uint32_t, uint32_t>> merged;
-    for (const auto& r : ranges) {
-      if (!merged.empty() && r.first <= merged.back().second) {
-        merged.back().second = std::max(merged.back().second, r.second);
-      } else {
-        merged.push_back(r);
-      }
-    }
+    std::vector<std::pair<uint32_t, uint32_t>> merged = MergeReadRanges(read_lo, read_hi);
     uint64_t data_hash = 0;
-    if (ranges_hash(merged, &data_hash)) {
+    const bool hashed = HashRanges(memory, merged, &data_hash);
+    if (cache_watch) {
+      WatchMesh(cache_key, index_hash, hashed, data_hash, std::move(merged));
+    } else if (hashed) {
       CachedMesh& entry = mesh_cache_[cache_key];
-      if (entry.count != 0) {
+      // Counted where the mesh had a place: this used to ask the entry's
+      // count, which the lines above had just zeroed, so no change was ever
+      // counted and no mesh ever left alone.
+      if (had_content && MeshWatching()) {
         ++entry.changes;
       }
       entry.offset = cache_offset;
@@ -4759,6 +4846,8 @@ uint32_t PlumeDrawContext::FillVertices(const GuestDrawSnapshot& snap, memory::M
       entry.index_hash = index_hash;
       entry.data_hash = data_hash;
       entry.last_used = frame_serial_;
+      entry.stored = frame_serial_;
+      ++cache_stores_;
       entry.ranges = std::move(merged);
       cache_by_offset_[cache_offset] = cache_key;
       CopyVerticesOut(cache_mapped_ + size_t(cache_offset) * kFloatsPerVert, staged, draw_count);
@@ -7471,8 +7560,10 @@ void PlumeDrawContext::EncodeDraws(plume::RenderCommandList* list,
       const uint64_t now = CoarseMs();
       uint64_t was = last_ms.load(std::memory_order_relaxed);
       if (now - was >= 2000 && last_ms.compare_exchange_strong(was, now)) {
-        REXLOG_INFO("plume: vertex cache {} hits / {} misses, {} vertices in {} meshes",
-                    cache_hits_, cache_misses_, cache_used_, mesh_cache_.size());
+        REXLOG_INFO("plume: vertex cache {} hits / {} misses, {} vertices in {} meshes; {} stored, "
+                    "{} watched instead",
+                    cache_hits_, cache_misses_, cache_used_, mesh_cache_.size(), cache_stores_,
+                    cache_watched_);
         REXLOG_INFO("plume: unpacking vertices took {} ms for {} vertices (setup+clear {} ms, "
                     "vertex loop {} ms, after {} ms, copy out {} ms)",
                     total_us.load(std::memory_order_relaxed) / 1000,
