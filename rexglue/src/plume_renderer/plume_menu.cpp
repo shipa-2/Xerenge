@@ -1286,7 +1286,14 @@ struct PlumeMenu::State {
         "Pad: D-pad, A accept, B close, X default, LB RB page    "
         "Keyboard: arrows, Enter, Esc, Del default, Tab page    Mouse: click, wheel";
 #endif
-    Text(list, inner_left, y + panel_h - 30 * s, 13 * s, Colour(140, 140, 150, 1.0f), keys);
+    // Made to fit, as the tabs are: the line for a desk is a little longer than
+    // the panel is wide and ran over its edge.
+    float keys_size = 13 * s;
+    const float keys_width = TextWidth(keys, keys_size);
+    if (keys_width > inner_right - inner_left) {
+      keys_size *= (inner_right - inner_left) / keys_width;
+    }
+    Text(list, inner_left, y + panel_h - 30 * s, keys_size, Colour(140, 140, 150, 1.0f), keys);
     if (!Saves()) {
       TextRight(list, inner_right, y + 30 * s, 16 * s, Colour(250, 190, 40, 1.0f),
                 restart_needed ? "" : "No xerenge.conf: changes last until the game is closed");
