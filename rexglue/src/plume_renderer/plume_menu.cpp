@@ -26,6 +26,7 @@
 #include <rex/system/gpu_plugin.h>
 
 #include "plume_renderer/plume_menu_conf.h"
+#include "plume_renderer/plume_postfx.h"
 #include "plume_renderer/plume_settings.h"
 
 namespace rex::plume_renderer {
@@ -407,8 +408,20 @@ struct PlumeMenu::State {
               "nearly black, as on the console."),
         [] { return FormatNumber(ShadowLift()); },
         [](const std::string& v) { SetShadowLift(std::strtof(v.c_str(), nullptr)); }));
-    // Anti-aliasing and sharpening go here, as the items above do: an `apply`
-    // that sets their runtime state, and a `read` that gives it back.
+    post.items.push_back(Live(
+        Choose("Anti-aliasing", "aa", "off", {{"off", "Off"}, {"fxaa", "FXAA"}},
+               "Smooths the jagged edges of the finished frame. The interface is drawn into the "
+               "same picture and softens a little with it."),
+        [] { return std::string(GetAntiAliasing() == AntiAliasing::kFxaa ? "fxaa" : "off"); },
+        [](const std::string& v) {
+          SetAntiAliasing(v == "fxaa" ? AntiAliasing::kFxaa : AntiAliasing::kOff);
+        }));
+    post.items.push_back(Live(
+        Slide("Sharpening", "sharpen", 0.0f, 0.0f, 1.0f, 0.05f,
+              "AMD's contrast adaptive sharpening over the finished frame. 0 is off; it brings "
+              "back what anti-aliasing softens."),
+        [] { return FormatNumber(GetSharpening()); },
+        [](const std::string& v) { SetSharpening(std::strtof(v.c_str(), nullptr)); }));
     pages.push_back(std::move(post));
 
     Page online{"Online"};
