@@ -71,6 +71,9 @@ final class Settings {
     // On-screen controls (Android only; the desktop has the keyboard instead).
     boolean touchControls = true;
     int touchOpacity = 40;  // percent
+    // Where the game's rumble goes (Android only): auto (the pad when it can
+    // rumble, otherwise this device's own vibrator), controller, device or off.
+    String vibration = "auto";
     /** The debug_* lines of an installed copy, kept as they are. */
     String preservedDebug = "";
 
@@ -161,7 +164,18 @@ final class Settings {
             }
         } catch (NumberFormatException ignored) {
         }
+        if (v.containsKey("vibration")) {
+            settings.vibration = vibration(v.get("vibration"));
+        }
         return settings;
+    }
+
+    /** vibration from what a file has: anything but its four values is auto. */
+    static String vibration(String value) {
+        if ("controller".equals(value) || "device".equals(value) || "off".equals(value)) {
+            return value;
+        }
+        return "auto";
     }
 
     private static boolean flag(Map<String, String> values, String key, boolean fallback) {
@@ -209,7 +223,10 @@ final class Settings {
            .append("crash_interpolation = ").append(tf(crashInterpolation)).append('\n')
            .append("# On-screen controls: translucent pad buttons over the game, and how opaque (percent)\n")
            .append("touch_controls = ").append(tf(touchControls)).append('\n')
-           .append("touch_opacity = ").append(touchOpacity).append('\n');
+           .append("touch_opacity = ").append(touchOpacity).append('\n')
+           .append("# The game's rumble: auto (the pad when it can rumble, otherwise this device's own\n")
+           .append("# vibrator), controller, device or off\n")
+           .append("vibration = ").append(vibration).append('\n');
         out.append("# Debug mode: detailed logs for reporting a problem. They go to\n")
            .append("# burnout.log beside this file.\n")
            .append("debug = ").append(tf(debug)).append('\n')
@@ -282,6 +299,7 @@ final class Settings {
         else if (!value("anisotropy").isEmpty()) env("XERENGE_MAX_ANISOTROPY", value("anisotropy"));
         if (!"false".equals(value("aspect_16_9"))) env("XERENGE_ASPECT_16_9", "1");
         if ("true".equals(value("fps_counter"))) env("XERENGE_FPS_SHOW", "1");
+        env("XERENGE_VIBRATION", vibration(value("vibration")));
         if ("true".equals(value("fps_30"))) env("XERENGE_FPS_30", "1");
         if ("true".equals(value("frame_generation"))) env("XERENGE_FRAME_GENERATION", "120");
         if ("false".equals(value("crash_interpolation"))) env("XERENGE_CRASH_INTERPOLATION", "0");

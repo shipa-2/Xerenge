@@ -60,6 +60,23 @@ public class BurnoutActivity extends SDLActivity {
                     new android.view.ViewGroup.LayoutParams(android.view.ViewGroup.LayoutParams.MATCH_PARENT,
                             android.view.ViewGroup.LayoutParams.MATCH_PARENT));
         }
+        // The device's own vibrator, for the game's rumble when the pad has
+        // no motors (vibration in xerenge.conf).
+        DeviceVibration.start(getApplicationContext());
+    }
+
+    // The device does not go on vibrating once the game is left: Android
+    // pauses the activity before it stops or destroys it.
+    @Override
+    protected void onPause() {
+        DeviceVibration.pause();
+        super.onPause();
+    }
+
+    @Override
+    protected void onResume() {
+        super.onResume();
+        DeviceVibration.resume();
     }
 
     // Variables for trying things out from a computer, without writing into
@@ -118,6 +135,7 @@ public class BurnoutActivity extends SDLActivity {
             if (exitToast != null) {
                 exitToast.cancel();
             }
+            DeviceVibration.pause();
             finishAndRemoveTask();
             Process.killProcess(Process.myPid());
             return;
