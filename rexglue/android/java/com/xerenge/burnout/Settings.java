@@ -235,6 +235,15 @@ final class Settings {
            .append("# On-screen controls: translucent pad buttons over the game, and how opaque (percent)\n")
            .append("touch_controls = ").append(tf(touchControls)).append('\n')
            .append("touch_opacity = ").append(touchOpacity).append('\n');
+        // What the game's own menu keeps in the file and this does not have a
+        // control for: kept as it was.
+        for (Map.Entry<String, String> e : values.entrySet()) {
+            String key = e.getKey();
+            if (key.equals("colour_grade") || key.equals("brightness") || key.equals("shadow_lift")
+                    || key.equals("keyboard") || key.startsWith("keybind_")) {
+                out.append(key).append(" = ").append(e.getValue()).append('\n');
+            }
+        }
         out.append("# Debug mode: detailed logs for reporting a problem. They go to\n")
            .append("# burnout.log beside this file.\n")
            .append("debug = ").append(tf(debug)).append('\n')
@@ -308,6 +317,9 @@ final class Settings {
         if ("fxaa".equals(value("aa"))) env("XERENGE_AA", "fxaa");
         if (!value("sharpen").isEmpty()) env("XERENGE_SHARPEN", value("sharpen"));
         if (!"false".equals(value("aspect_16_9"))) env("XERENGE_ASPECT_16_9", "1");
+        if (!value("colour_grade").isEmpty()) env("XERENGE_COLOUR_GRADE", value("colour_grade"));
+        if (!value("brightness").isEmpty()) env("XERENGE_BRIGHTNESS", value("brightness"));
+        if (!value("shadow_lift").isEmpty()) env("XERENGE_SHADOW_LIFT", value("shadow_lift"));
         if ("true".equals(value("fps_counter"))) env("XERENGE_FPS_SHOW", "1");
         if ("true".equals(value("fps_30"))) env("XERENGE_FPS_30", "1");
         if ("true".equals(value("frame_generation"))) env("XERENGE_FRAME_GENERATION", "120");

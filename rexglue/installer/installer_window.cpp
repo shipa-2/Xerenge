@@ -75,6 +75,8 @@ constexpr const char* kLauncher = R"SH(#!/bin/sh
 # xerenge.conf beside this file and are read at every start.
 dir=$(cd "$(dirname "$0")" && pwd)
 conf="$dir/xerenge.conf"
+# The in-game menu (F1) writes the settings it changes back into this file.
+export XERENGE_CONF="$conf"
 value() {
     sed -n "s/^[[:space:]]*$1[[:space:]]*=[[:space:]]*//p" "$conf" 2>/dev/null | tail -n 1
 }
@@ -119,6 +121,10 @@ grade=$(value colour_grade)
 [ "$(value aa)" = fxaa ] && export XERENGE_AA=fxaa
 sharpen=$(value sharpen)
 [ -n "$sharpen" ] && export XERENGE_SHARPEN="$sharpen"
+brightness=$(value brightness)
+[ -n "$brightness" ] && export XERENGE_BRIGHTNESS="$brightness"
+shadow_lift=$(value shadow_lift)
+[ -n "$shadow_lift" ] && export XERENGE_SHADOW_LIFT="$shadow_lift"
 [ "$(value fps_counter)" = true ] && export XERENGE_FPS_SHOW=1
 [ "$(value fps_30)" = true ] && export XERENGE_FPS_30=1
 [ "$(value frame_generation)" = true ] && export XERENGE_FRAME_GENERATION=120
@@ -193,6 +199,8 @@ set "dir=%~dp0"
 set "bloom=false"
 set "motion_blur=false"
 set "renderer=plume"
+rem The in-game menu (F1) writes the settings it changes back into this file.
+set "XERENGE_CONF=%dir%xerenge.conf"
 if exist "%dir%xerenge.conf" (
     for /f "usebackq eol=# tokens=1,2 delims== " %%a in ("%dir%xerenge.conf") do set "%%a=%%b"
 )
@@ -230,6 +238,8 @@ if /i "%anisotropy%"=="off" (set "XERENGE_MAX_ANISOTROPY=1") else if defined ani
 if defined colour_grade set "XERENGE_COLOUR_GRADE=%colour_grade%"
 if /i "%aa%"=="fxaa" set "XERENGE_AA=fxaa"
 if defined sharpen set "XERENGE_SHARPEN=%sharpen%"
+if defined brightness set "XERENGE_BRIGHTNESS=%brightness%"
+if defined shadow_lift set "XERENGE_SHADOW_LIFT=%shadow_lift%"
 if /i "%fps_counter%"=="true" set "XERENGE_FPS_SHOW=1"
 if /i "%fps_30%"=="true" set "XERENGE_FPS_30=1"
 if /i "%frame_generation%"=="true" set "XERENGE_FRAME_GENERATION=120"
@@ -961,6 +971,12 @@ void InstallerWindow::LoadSettings(const QString& path) {
   choice("colour_grade", grade_combo_);
   choice("aa", aa_combo_);
   choice("sharpen", sharpen_combo_);
+  if (values.contains("brightness")) {
+    brightness_ = values.value("brightness");
+  }
+  if (values.contains("shadow_lift")) {
+    shadow_lift_ = values.value("shadow_lift");
+  }
   flag("fps_counter", fps_box_);
   flag("fps_30", fps30_box_);
   flag("frame_generation", framegen_box_);
@@ -1067,6 +1083,9 @@ void InstallerWindow::StartInstall() {
         << "# Anti-aliasing: off or fxaa; sharpening: 0 (off) to 1\n"
         << "aa = " << aa_combo_->currentData().toString() << "\n"
         << "sharpen = " << sharpen_combo_->currentData().toString() << "\n"
+        << "# The 3D picture, set in the game's menu (F1): brightness 0.7 to 1.6 (1: as drawn), shadow lift 0 to 0.3\n"
+        << "brightness = " << brightness_ << "\n"
+        << "shadow_lift = " << shadow_lift_ << "\n"
         << "fps_counter = " << (fps_box_->isChecked() ? "true" : "false") << "\n"
         << "fps_30 = " << (fps30_box_->isChecked() ? "true" : "false") << "\n"
         << "frame_generation = " << (framegen_box_->isChecked() ? "true" : "false") << "\n"

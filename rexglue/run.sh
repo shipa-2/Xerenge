@@ -67,6 +67,16 @@
 #   ./run.sh --sharpen=AMOUNT
 #                       sharpening (plume): AMD's contrast adaptive sharpening
 #                       over the finished frame, 0 (off, the default) to 1.
+#   ./run.sh --brightness=GAMMA
+#                       a gamma on the 3D picture, 0.7 to 1.6; 1 leaves it as
+#                       the console drew it.
+#   ./run.sh --shadow-lift=AMOUNT
+#                       raises the darkest colours of the 3D picture, 0 to 0.3,
+#                       without brightening the rest; the cars are nearly black.
+#   ./run.sh --menu     the in-game settings menu (plume) open from the start.
+#                       It opens with F1, or Back and Start on a pad, anyway;
+#                       what it changes lasts for the run, as there is no
+#                       xerenge.conf here to save it to (XERENGE_CONF names one).
 #   ./run.sh --async-present
 #                       plume hands a frame to the GPU and lets the title go on
 #                       at once, instead of waiting for the GPU to finish it.
@@ -191,6 +201,9 @@ for arg in "$@"; do
         --colour-grade=*) COLOUR_GRADE=${arg#*=} ;;
         --aa=*) AA=${arg#*=} ;;
         --sharpen=*) SHARPEN=${arg#*=} ;;
+        --brightness=*) BRIGHTNESS=${arg#*=} ;;
+        --shadow-lift=*) SHADOW_LIFT=${arg#*=} ;;
+        --menu) MENU_OPEN=1 ;;
         --async-present) ASYNC_PRESENT=1 ;;
         --no-early-submit) ACQUIRE_FIRST=1 ;;
         --full-vertices) FULL_VERTICES=1 ;;
@@ -271,6 +284,9 @@ fi
 [ -n "$COLOUR_GRADE" ] && XERENGE_COLOUR_GRADE=$COLOUR_GRADE && export XERENGE_COLOUR_GRADE
 [ -n "$AA" ] && XERENGE_AA=$AA && export XERENGE_AA
 [ -n "$SHARPEN" ] && XERENGE_SHARPEN=$SHARPEN && export XERENGE_SHARPEN
+[ -n "$BRIGHTNESS" ] && XERENGE_BRIGHTNESS=$BRIGHTNESS && export XERENGE_BRIGHTNESS
+[ -n "$SHADOW_LIFT" ] && XERENGE_SHADOW_LIFT=$SHADOW_LIFT && export XERENGE_SHADOW_LIFT
+[ -n "$MENU_OPEN" ] && XERENGE_MENU_OPEN=1 && export XERENGE_MENU_OPEN
 [ -n "$ASYNC_PRESENT" ] && XERENGE_ASYNC_PRESENT=1 && export XERENGE_ASYNC_PRESENT
 [ -n "$ACQUIRE_FIRST" ] && XERENGE_ACQUIRE_FIRST=1 && export XERENGE_ACQUIRE_FIRST
 [ -n "$FULL_VERTICES" ] && XERENGE_FULL_VERTICES=1 && export XERENGE_FULL_VERTICES

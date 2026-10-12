@@ -88,6 +88,10 @@ class InstallerWindow : public QWidget {
   QLineEdit* log_path_edit_ = nullptr;
   // Those lines as an installed copy had them, kept through an update.
   QString preserved_debug_settings_;
+  // The picture settings of the in-game menu, set there and only carried
+  // through an update here.
+  QString brightness_ = "1";
+  QString shadow_lift_ = "0";
   QCheckBox* async_box_ = nullptr;
   QCheckBox* early_submit_box_ = nullptr;
   QCheckBox* packed_vertices_box_ = nullptr;
