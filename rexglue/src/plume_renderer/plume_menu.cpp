@@ -52,8 +52,10 @@ constexpr uint16_t kPadX = 0x4000;
 // A stick pushed this far counts as the d-pad.
 constexpr int kStickThreshold = 16000;
 // Back or Start, pressed, is held back from the title this long: the other one
-// pressed within it makes the chord that opens the menu, which the title never
-// sees; otherwise the title is given the button late.
+// pressed within it makes the chord that opens the menu, and the title sees
+// neither; otherwise the title is given the button late. Pressed later, while
+// the first is still held, the second still opens the menu and is kept from the
+// title, which has only seen the first.
 constexpr auto kChordWindow = std::chrono::milliseconds(100);
 // A press let go within that time is shown to the title for this long after.
 constexpr auto kLatePress = std::chrono::milliseconds(50);
@@ -1411,10 +1413,11 @@ bool PlumeMenu::OnPad(uint32_t user, xerenge::MenuPadState* pad) {
   }
   chord_was_down_ = both;
 
-  // Closed: Back and Start are held back from the title when pressed. The
-  // other one following within kChordWindow is the chord - the menu opens and
-  // the title has seen neither; otherwise the title is given the button late.
-  bool chord = true;
+  // Closed: Back and Start are held back from the title when pressed. Both
+  // down with one of them still held back is the chord: the menu opens, and the
+  // title has seen at most the one held longer than kChordWindow. A button not
+  // followed by the other within it is given to the title late.
+  bool held_back = false;
   for (int i = 0; i < 2; ++i) {
     ChordState& button = chord_[i];
     if (!(pad->buttons & kChordBits[i])) {
@@ -1428,9 +1431,9 @@ bool PlumeMenu::OnPad(uint32_t user, xerenge::MenuPadState* pad) {
     } else if (button.state == ChordButton::kHeldBack && now - button.since >= kChordWindow) {
       button.state = ChordButton::kPassed;
     }
-    chord = chord && button.state == ChordButton::kHeldBack;
+    held_back = held_back || button.state == ChordButton::kHeldBack;
   }
-  if (chord) {
+  if (both && held_back) {
     for (ChordState& button : chord_) {
       button.state = ChordButton::kUsed;
     }
