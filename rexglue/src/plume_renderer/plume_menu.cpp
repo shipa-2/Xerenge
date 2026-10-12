@@ -51,6 +51,12 @@ constexpr uint16_t kPadX = 0x4000;
 
 // A stick pushed this far counts as the d-pad.
 constexpr int kStickThreshold = 16000;
+// Back or Start, pressed, is held back from the title this long: the other one
+// pressed within it makes the chord that opens the menu, which the title never
+// sees; otherwise the title is given the button late.
+constexpr auto kChordWindow = std::chrono::milliseconds(100);
+// A press let go within that time is shown to the title for this long after.
+constexpr auto kLatePress = std::chrono::milliseconds(50);
 // A pad the title has not read for this long is taken to have been let go: the
 // title reads it every frame, so it is only stale when the title is not
 // running (a load, a video).
@@ -1369,34 +1375,75 @@ void PlumeMenu::Close(bool by_pad) {
   hold_pad_ = by_pad;
 }
 
-bool PlumeMenu::OnPad(uint32_t user, const xerenge::MenuPadState& pad) {
+bool PlumeMenu::OnPad(uint32_t user, xerenge::MenuPadState* pad) {
   std::lock_guard lock(input_mutex_);
   if (user != 0) {
     return visible_;
   }
-  pad_ = pad;
-  pad_time_ = std::chrono::steady_clock::now();
-  // Back and Start together, as a chord: once for each time it is made.
-  const bool chord = (pad.buttons & (kPadBack | kPadStart)) == (kPadBack | kPadStart);
-  if (chord && !chord_was_down_) {
-    if (visible_) {
+  pad_ = *pad;
+  const auto now = std::chrono::steady_clock::now();
+  pad_time_ = now;
+  constexpr uint16_t kChordBits[2] = {kPadBack, kPadStart};
+  const bool both = (pad->buttons & (kPadBack | kPadStart)) == (kPadBack | kPadStart);
+  if (visible_ || hold_pad_) {
+    // Open, Back and Start together close it: once for each time they are
+    // pressed together.
+    if (visible_ && both && !chord_was_down_) {
       visible_ = false;
       hold_pad_ = true;
-    } else {
-      visible_ = true;
     }
-  }
-  chord_was_down_ = chord;
-  if (visible_) {
-    return true;
-  }
-  if (hold_pad_) {
+    chord_was_down_ = both;
+    // Whichever of the two is down now is the menu's until it is let go.
+    for (int i = 0; i < 2; ++i) {
+      chord_[i].state =
+          (pad->buttons & kChordBits[i]) ? ChordButton::kUsed : ChordButton::kUp;
+      chord_[i].late_until = {};
+    }
+    if (visible_) {
+      return true;
+    }
     // The buttons that closed it are not for the title: Start, let go after
     // the menu was gone, would pause the race.
-    if (pad.buttons == 0) {
+    if (pad->buttons == 0) {
       hold_pad_ = false;
     }
     return hold_pad_;
+  }
+  chord_was_down_ = both;
+
+  // Closed: Back and Start are held back from the title when pressed. The
+  // other one following within kChordWindow is the chord - the menu opens and
+  // the title has seen neither; otherwise the title is given the button late.
+  bool chord = true;
+  for (int i = 0; i < 2; ++i) {
+    ChordState& button = chord_[i];
+    if (!(pad->buttons & kChordBits[i])) {
+      if (button.state == ChordButton::kHeldBack) {
+        button.late_until = now + kLatePress;
+      }
+      button.state = ChordButton::kUp;
+    } else if (button.state == ChordButton::kUp) {
+      button.state = ChordButton::kHeldBack;
+      button.since = now;
+    } else if (button.state == ChordButton::kHeldBack && now - button.since >= kChordWindow) {
+      button.state = ChordButton::kPassed;
+    }
+    chord = chord && button.state == ChordButton::kHeldBack;
+  }
+  if (chord) {
+    for (ChordState& button : chord_) {
+      button.state = ChordButton::kUsed;
+    }
+    visible_ = true;
+    return true;
+  }
+  for (int i = 0; i < 2; ++i) {
+    const ChordState& button = chord_[i];
+    if (button.state == ChordButton::kHeldBack || button.state == ChordButton::kUsed) {
+      pad->buttons &= uint16_t(~kChordBits[i]);
+    } else if (button.state == ChordButton::kUp && now < button.late_until) {
+      pad->buttons |= kChordBits[i];
+    }
   }
   return false;
 }
@@ -1599,9 +1646,8 @@ ImDrawData* PlumeMenu::Frame(uint32_t width, uint32_t height) {
 
 }  // namespace rex::plume_renderer
 
-extern "C" REX_GPU_PLUGIN_EXPORT bool xerenge_menu_pad(uint32_t user,
-                                                       const xerenge::MenuPadState* pad) {
-  return pad && rex::plume_renderer::PlumeMenu::Get().OnPad(user, *pad);
+extern "C" REX_GPU_PLUGIN_EXPORT bool xerenge_menu_pad(uint32_t user, xerenge::MenuPadState* pad) {
+  return pad && rex::plume_renderer::PlumeMenu::Get().OnPad(user, pad);
 }
 
 extern "C" REX_GPU_PLUGIN_EXPORT void xerenge_menu_pointer(int event, float x, float y) {

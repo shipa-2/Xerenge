@@ -91,7 +91,11 @@ REX_HOOK_RAW(sub_825AFE90) {
   pad.thumb_ly = int16_t(LoadBe16(gamepad + 6));
   pad.thumb_rx = int16_t(LoadBe16(gamepad + 8));
   pad.thumb_ry = int16_t(LoadBe16(gamepad + 10));
+  const uint16_t buttons = pad.buttons;
   if (menu_pad(user, &pad)) {
     std::memset(gamepad, 0, 12);
+  } else if (pad.buttons != buttons) {
+    gamepad[0] = uint8_t(pad.buttons >> 8);
+    gamepad[1] = uint8_t(pad.buttons);
   }
 }

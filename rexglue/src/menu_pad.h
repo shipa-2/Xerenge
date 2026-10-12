@@ -25,9 +25,11 @@ struct MenuPadState {
 
 // Called for every read of a pad by the game. The menu takes the pad of user 0
 // as its own; with the menu open it returns true, and the game is to be given a
-// pad nobody touches.
+// pad nobody touches. Otherwise the game is given `pad->buttons` as the menu
+// leaves them: Back and Start are held back for a moment, as they may be the
+// start of the chord that opens the menu.
 inline constexpr const char* kMenuPadSymbol = "xerenge_menu_pad";
-using MenuPadFn = bool (*)(uint32_t user, const MenuPadState* pad);
+using MenuPadFn = bool (*)(uint32_t user, MenuPadState* pad);
 
 // A finger on the menu: event 0 down, 1 move, 2 up; x and y fractions of the
 // screen, from the top left.

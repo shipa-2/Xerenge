@@ -45,8 +45,10 @@ class PlumeMenu {
   void Close(bool by_pad);
 
   // The pad the title just read, for user `user`. Returns whether the menu is
-  // holding the pad: the title is then to be given a neutral one.
-  bool OnPad(uint32_t user, const xerenge::MenuPadState& pad);
+  // holding the pad: the title is then to be given a neutral one. Otherwise
+  // the title is given `pad`'s buttons as this leaves them - Back and Start
+  // held back for a moment, in case they are the chord.
+  bool OnPad(uint32_t user, xerenge::MenuPadState* pad);
 
   // Lays out the menu for a frame of this size and returns what to draw, or
   // null when it is closed. Called by the thread that renders.
@@ -86,6 +88,17 @@ class PlumeMenu {
   // After the menu closes by the pad, the title is kept from seeing the
   // buttons that were used until they are let go.
   bool hold_pad_ = false;
+  // Back and Start on their way to the title, each (see OnPad): up; held back,
+  // since `since`; passed on, the other one not having followed in time; or
+  // the menu's, kept from the title until let go. A press let go while held
+  // back is shown to the title until `late_until`.
+  enum class ChordButton { kUp, kHeldBack, kPassed, kUsed };
+  struct ChordState {
+    ChordButton state = ChordButton::kUp;
+    std::chrono::steady_clock::time_point since{};
+    std::chrono::steady_clock::time_point late_until{};
+  };
+  ChordState chord_[2];
 
   // The rendering thread's: the pages, the selection, the ImGui context.
   struct State;

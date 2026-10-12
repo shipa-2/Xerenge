@@ -356,7 +356,9 @@ textures and every constant buffer.
 
 With plume the game has a settings menu of its own: **F1** on the keyboard, or
 **Back and Start together** on a pad, opens and closes it (Esc, or B, closes it
-too). While it is open the game sees neither the keyboard nor the pad, so
+too). The game sees neither button of the chord: each is held back for a tenth
+of a second when pressed, and only handed to the game, late, when the other one
+does not follow. While it is open the game sees neither the keyboard nor the pad, so
 nothing you press steers the car; it does not pause the game, which goes on
 behind it. Pad: D-pad or left stick to move and change, A to accept, B to
 close, X for an item's default, LB and RB for the previous and next page.
