@@ -5,7 +5,8 @@
 #   plume         the Vulkan layer the plume renderer draws through (our fork:
 #                 it adds reading a texture back, and mailbox presentation)
 #   XenosRecomp   translates the title's Xenos shaders to SPIR-V (our fork:
-#                 literal constants, the guest vertex index, 2D-array blending)
+#                 literal constants, the guest vertex index, 2D-array blending),
+#                 with scripts/patches/xenosrecomp-*.patch applied over it
 #
 # Both are separate checkouts beside rexglue/, like the SDK.
 set -e
@@ -35,6 +36,23 @@ else
     git -C "$xenos" fetch origin
     git -C "$xenos" reset --hard origin/HEAD
 fi
+# Our changes to XenosRecomp that its repository does not have yet, applied
+# over what was just fetched. One already there is left as it is; one that
+# neither applies nor is there means the fork moved under it, and building
+# without it would quietly bring the problem it fixes back.
+for patch in "$root"/scripts/patches/xenosrecomp-*.patch; do
+    [ -f "$patch" ] || continue
+    name=$(basename "$patch")
+    if git -C "$xenos" apply --reverse --check "$patch" 2>/dev/null; then
+        echo "== XenosRecomp already has $name"
+    elif git -C "$xenos" apply --check "$patch" 2>/dev/null; then
+        echo "== applying $name to XenosRecomp"
+        git -C "$xenos" apply "$patch"
+    else
+        echo "$name neither applies to XenosRecomp at $(git -C "$xenos" rev-parse --short HEAD) nor is already applied - update the patch" >&2
+        exit 1
+    fi
+done
 echo "== XenosRecomp submodules"
 retry git -C "$xenos" submodule update --init --recursive --depth 1
 

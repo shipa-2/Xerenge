@@ -1,0 +1,78 @@
+From 161407382f8026ca3fe37b1ca6c135bbb75efc4a Mon Sep 17 00:00:00 2001
+From: Kornél Felföldi <felfoldi.kornel@gmail.com>
+Date: Sun, 11 Oct 2026 17:37:13 +0200
+Subject: [PATCH] Pixel shaders fetch 2D textures at the computed level of
+ detail, not level 0
+
+tfetch2D sampled level 0 in every shader, so a texture's mips, its sampler's
+mip filter and bias and any anisotropy were never used: a road seen along its
+length and facades in the distance were their full-size textures sampled every
+few texels, grain that crawled whenever the camera moved. The console computes
+the level from the derivatives - all 151 texture fetches in Burnout Revenge's
+pixel shaders ask for the computed level, none sets one or biases it.
+
+The compiler now names the stage (-DXENOS_PIXEL_SHADER / -DXENOS_VERTEX_SHADER)
+and a pixel shader's tfetch2D uses Sample. A vertex shader has no derivatives
+and keeps level 0 (three of the title's fetch textures), which is why the fetch
+was made explicit to begin with. The array fetch (the colour grading table,
+read as a volume) and the cube fetch (the reflection map) stay at level 0:
+neither texture has mips here.
+
+shader_common.h stops with an error when no stage is defined, so a translator
+built before this cannot quietly go on producing level-0 pixel shaders.
+---
+ XenosRecomp/dxc_compiler.cpp |  4 ++++
+ XenosRecomp/shader_common.h  | 18 ++++++++++++++++++
+ 2 files changed, 22 insertions(+)
+
+diff --git a/XenosRecomp/dxc_compiler.cpp b/XenosRecomp/dxc_compiler.cpp
+index 3386952..81a5ca4 100644
+--- a/XenosRecomp/dxc_compiler.cpp
++++ b/XenosRecomp/dxc_compiler.cpp
+@@ -59,6 +59,10 @@ IDxcBlob* DxcCompiler::compile(const std::string& shaderSource, bool compilePixe
+ 
+     args[argCount++] = L"-Qstrip_debug";
+ 
++    // The stage, for what only one of them can do (shader_common.h: a texture
++    // fetch with the level of detail from the derivatives).
++    args[argCount++] = compilePixelShader ? L"-DXENOS_PIXEL_SHADER" : L"-DXENOS_VERTEX_SHADER";
++
+ #ifdef UNLEASHED_RECOMP
+     args[argCount++] = L"-DUNLEASHED_RECOMP";
+ #endif
+diff --git a/XenosRecomp/shader_common.h b/XenosRecomp/shader_common.h
+index 0bde657..7b0eb16 100644
+--- a/XenosRecomp/shader_common.h
++++ b/XenosRecomp/shader_common.h
+@@ -317,10 +317,28 @@ uint3 getTexture2DArrayDimensions(Texture2DArray<float4> texture)
+     return dimensions.xyz;
+ }
+ 
++// The stage comes from the compiler's command line (dxc_compiler.cpp). A
++// translator built before it passed one would compile every pixel shader
++// with the level-0 fetch below and nobody would notice: stop it instead.
++#if !defined(XENOS_PIXEL_SHADER) && !defined(XENOS_VERTEX_SHADER)
++#error "shader_common.h needs a XenosRecomp built from the same source: it passes the shader's stage"
++#endif
++
++// A pixel shader's 2D fetch takes its level of detail from the screen-space
++// derivatives, as the console's does (every fetch in Burnout's pixel shaders
++// asks for the computed level, none sets one or biases it): the sampler's mip
++// filter, bias and anisotropy then mean something. Read at level 0 always, a
++// road seen along its length or a facade in the distance was its full-size
++// texture sampled every few texels - grain that crawled as soon as the camera
++// moved. A vertex shader has no derivatives and reads the base level.
+ float4 tfetch2D(uint resourceDescriptorIndex, uint samplerDescriptorIndex, float2 texCoord, float2 offset)
+ {
+     Texture2D<float4> texture = g_Texture2DDescriptorHeap[resourceDescriptorIndex];
++#ifdef XENOS_PIXEL_SHADER
++    return texture.Sample(g_SamplerDescriptorHeap[samplerDescriptorIndex], texCoord + offset / getTexture2DDimensions(texture));
++#else
+     return texture.SampleLevel(g_SamplerDescriptorHeap[samplerDescriptorIndex], texCoord + offset / getTexture2DDimensions(texture), 0.0);
++#endif
+ }
+ 
+ float4 tfetch2DArray(uint resourceDescriptorIndex, uint samplerDescriptorIndex, float3 texCoord, float3 offset)
+-- 
+2.54.0 (Apple Git-157)
+
