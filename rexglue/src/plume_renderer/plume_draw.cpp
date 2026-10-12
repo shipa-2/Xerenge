@@ -1355,9 +1355,10 @@ uint32_t ExpandRectangle(float* vb, uint32_t base_vertex, uint32_t vertex_count,
     put(4, v3.data());
     put(5, diag_b);
 
-    static uint32_t rect_logs = 0;
-    if (rect_logs < 12) {
-      ++rect_logs;
+    // Atomic: draws finished ahead are expanded on the worker threads.
+    static std::atomic<uint32_t> rect_logs{0};
+    if (rect_logs.load(std::memory_order_relaxed) < 12 &&
+        rect_logs.fetch_add(1, std::memory_order_relaxed) < 12) {
       REXLOG_INFO(
           "plume: rect {}/{} v0=({:.3f},{:.3f}) v1=({:.3f},{:.3f}) v2=({:.3f},{:.3f}) "
           "-> v3=({:.3f},{:.3f}) verts_in={}",
@@ -3600,11 +3601,46 @@ void FillPhase(int phase, std::chrono::steady_clock::time_point& mark) {
   mark = now;
 }
 
+// XERENGE_NO_FINISH_AHEAD=1: the worker threads only unpack a draw, into
+// pre_arena_, and FillVertices does the rest and the copy, as before.
+bool FinishAheadEnabled() {
+  static const bool on = std::getenv("XERENGE_NO_FINISH_AHEAD") == nullptr;
+  return on;
+}
+
 // XERENGE_MESH_STORE_ALWAYS=1: a mesh whose vertices changed is stored in the
 // vertex cache again every time, as before, however often that is.
 bool MeshWatching() {
   static const bool on = std::getenv("XERENGE_MESH_STORE_ALWAYS") == nullptr;
   return on;
+}
+
+// A worker's scratch buffer is twice this many vertices at most (21 MB); a
+// larger draw is left to FillVertices.
+constexpr uint32_t kFinishAheadMaxVertices = 32768;
+
+// `count` vertices from the full layout into `dst`, only the locations of
+// `layout`, packed in order. Written front to back, so the write-combined
+// heap still sees one sequential stream.
+void PackVertices(float* dst, const float* staged, uint32_t count, uint32_t layout) {
+  if (layout == kFullLayoutMask) {
+    std::memcpy(dst, staged, size_t(count) * kVertexStrideBytes);
+    return;
+  }
+  uint32_t locations[kInputLocationCount];
+  uint32_t n = 0;
+  for (uint32_t loc = 0; loc < kInputLocationCount; ++loc) {
+    if ((layout >> loc) & 1u) {
+      locations[n++] = loc * 4;
+    }
+  }
+  for (uint32_t v = 0; v < count; ++v) {
+    const float* from = staged + size_t(v) * kFloatsPerVert;
+    for (uint32_t k = 0; k < n; ++k) {
+      std::memcpy(dst, from + locations[k], 16);
+      dst += 4;
+    }
+  }
 }
 
 // The bytes a draw's attributes read, as physical [start, end) ranges, merged:
@@ -3641,6 +3677,24 @@ bool HashRanges(memory::Memory* memory, const std::vector<std::pair<uint32_t, ui
   }
   *out = h;
   return true;
+}
+
+// The vertices CollapseBadPrimitives found bad, counted, and with
+// XERENGE_VERTEX_TRACE said every few seconds.
+void NoteCollapsed(uint32_t bad, const GuestDrawSnapshot& snap) {
+  static const bool trace = std::getenv("XERENGE_VERTEX_TRACE") != nullptr;
+  static std::atomic<uint64_t> collapsed{0};
+  static std::atomic<uint64_t> last_ms{0};
+  const uint64_t total = collapsed.fetch_add(bad, std::memory_order_relaxed) + bad;
+  const uint64_t now = static_cast<uint64_t>(std::chrono::duration_cast<std::chrono::milliseconds>(
+                                                 std::chrono::steady_clock::now().time_since_epoch())
+                                                 .count());
+  uint64_t was = last_ms.load(std::memory_order_relaxed);
+  if (trace && now - was >= 3000 && last_ms.compare_exchange_strong(was, now)) {
+    REXLOG_INFO("plume: {} vertices with a bad position so far, their primitives dropped (last vs={:016X} "
+                "prim={} indices={})",
+                total, snap.vs_hash, snap.prim_type, snap.num_indices);
+  }
 }
 }  // namespace
 
@@ -4026,6 +4080,74 @@ void PlumeDrawContext::UnpackVertices(const GuestDrawSnapshot& snap,
 
 }
 
+// The rest of FillVertices for a draw with the title's shaders, in the same
+// order and with the same functions, on the worker thread that unpacked it:
+// the encoding thread used to walk the unpacked vertices three more times, in
+// memory another core had just written - 320 bytes a vertex, most of a heavy
+// frame's 37 MB of them - and that was most of what a draw missing the vertex
+// cache cost it. Here the vertices are still in this core's cache, and what
+// leaves it is the packed copy, straight into the draw's own room in the
+// frame's vertex buffer - or, for a mesh EncodeDraws has given a place in the
+// vertex cache, into that place. Left to FillVertices: the passes over a copy
+// (their positions depend on what the frame has copied so far), a draw whose
+// pipeline reads another layout, and the largest draws.
+void PlumeDrawContext::FinishAhead(const GuestDrawSnapshot& snap,
+                                   const std::vector<VfetchAttr>& attrs, uint32_t pos_float,
+                                   memory::Memory* memory, float* staged,
+                                   PreUnpacked& result) const {
+  using rex::graphics::xenos::PrimitiveType;
+  const auto prim = static_cast<PrimitiveType>(snap.prim_type);
+  const uint32_t vertex_count = result.count;
+  auto vert = [&](uint32_t i) { return staged + i * kFloatsPerVert; };
+  if (!attrs.empty() && pos_float + 4 <= kFloatsPerVert) {
+    static const bool keep = std::getenv("XERENGE_KEEP_BAD_VERTICES") != nullptr;
+    if (!keep) {
+      if (const uint32_t bad = CollapseBadPrimitives(prim, staged, vertex_count, pos_float)) {
+        NoteCollapsed(bad, snap);
+      }
+    }
+  }
+  bool looks_pixel = false;
+  for (uint32_t vi = 0; vi < vertex_count; ++vi) {
+    const float* pos = vert(vi);
+    if ((std::fabs(pos[0]) > 2.0f || std::fabs(pos[1]) > 2.0f) && std::fabs(pos[2]) < 2.0f) {
+      looks_pixel = true;
+      break;
+    }
+  }
+  if (looks_pixel && snap.interface_object != 0 && vertex_count != 0) {
+    float lo = vert(0)[0];
+    float hi = lo;
+    for (uint32_t vi = 1; vi < vertex_count; ++vi) {
+      lo = std::min(lo, vert(vi)[0]);
+      hi = std::max(hi, vert(vi)[0]);
+    }
+    result.x[0] = lo;
+    result.x[1] = hi;
+    result.x_known = true;
+  }
+  uint32_t draw_count = vertex_count;
+  if (prim == PrimitiveType::kRectangleList && vertex_count >= 3) {
+    draw_count = ExpandRectangle(staged, 0, vertex_count, pos_float);
+  } else if (prim == PrimitiveType::kQuadList && vertex_count >= 4) {
+    draw_count = ExpandQuadList(staged, 0, vertex_count);
+  }
+  result.draw_count = draw_count;
+  float* const dst = result.stored ? cache_mapped_ + size_t(result.cache_offset) * kFloatsPerVert
+                                   : vb_mapped_ + size_t(result.vb_first) * kFloatsPerVert;
+  PackVertices(dst, staged, draw_count, result.layout);
+  if (result.stored && draw_count != 0) {
+    const uint32_t first_loc = uint32_t(std::countr_zero(result.layout));
+    std::memcpy(result.fingerprint.data(), staged + first_loc * 4, 16);
+    std::memcpy(result.fingerprint.data() + 4,
+                staged + size_t(draw_count - 1) * kFloatsPerVert + first_loc * 4, 16);
+  }
+  if (result.watch || result.stored) {
+    result.ranges = MergeReadRanges(result.read_lo, result.read_hi);
+    result.hashed = HashRanges(memory, result.ranges, &result.data_hash);
+  }
+}
+
 void PlumeDrawContext::NoteNoCacheRoom(uint32_t count) {
   static std::atomic<uint32_t> no_room{0};
   const uint32_t n = no_room.fetch_add(1, std::memory_order_relaxed) + 1;
@@ -4077,8 +4199,8 @@ void PlumeDrawContext::WatchMesh(uint64_t key, uint64_t index_hash, bool hashed,
 
 void PlumeDrawContext::CopyVerticesOut(float* dst, const float* staged, uint32_t count) const {
   const uint32_t layout = fill_layout_mask_;
+  PackVertices(dst, staged, count, layout);
   if (layout == kFullLayoutMask) {
-    std::memcpy(dst, staged, size_t(count) * kVertexStrideBytes);
     return;
   }
   uint32_t locations[kInputLocationCount];
@@ -4091,16 +4213,7 @@ void PlumeDrawContext::CopyVerticesOut(float* dst, const float* staged, uint32_t
   if (n == 0) {
     return;
   }
-  // Written front to back, so the write-combined heap still sees one
-  // sequential stream.
   float* const start = dst;
-  for (uint32_t v = 0; v < count; ++v) {
-    const float* from = staged + size_t(v) * kFloatsPerVert;
-    for (uint32_t k = 0; k < n; ++k) {
-      std::memcpy(dst, from + locations[k], 16);
-      dst += 4;
-    }
-  }
   static const bool check = std::getenv("XERENGE_PACK_CHECK") != nullptr;
   if (check) {
     last_packed_dst_ = start;
@@ -4164,6 +4277,8 @@ uint32_t PlumeDrawContext::FillVertices(const GuestDrawSnapshot& snap, memory::M
   auto fill_mark = PlumeTiming() ? std::chrono::steady_clock::now()
                                  : std::chrono::steady_clock::time_point{};
   last_fill_cache_offset_ = ~0u;
+  last_fill_vb_offset_ = ~0u;
+  last_fill_kind_ = passthrough ? 4 : 3;
   last_fill_passthrough_ = passthrough;
   last_fill_x_known_ = false;
   // Every path that refuses a draw says so once. A draw silently returning
@@ -4213,6 +4328,28 @@ uint32_t PlumeDrawContext::FillVertices(const GuestDrawSnapshot& snap, memory::M
       vs_info ? (passthrough ? vs_info->passthrough_pos_fetch_const : vs_info->real_pos_fetch_const)
               : -1;
 
+  // Unpacked already, on a worker thread, before the frame was encoded?
+  const PreUnpacked* pre = nullptr;
+  // Or finished there as well, and already where it is drawn from (FinishAhead)?
+  // Good only if what was assumed ahead holds: the title's shaders, their
+  // layout, and no copy read whose positions would have to be converted here.
+  const PreUnpacked* finished = nullptr;
+  if (auto found = pre_unpacked_.find(&snap); found != pre_unpacked_.end()) {
+    if (found->second.finished) {
+      if (!passthrough && found->second.layout == fill_layout_mask_ &&
+          !ReadsResolvedCopy(snap, false)) {
+        finished = &found->second;
+      } else {
+        ++finished_unused_;
+      }
+    } else if (!passthrough && found->second.count == vertex_count) {
+      pre = &found->second;
+    }
+  }
+  if (pre) {
+    last_fill_kind_ = 2;
+  }
+
   // The vertex cache: see cache_vb_ and CheckMeshCache.
   last_fill_cache_offset_ = ~0u;
   bool cache_eligible = false;
@@ -4241,6 +4378,7 @@ uint32_t PlumeDrawContext::FillVertices(const GuestDrawSnapshot& snap, memory::M
           e->second.last_used = frame_serial_;
         }
         last_fill_cache_offset_ = check.offset;
+        last_fill_kind_ = 0;
         FillPhase(0, fill_mark);
         return check.count;
       }
@@ -4248,7 +4386,7 @@ uint32_t PlumeDrawContext::FillVertices(const GuestDrawSnapshot& snap, memory::M
       // (the reflection's faces draw what the scene draws): the check, made
       // before the frame, could not know. As good as a hit found by that
       // check - and storing it again would count as a change.
-      if (MeshWatching()) {
+      if (MeshWatching() && !finished) {
         if (auto e = mesh_cache_.find(check.key);
             e != mesh_cache_.end() && e->second.count != 0 && e->second.stored == frame_serial_ &&
             e->second.index_hash == check.index_hash) {
@@ -4257,6 +4395,7 @@ uint32_t PlumeDrawContext::FillVertices(const GuestDrawSnapshot& snap, memory::M
             ++cache_hits_;
             e->second.last_used = frame_serial_;
             last_fill_cache_offset_ = e->second.offset;
+            last_fill_kind_ = 0;
             FillPhase(0, fill_mark);
             return e->second.count;
           }
@@ -4274,6 +4413,24 @@ uint32_t PlumeDrawContext::FillVertices(const GuestDrawSnapshot& snap, memory::M
       }
       ++cache_misses_;
     }
+  }
+  // Finished ahead: nothing left to do but say where the vertices are.
+  const auto use_finished = [&]() -> uint32_t {
+    // Its part in the vertex cache was settled when it was finished (EncodeDraws).
+    if (finished->stored) {
+      last_fill_cache_offset_ = finished->cache_offset;
+    } else {
+      last_fill_vb_offset_ = finished->vb_first;
+    }
+    last_fill_x_known_ = finished->x_known;
+    last_fill_x_[0] = finished->x[0];
+    last_fill_x_[1] = finished->x[1];
+    last_fill_kind_ = 1;
+    FillPhase(0, fill_mark);
+    return finished->draw_count;
+  };
+  if (finished) {
+    return use_finished();
   }
   // Bounds of what each attribute read, for the cache's content check.
   std::vector<uint32_t> read_lo;
@@ -4293,14 +4450,6 @@ uint32_t PlumeDrawContext::FillVertices(const GuestDrawSnapshot& snap, memory::M
   //
   // Room for the expansions below, which turn rectangles and quads into more
   // vertices than they started with.
-  // Unpacked already, on a worker thread, before the frame was encoded?
-  const PreUnpacked* pre = nullptr;
-  if (!passthrough) {
-    if (auto found = pre_unpacked_.find(&snap);
-        found != pre_unpacked_.end() && found->second.count == vertex_count) {
-      pre = &found->second;
-    }
-  }
   // Those are worked on where they lie, rather than copied into the staging
   // buffer first - 320 bytes a vertex, a race frame's largest single cost -
   // unless the draw is expanded below, which needs the staging buffer's
@@ -4436,19 +4585,7 @@ uint32_t PlumeDrawContext::FillVertices(const GuestDrawSnapshot& snap, memory::M
     if (!keep) {
       if (const uint32_t bad = CollapseBadPrimitives(
               static_cast<rex::graphics::xenos::PrimitiveType>(snap.prim_type), staged, vertex_count, pos_float)) {
-        static const bool trace = std::getenv("XERENGE_VERTEX_TRACE") != nullptr;
-        static std::atomic<uint64_t> collapsed{0};
-        static std::atomic<uint64_t> last_ms{0};
-        const uint64_t total = collapsed.fetch_add(bad, std::memory_order_relaxed) + bad;
-        const uint64_t now = static_cast<uint64_t>(std::chrono::duration_cast<std::chrono::milliseconds>(
-                                                       std::chrono::steady_clock::now().time_since_epoch())
-                                                       .count());
-        uint64_t was = last_ms.load(std::memory_order_relaxed);
-        if (trace && now - was >= 3000 && last_ms.compare_exchange_strong(was, now)) {
-          REXLOG_INFO("plume: {} vertices with a bad position so far, their primitives dropped (last vs={:016X} "
-                      "prim={} indices={})",
-                      total, snap.vs_hash, snap.prim_type, snap.num_indices);
-        }
+        NoteCollapsed(bad, snap);
       }
     }
   }
@@ -7047,8 +7184,19 @@ void PlumeDrawContext::EncodeDraws(plume::RenderCommandList* list,
   // And the draws the cache does not have (the interface, particles, a mesh
   // seen for the first time), unpacked on the worker threads as well, each
   // into its own part of pre_arena_; FillVertices copies them from there.
-  EncodeStage("unpacking ahead");
+  // Timed apart from the workers' part: what is decided for the draws
+  // beforehand, in their order, and noted of them afterwards.
+  static const char* const kPreparingAhead = "unpacking ahead: preparing";
+  EncodeStage(kPreparingAhead);
   pre_unpacked_.clear();
+  // Frames alternate between two halves of the vertex and constant buffers:
+  // the GPU may still be drawing the last frame from its half while this one
+  // is written (XERENGE_ASYNC_PRESENT keeps a frame in flight).
+  const uint32_t half = uint32_t(frame_serial_ & 1);
+  const uint32_t vb_base = half * kVertsPerFrame;
+  // The front of the half goes to the draws finished ahead, each its own
+  // room, handed out here; the rest are given theirs in order as before.
+  uint32_t vb_reserved = vb_base;
   static const bool unpack_ahead = std::getenv("XERENGE_NO_PARALLEL_UNPACK") == nullptr;
   if (unpack_ahead && memory) {
     struct Job {
@@ -7071,7 +7219,8 @@ void PlumeDrawContext::EncodeDraws(plume::RenderCommandList* list,
           snap.num_indices > kVertsPerFrame || Skipped(index)) {
         continue;
       }
-      if (auto check = mesh_checks_.find(&snap); check != mesh_checks_.end() && check->second.hit) {
+      const auto check = mesh_checks_.find(&snap);
+      if (check != mesh_checks_.end() && check->second.hit) {
         continue;
       }
       const auto* vs_info = FindResolvedVfetch(snap.vs_hash);
@@ -7083,18 +7232,163 @@ void PlumeDrawContext::EncodeDraws(plume::RenderCommandList* list,
       job.attrs = &vs_info->real_attrs;
       job.pos_fetch_const = vs_info->real_pos_fetch_const;
       job.pos_float = vs_info->real_pos_float;
-      job.result.offset = total;
       job.result.count = snap.num_indices;
-      total += size_t(snap.num_indices) * kFloatsPerVert;
+      // Finished by the worker as well (FinishAhead). What FillVertices would
+      // do about the vertex cache is then done here, in the draws' order: a
+      // first sighting is noted, a mesh only watched stays so, and any other
+      // is given its place now, for the worker to write into.
+      if (FinishAheadEnabled() && vb_mapped_) {
+        const auto prim = static_cast<rex::graphics::xenos::PrimitiveType>(snap.prim_type);
+        const bool expands = prim == rex::graphics::xenos::PrimitiveType::kRectangleList ||
+                             prim == rex::graphics::xenos::PrimitiveType::kQuadList;
+        const uint32_t room = expands ? snap.num_indices * 2 : snap.num_indices;
+        const uint32_t layout = TitleVertexLayout(snap.vs_hash);
+        // Not a pass over a copy: FillVertices converts its positions. And a
+        // quarter of the half is kept for the draws given their room in order.
+        bool finish = layout != 0;
+        if (finish && ReadsResolvedCopy(snap, false)) {
+          ++unfinished_[0];
+          finish = false;
+        }
+        if (finish && snap.num_indices > kFinishAheadMaxVertices) {
+          ++unfinished_[1];
+          finish = false;
+        }
+        if (finish && vb_reserved + room > vb_base + kVertsPerFrame / 4 * 3) {
+          ++unfinished_[2];
+          finish = false;
+        }
+        // What a rectangle or quad list comes to once expanded (ExpandRectangle,
+        // ExpandQuadList): the place it needs in the cache.
+        uint32_t expanded = snap.num_indices;
+        if (prim == rex::graphics::xenos::PrimitiveType::kRectangleList && snap.num_indices >= 3) {
+          expanded = snap.num_indices / 3 * 6;
+        } else if (prim == rex::graphics::xenos::PrimitiveType::kQuadList && snap.num_indices >= 4) {
+          expanded = snap.num_indices / 4 * 6;
+        }
+        bool watch = false;
+        bool store = false;
+        uint32_t cache_offset = 0;
+        if (finish && check != mesh_checks_.end() && check->second.eligible) {
+          const MeshCheck& c = check->second;
+          const auto entry = mesh_cache_.find(c.key);
+          if (MeshWatching() && c.unstable && !c.steady) {
+            watch = true;
+          } else if (entry == mesh_cache_.end() && mesh_seen_once_.insert(c.key).second) {
+            // A first sighting: not stored.
+          } else if (MeshWatching() && entry != mesh_cache_.end() && entry->second.count != 0 &&
+                     entry->second.stored == frame_serial_ &&
+                     entry->second.index_hash == c.index_hash) {
+            // Given its place a moment ago, for an earlier draw of this frame:
+            // FillVertices finds it there, and nothing is unpacked twice.
+            continue;
+          } else {
+            const bool changed =
+                entry != mesh_cache_.end() && RetireMeshPlace(c.key, entry->second);
+            if (AllocateCacheRegion(expanded, &cache_offset)) {
+              store = true;
+              // The entry is the mesh's from here on, so that nothing given a
+              // place after it takes this one; what it read and its hash are
+              // the worker's to find, and filled in below.
+              CachedMesh& stored = mesh_cache_[c.key];
+              if (changed && MeshWatching()) {
+                ++stored.changes;
+              }
+              stored.offset = cache_offset;
+              stored.count = expanded;
+              stored.index_hash = c.index_hash;
+              stored.data_hash = 0;
+              stored.ranges.clear();
+              stored.last_used = frame_serial_;
+              stored.stored = frame_serial_;
+              cache_by_offset_[cache_offset] = c.key;
+              ++cache_stores_;
+            } else {
+              // Into the frame's buffer then, like a mesh that is not cached.
+              NoteNoCacheRoom(expanded);
+            }
+          }
+        }
+        if (finish) {
+          job.result.finished = true;
+          job.result.layout = layout;
+          job.result.watch = watch;
+          job.result.stored = store;
+          job.result.cache_offset = cache_offset;
+          if (!store) {
+            job.result.vb_first = vb_reserved;
+            vb_reserved += room;
+          }
+        }
+      }
+      if (!job.result.finished) {
+        job.result.offset = total;
+        total += size_t(snap.num_indices) * kFloatsPerVert;
+      }
       jobs.push_back(std::move(job));
     }
-    // Bounded: an enormous frame is left to the ordinary path.
-    if (!jobs.empty() && total <= (size_t(256) << 20) / sizeof(float)) {
-      if (pre_arena_.size() < total) {
+    // Bounded: an enormous frame's draws are left to the ordinary path - those
+    // not finished ahead, which take none of pre_arena_.
+    const bool arena_fits = total <= (size_t(256) << 20) / sizeof(float);
+    if (!jobs.empty()) {
+      if (arena_fits && pre_arena_.size() < total) {
         pre_arena_.resize(total);
       }
+      EncodeStage("unpacking ahead");
       WorkerPool::Get().ParallelFor(jobs.size(), [&](size_t i) {
         Job& job = jobs[i];
+        if (!job.result.finished && !arena_fits) {
+          return;
+        }
+        if (job.result.finished) {
+          // In the worker's own scratch buffer, small enough to stay in its
+          // core's cache for all but the largest draws, with a rectangle or
+          // quad list's room to expand.
+          // Not a vector: growing one would fill all of it with zeroes, and
+          // only what is read is cleared below.
+          thread_local std::unique_ptr<float[]> scratch_buffer;
+          thread_local size_t scratch_floats = 0;
+          const size_t floats = size_t(job.result.count) * 2 * kFloatsPerVert;
+          if (scratch_floats < floats) {
+            scratch_floats = std::bit_ceil(floats);
+            scratch_buffer.reset(new float[scratch_floats]);
+          }
+          float* const scratch = scratch_buffer.get();
+          // Cleared: what is read afterwards - the layout's locations, the
+          // position, and location 0 for an interface draw's extent. All twenty
+          // for a list that is expanded, whose new corners are worked out from
+          // every one of them.
+          const auto prim = static_cast<rex::graphics::xenos::PrimitiveType>(job.snap->prim_type);
+          const uint32_t read = job.result.layout | 1u |
+                                (job.pos_float / 4 < kInputLocationCount ? 1u << (job.pos_float / 4) : 0u);
+          if (read == kFullLayoutMask || prim == rex::graphics::xenos::PrimitiveType::kRectangleList ||
+              prim == rex::graphics::xenos::PrimitiveType::kQuadList) {
+            std::memset(scratch, 0, size_t(job.result.count) * kVertexStrideBytes);
+          } else {
+            uint32_t cleared[kInputLocationCount];
+            uint32_t n = 0;
+            for (uint32_t loc = 0; loc < kInputLocationCount; ++loc) {
+              if ((read >> loc) & 1u) {
+                cleared[n++] = loc * 4;
+              }
+            }
+            for (uint32_t v = 0; v < job.result.count; ++v) {
+              float* const at = scratch + size_t(v) * kFloatsPerVert;
+              for (uint32_t k = 0; k < n; ++k) {
+                std::memset(at + cleared[k], 0, 16);
+              }
+            }
+          }
+          if (job.result.watch || job.result.stored) {
+            job.result.read_lo.assign(job.attrs->size(), ~0u);
+            job.result.read_hi.assign(job.attrs->size(), 0u);
+          }
+          UnpackVertices(*job.snap, *job.attrs, job.pos_fetch_const, job.pos_float, job.result.count, memory,
+                         scratch, job.result.read_lo, job.result.read_hi, job.result.fetched,
+                         job.result.fetch_addr, job.result.fetch_type);
+          FinishAhead(*job.snap, *job.attrs, job.pos_float, memory, scratch, job.result);
+          return;
+        }
         float* out = pre_arena_.data() + job.result.offset;
         std::memset(out, 0, size_t(job.result.count) * kVertexStrideBytes);
         job.result.read_lo.assign(job.attrs->size(), ~0u);
@@ -7103,9 +7397,36 @@ void PlumeDrawContext::EncodeDraws(plume::RenderCommandList* list,
                        job.result.read_lo, job.result.read_hi, job.result.fetched,
                        job.result.fetch_addr, job.result.fetch_type);
       });
+      EncodeStage(kPreparingAhead);
       pre_unpacked_.reserve(jobs.size());
       for (Job& job : jobs) {
-        pre_unpacked_.emplace(job.snap, std::move(job.result));
+        // The cache's entries of the draws finished ahead, completed with what
+        // the workers found.
+        if (job.result.watch || job.result.stored) {
+          const MeshCheck& c = mesh_checks_.find(job.snap)->second;
+          if (job.result.watch) {
+            WatchMesh(c.key, c.index_hash, job.result.hashed, job.result.data_hash,
+                      std::vector<std::pair<uint32_t, uint32_t>>(job.result.ranges));
+          } else if (auto e = mesh_cache_.find(c.key);
+                     e != mesh_cache_.end() && e->second.count != 0 &&
+                     e->second.offset == job.result.cache_offset &&
+                     e->second.stored == frame_serial_) {
+            if (job.result.hashed && job.result.draw_count == e->second.count) {
+              e->second.ranges = job.result.ranges;
+              e->second.data_hash = job.result.data_hash;
+              e->second.fingerprint = job.result.fingerprint;
+              e->second.packed_floats = uint32_t(std::popcount(job.result.layout)) * 4;
+            } else {
+              // What it read cannot be hashed (a range with no host page), or
+              // a list expanded to fewer vertices than its place was made for:
+              // drawn from its place this once, and not kept.
+              RetireMeshPlace(c.key, e->second);
+            }
+          }
+        }
+        if (job.result.finished || arena_fits) {
+          pre_unpacked_.emplace(job.snap, std::move(job.result));
+        }
       }
     }
   }
@@ -7113,13 +7434,8 @@ void PlumeDrawContext::EncodeDraws(plume::RenderCommandList* list,
   list->setGraphicsPipelineLayout(pipeline_layout_.get());
 
   uint32_t encoded = 0;
-  // Frames alternate between two halves of the vertex and constant buffers:
-  // the GPU may still be drawing the last frame from its half while this one
-  // is written (XERENGE_ASYNC_PRESENT keeps a frame in flight).
-  const uint32_t half = uint32_t(frame_serial_ & 1);
-  const uint32_t vb_base = half * kVertsPerFrame;
   const uint32_t slot_base = half * kSlotsPerFrame;
-  uint32_t vb_used = vb_base;
+  uint32_t vb_used = vb_reserved;
   vb_limit_ = vb_base + kVertsPerFrame;
   uint32_t guest_draws = 0;
   using rex::graphics::xenos::PrimitiveType;
@@ -7549,12 +7865,19 @@ void PlumeDrawContext::EncodeDraws(plume::RenderCommandList* list,
       static std::atomic<uint64_t> total_us{0};
       static std::atomic<uint64_t> verts{0};
       static std::atomic<uint64_t> last_ms{0};
+      // By how the vertices were got (see last_fill_kind_): draws, time and
+      // vertices, to tell which draws the time goes to.
+      static std::atomic<uint64_t> kind_draws[5], kind_ns[5], kind_verts[5];
       if (PlumeTiming()) {
-        total_us.fetch_add(static_cast<uint64_t>(
-                               std::chrono::duration_cast<std::chrono::microseconds>(
-                                   std::chrono::steady_clock::now() - fill_started)
-                                   .count()),
-                           std::memory_order_relaxed);
+        const uint64_t ns = static_cast<uint64_t>(
+            std::chrono::duration_cast<std::chrono::nanoseconds>(
+                std::chrono::steady_clock::now() - fill_started)
+                .count());
+        total_us.fetch_add(ns / 1000, std::memory_order_relaxed);
+        const uint32_t kind = std::min(last_fill_kind_, 4u);
+        kind_draws[kind].fetch_add(1, std::memory_order_relaxed);
+        kind_ns[kind].fetch_add(ns, std::memory_order_relaxed);
+        kind_verts[kind].fetch_add(vertex_count, std::memory_order_relaxed);
       }
       verts.fetch_add(vertex_count, std::memory_order_relaxed);
       const uint64_t now = CoarseMs();
@@ -7564,6 +7887,18 @@ void PlumeDrawContext::EncodeDraws(plume::RenderCommandList* list,
                     "{} watched instead",
                     cache_hits_, cache_misses_, cache_used_, mesh_cache_.size(), cache_stores_,
                     cache_watched_);
+        REXLOG_INFO("plume: draws finished ahead for nothing {}; left to be finished here: {} passes over a "
+                    "copy, {} too large, {} past the room kept for them",
+                    finished_unused_, unfinished_[0], unfinished_[1], unfinished_[2]);
+        if (PlumeTiming()) {
+          REXLOG_INFO("plume: fills (draws / ms / vertices) cached {} / {} / {}, finished ahead {} / {} / {}, "
+                      "unpacked ahead {} / {} / {}, on the encode thread {} / {} / {}, interface {} / {} / {}",
+                      kind_draws[0].load(), kind_ns[0].load() / 1000000, kind_verts[0].load(),
+                      kind_draws[1].load(), kind_ns[1].load() / 1000000, kind_verts[1].load(),
+                      kind_draws[2].load(), kind_ns[2].load() / 1000000, kind_verts[2].load(),
+                      kind_draws[3].load(), kind_ns[3].load() / 1000000, kind_verts[3].load(),
+                      kind_draws[4].load(), kind_ns[4].load() / 1000000, kind_verts[4].load());
+        }
         REXLOG_INFO("plume: unpacking vertices took {} ms for {} vertices (setup+clear {} ms, "
                     "vertex loop {} ms, after {} ms, copy out {} ms)",
                     total_us.load(std::memory_order_relaxed) / 1000,
@@ -7847,7 +8182,10 @@ void PlumeDrawContext::EncodeDraws(plume::RenderCommandList* list,
       // Packed: the draw's vertices start at the front of its room, and the
       // stride is the pipeline's, so the buffer is bound at that room.
       const bool cached = last_fill_cache_offset_ != ~0u;
-      const uint32_t first = cached ? last_fill_cache_offset_ : vb_used;
+      // Finished ahead: in the frame's buffer already, in room of its own.
+      const bool placed = last_fill_vb_offset_ != ~0u;
+      const uint32_t first =
+          cached ? last_fill_cache_offset_ : (placed ? last_fill_vb_offset_ : vb_used);
       const plume::RenderVertexBufferView view(
           plume::RenderBufferReference(cached ? cache_vb_.get() : dummy_vb_.get(),
                                        uint64_t(first) * kVertexStrideBytes),
@@ -7871,7 +8209,7 @@ void PlumeDrawContext::EncodeDraws(plume::RenderCommandList* list,
         }
       }
       list->drawInstanced(vertex_count, 1, 0, 0);
-      if (!cached) {
+      if (!cached && !placed) {
         vb_used += vertex_count;
       }
     } else if (last_fill_cache_offset_ != ~0u) {
@@ -7885,8 +8223,12 @@ void PlumeDrawContext::EncodeDraws(plume::RenderCommandList* list,
         list->setVertexBuffers(0, &vb_view_, 1, &input_slots_[0]);
         bound_vertex_buffer = 1;
       }
-      list->drawInstanced(vertex_count, 1, vb_used, 0);
-      vb_used += vertex_count;
+      if (last_fill_vb_offset_ != ~0u) {
+        list->drawInstanced(vertex_count, 1, last_fill_vb_offset_, 0);
+      } else {
+        list->drawInstanced(vertex_count, 1, vb_used, 0);
+        vb_used += vertex_count;
+      }
     }
     if (fragment_query != ~0u) {
       pass->end_fragment_count(pass->context, fragment_query);

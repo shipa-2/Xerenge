@@ -870,7 +870,34 @@ class PlumeDrawContext {
     uint32_t count = 0;
     std::vector<uint32_t> read_lo, read_hi;
     uint32_t fetched = 0, fetch_addr = 0, fetch_type = 0;
+    // Finished ahead (see FinishAhead): everything FillVertices does to a
+    // draw with the title's shaders done by the worker as well, and the
+    // vertices already where they are drawn from, in `layout`: the frame's
+    // vertex buffer at `vb_first`, or - a mesh stored in the vertex cache -
+    // the cache buffer at `cache_offset`. Nothing of it is in pre_arena_.
+    bool finished = false;
+    uint32_t layout = 0;
+    uint32_t vb_first = 0;
+    bool stored = false;
+    uint32_t cache_offset = 0;
+    std::array<float, 8> fingerprint{};  // as CachedMesh::fingerprint
+    uint32_t draw_count = 0;  // after a rectangle or quad list's expansion
+    bool x_known = false;     // as last_fill_x_known_ and last_fill_x_
+    float x[2] = {0.0f, 0.0f};
+    // For a mesh the cache stores or only watches: what it read, and that
+    // hashed.
+    bool watch = false;
+    bool hashed = false;
+    uint64_t data_hash = 0;
+    std::vector<std::pair<uint32_t, uint32_t>> ranges;
   };
+  // What FillVertices does after unpacking to a draw with the title's shaders
+  // - bad primitives collapsed, an interface draw's extent, rectangles and
+  // quads expanded - and the copy to where it is drawn from in the draw's
+  // packed layout, on a worker thread. `staged` has room for twice the vertices.
+  void FinishAhead(const GuestDrawSnapshot& snap, const std::vector<VfetchAttr>& attrs,
+                   uint32_t pos_float, memory::Memory* memory, float* staged,
+                   PreUnpacked& result) const;
   // A watched mesh's entry brought up to date: no place, what it read now.
   void WatchMesh(uint64_t key, uint64_t index_hash, bool hashed, uint64_t data_hash,
                  std::vector<std::pair<uint32_t, uint32_t>>&& ranges);
@@ -887,6 +914,17 @@ class PlumeDrawContext {
   // Set by FillVertices: where in cache_vb_ the draw's vertices are, or ~0u
   // when they went into the per-frame buffer as usual.
   uint32_t last_fill_cache_offset_ = ~0u;
+  // Or where in the frame's buffer they already are (finished ahead), rather
+  // than at the place FillVertices was given; ~0u otherwise.
+  uint32_t last_fill_vb_offset_ = ~0u;
+  // How the last draw's vertices were got, for the timing report: 0 from the
+  // cache, 1 finished ahead, 2 unpacked ahead and finished by FillVertices,
+  // 3 unpacked by FillVertices, 4 the interface's (passthrough).
+  uint32_t last_fill_kind_ = 3;
+  uint64_t finished_unused_ = 0;
+  // Draws unpacked ahead but not finished there, by why: a pass over a copy,
+  // too large, no room left in the front of the frame's buffer.
+  uint64_t unfinished_[3] = {};
   // The end of this frame's half of the vertex buffer (see EncodeDraws).
   uint32_t vb_limit_ = 0;
   uint64_t cache_hits_ = 0;
