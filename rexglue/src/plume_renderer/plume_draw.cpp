@@ -3615,6 +3615,13 @@ bool MeshWatching() {
   return on;
 }
 
+// XERENGE_UNPACK_CHECK=1: every draw finished ahead is unpacked and finished
+// again by FillVertices, the old way, and the two compared byte for byte.
+bool UnpackCheck() {
+  static const bool on = std::getenv("XERENGE_UNPACK_CHECK") != nullptr;
+  return on;
+}
+
 // A worker's scratch buffer is twice this many vertices at most (21 MB); a
 // larger draw is left to FillVertices.
 constexpr uint32_t kFinishAheadMaxVertices = 32768;
@@ -4142,7 +4149,7 @@ void PlumeDrawContext::FinishAhead(const GuestDrawSnapshot& snap,
     std::memcpy(result.fingerprint.data() + 4,
                 staged + size_t(draw_count - 1) * kFloatsPerVert + first_loc * 4, 16);
   }
-  if (result.watch || result.stored) {
+  if (result.watch || result.stored || UnpackCheck()) {
     result.ranges = MergeReadRanges(result.read_lo, result.read_hi);
     result.hashed = HashRanges(memory, result.ranges, &result.data_hash);
   }
@@ -4429,7 +4436,7 @@ uint32_t PlumeDrawContext::FillVertices(const GuestDrawSnapshot& snap, memory::M
     FillPhase(0, fill_mark);
     return finished->draw_count;
   };
-  if (finished) {
+  if (finished && !UnpackCheck()) {
     return use_finished();
   }
   // Bounds of what each attribute read, for the cache's content check.
@@ -4470,7 +4477,10 @@ uint32_t PlumeDrawContext::FillVertices(const GuestDrawSnapshot& snap, memory::M
     // Only what goes to the GPU needs a defined value: the locations of the
     // layout the vertices are copied out in (CopyVerticesOut). Clearing all
     // twenty of a packed draw's was most of the work.
-    if (fill_layout_mask_ == kFullLayoutMask) {
+    // (XERENGE_UNPACK_CHECK compares with a draw unpacked ahead, and those are
+    // cleared whole: an interface draw's extent is read from location 0
+    // whether or not its layout has it.)
+    if (fill_layout_mask_ == kFullLayoutMask || finished) {
       std::memset(staged, 0, size_t(vertex_count) * kVertexStrideBytes);
     } else {
       uint32_t cleared[kInputLocationCount];
@@ -4921,6 +4931,79 @@ uint32_t PlumeDrawContext::FillVertices(const GuestDrawSnapshot& snap, memory::M
           snap.vport_xoffset, snap.vport_yoffset, snap.depth_control, p0[0], p0[1], p0[2],
           p0[3], p1[0], p1[1], p2[0], p2[1]);
     }
+  }
+  if (finished) {
+    // XERENGE_UNPACK_CHECK: the draw has now been unpacked and finished here
+    // as well, the old way. What the worker put into the vertex buffer has to
+    // be these bytes (read back from the upload heap - slow, a check only) -
+    // unless the title wrote the buffer in between, which it does: a few
+    // shaders' texture coordinates move while the frame is encoded. Those are
+    // told apart by what the worker read hashing differently now, or before
+    // the worker unpacked it than after, and counted on their own.
+    static std::atomic<uint64_t> compared{0};
+    static std::atomic<uint64_t> compared_vertices{0};
+    static std::atomic<uint64_t> different{0};
+    static std::atomic<uint64_t> rewritten{0};
+    static std::atomic<uint64_t> last_ms{0};
+    std::string wrong;
+    if (draw_count != finished->draw_count) {
+      wrong += fmt::format(" count {} here", draw_count);
+    } else {
+      const uint32_t floats_each = uint32_t(std::popcount(fill_layout_mask_)) * 4;
+      std::vector<float> packed(size_t(draw_count) * floats_each);
+      PackVertices(packed.data(), staged, draw_count, fill_layout_mask_);
+      const float* ahead =
+          finished->stored ? cache_mapped_ + size_t(finished->cache_offset) * kFloatsPerVert
+                           : vb_mapped_ + size_t(finished->vb_first) * kFloatsPerVert;
+      if (std::memcmp(packed.data(), ahead, packed.size() * sizeof(float)) != 0) {
+        size_t at = 0;
+        while (at < packed.size() && std::memcmp(&packed[at], &ahead[at], sizeof(float)) == 0) {
+          ++at;
+        }
+        wrong += fmt::format(" vertices (first at vertex {} float {}: {} here, {} ahead)",
+                             at / floats_each, at % floats_each, packed[at], ahead[at]);
+      }
+    }
+    if (last_fill_x_known_ != finished->x_known ||
+        (last_fill_x_known_ &&
+         (last_fill_x_[0] != finished->x[0] || last_fill_x_[1] != finished->x[1]))) {
+      wrong += " extent";
+    }
+    if (cache_eligible && MergeReadRanges(read_lo, read_hi) != finished->ranges) {
+      wrong += " read ranges";
+    }
+    uint64_t hash_now = 0;
+    const bool written_since = finished->torn ||
+                               (finished->hashed &&
+                                (!HashRanges(memory, finished->ranges, &hash_now) ||
+                                 hash_now != finished->data_hash));
+    compared.fetch_add(1, std::memory_order_relaxed);
+    compared_vertices.fetch_add(draw_count, std::memory_order_relaxed);
+    if (written_since) {
+      const uint64_t n = rewritten.fetch_add(1, std::memory_order_relaxed) + 1;
+      if (n <= 8) {
+        REXLOG_INFO("plume: unpack check: the title wrote a draw's vertices while the frame was encoded "
+                    "(vs={:016X} prim {} indices {}){}{}",
+                    snap.vs_hash, snap.prim_type, snap.num_indices,
+                    wrong.empty() ? ", the same came of them" : " -", wrong);
+      }
+    } else if (!wrong.empty()) {
+      const uint64_t n = different.fetch_add(1, std::memory_order_relaxed) + 1;
+      if (n <= 32 || (n & (n - 1)) == 0) {
+        REXLOG_WARN("plume: unpack check: a draw finished ahead differs -{} (vs={:016X} prim {} "
+                    "indices {}, {} vertices ahead, layout {:05X}; {} so far)",
+                    wrong, snap.vs_hash, snap.prim_type, snap.num_indices, finished->draw_count,
+                    fill_layout_mask_, n);
+      }
+    }
+    const uint64_t now = CoarseMs();
+    uint64_t was = last_ms.load(std::memory_order_relaxed);
+    if (now - was >= 2000 && last_ms.compare_exchange_strong(was, now)) {
+      REXLOG_INFO("plume: unpack check: {} draws finished ahead compared ({} vertices), {} different, "
+                  "{} more written by the title in between",
+                  compared.load(), compared_vertices.load(), different.load(), rewritten.load());
+    }
+    return use_finished();
   }
   // Never past the end of the real buffer. The expansions above guard their
   // own output, but they are handed the staging buffer at offset zero, so the
@@ -7354,6 +7437,19 @@ void PlumeDrawContext::EncodeDraws(plume::RenderCommandList* list,
             scratch_buffer.reset(new float[scratch_floats]);
           }
           float* const scratch = scratch_buffer.get();
+          // XERENGE_UNPACK_CHECK: unpacked once before, only for the hash of
+          // what it reads as that was beforehand (see FillVertices).
+          uint64_t hash_before = 0;
+          bool hashed_before = false;
+          if (UnpackCheck()) {
+            PreUnpacked dry;
+            dry.read_lo.assign(job.attrs->size(), ~0u);
+            dry.read_hi.assign(job.attrs->size(), 0u);
+            UnpackVertices(*job.snap, *job.attrs, job.pos_fetch_const, job.pos_float, job.result.count, memory,
+                           scratch, dry.read_lo, dry.read_hi, dry.fetched, dry.fetch_addr,
+                           dry.fetch_type);
+            hashed_before = HashRanges(memory, MergeReadRanges(dry.read_lo, dry.read_hi), &hash_before);
+          }
           // Cleared: what is read afterwards - the layout's locations, the
           // position, and location 0 for an interface draw's extent. All twenty
           // for a list that is expanded, whose new corners are worked out from
@@ -7379,7 +7475,7 @@ void PlumeDrawContext::EncodeDraws(plume::RenderCommandList* list,
               }
             }
           }
-          if (job.result.watch || job.result.stored) {
+          if (job.result.watch || job.result.stored || UnpackCheck()) {
             job.result.read_lo.assign(job.attrs->size(), ~0u);
             job.result.read_hi.assign(job.attrs->size(), 0u);
           }
@@ -7387,6 +7483,10 @@ void PlumeDrawContext::EncodeDraws(plume::RenderCommandList* list,
                          scratch, job.result.read_lo, job.result.read_hi, job.result.fetched,
                          job.result.fetch_addr, job.result.fetch_type);
           FinishAhead(*job.snap, *job.attrs, job.pos_float, memory, scratch, job.result);
+          if (UnpackCheck()) {
+            job.result.torn = hashed_before != job.result.hashed ||
+                              (hashed_before && hash_before != job.result.data_hash);
+          }
           return;
         }
         float* out = pre_arena_.data() + job.result.offset;

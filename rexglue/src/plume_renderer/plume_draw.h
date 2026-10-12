@@ -890,6 +890,9 @@ class PlumeDrawContext {
     bool hashed = false;
     uint64_t data_hash = 0;
     std::vector<std::pair<uint32_t, uint32_t>> ranges;
+    // XERENGE_UNPACK_CHECK: what it read hashed differently before the
+    // worker unpacked it than after - the title was writing it meanwhile.
+    bool torn = false;
   };
   // What FillVertices does after unpacking to a draw with the title's shaders
   // - bad primitives collapsed, an interface draw's extent, rectangles and
