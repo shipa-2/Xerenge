@@ -55,6 +55,12 @@
 #                       127.0.0.2 and 127.0.0.3 run two copies on one machine.
 #   ./run.sh --windowed runs in a window; --fullscreen (the default) does not.
 #   ./run.sh --fps      frames per second in the top left corner (plume).
+#   ./run.sh --power=MODE
+#                       how the title's thread waits for the next frame (plume):
+#                       stock (the default) sleeps, which lets the CPU clock
+#                       down and costs a dip now and then; performance sleeps,
+#                       then spins the last XERENGE_SPIN_LEAD_MS (8 by default)
+#                       for a steady 60 at a few watts more.
 #   ./run.sh --render-resolution=WIDTHxHEIGHT
 #                       plume draws the frame at this size and scales it onto
 #                       the window, e.g. 1280x720, the size the title renders
@@ -185,6 +191,7 @@ for arg in "$@"; do
         --full-vertices) FULL_VERTICES=1 ;;
         --cull) CULL=1 ;;
         --fps) FPS_SHOW=1 ;;
+        --power=*) POWER_MODE=${arg#*=} ;;
         --windowed) WINDOWED=1 ;;
         --fullscreen) WINDOWED= ;;
         # Any other option goes to the game as it is: its own settings, e.g.
@@ -262,6 +269,7 @@ fi
 [ -n "$FULL_VERTICES" ] && XERENGE_FULL_VERTICES=1 && export XERENGE_FULL_VERTICES
 [ -n "$CULL" ] && XERENGE_CULL=1 && export XERENGE_CULL
 [ -n "$FPS_SHOW" ] && XERENGE_FPS_SHOW=1 && export XERENGE_FPS_SHOW
+[ -n "$POWER_MODE" ] && XERENGE_POWER_MODE=$POWER_MODE && export XERENGE_POWER_MODE
 # shellcheck disable=SC2086 # a list of options, split on purpose
 [ -n "$GAME_ARGS" ] && set -- "$@" $GAME_ARGS
 

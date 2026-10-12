@@ -116,6 +116,10 @@ res=$(value render_resolution)
 aniso=$(value anisotropy)
 if [ "$aniso" = off ]; then export XERENGE_MAX_ANISOTROPY=1
 elif [ -n "$aniso" ]; then export XERENGE_MAX_ANISOTROPY="$aniso"; fi
+power=$(value power_mode)
+[ -n "$power" ] && export XERENGE_POWER_MODE="$power"
+lead=$(value spin_lead_ms)
+[ -n "$lead" ] && export XERENGE_SPIN_LEAD_MS="$lead"
 [ "$(value fps_counter)" = true ] && export XERENGE_FPS_SHOW=1
 [ "$(value fps_30)" = true ] && export XERENGE_FPS_30=1
 [ "$(value frame_generation)" = true ] && export XERENGE_FRAME_GENERATION=120
@@ -224,6 +228,8 @@ if /i "%culling%"=="true" set "XERENGE_CULL=1"
 if /i "%reflection_split%"=="true" set "XERENGE_REFLECTION_SPLIT=1"
 if defined render_resolution set "XERENGE_RENDER_RESOLUTION=%render_resolution%"
 if /i "%anisotropy%"=="off" (set "XERENGE_MAX_ANISOTROPY=1") else if defined anisotropy set "XERENGE_MAX_ANISOTROPY=%anisotropy%"
+if defined power_mode set "XERENGE_POWER_MODE=%power_mode%"
+if defined spin_lead_ms set "XERENGE_SPIN_LEAD_MS=%spin_lead_ms%"
 if /i "%fps_counter%"=="true" set "XERENGE_FPS_SHOW=1"
 if /i "%fps_30%"=="true" set "XERENGE_FPS_30=1"
 if /i "%frame_generation%"=="true" set "XERENGE_FRAME_GENERATION=120"
@@ -610,6 +616,18 @@ InstallerWindow::InstallerWindow(QWidget* parent) : QWidget(parent) {
                                    "off is fastest."));
   anisotropy_row->addWidget(anisotropy_combo_, 1);
   hacks_layout->addLayout(anisotropy_row);
+  auto* power_row = new QHBoxLayout;
+  power_row->addWidget(new QLabel(tr("Power mode")));
+  power_combo_ = new QComboBox;
+  power_combo_->addItem(tr("Stock"), "stock");
+  power_combo_->addItem(tr("Performance"), "performance");
+  power_combo_->setToolTip(
+      tr("Stock sleeps between frames, and the CPU clocks down: a handheld such as the Steam "
+         "Deck dips below sixty now and then. Performance spins the last few milliseconds "
+         "before each frame (spin_lead_ms in xerenge.conf, 8 by default) for a steady sixty, "
+         "at a few watts more."));
+  power_row->addWidget(power_combo_, 1);
+  hacks_layout->addLayout(power_row);
   fps_box_ = new QCheckBox(tr("Frame counter"));
   fps_box_->setToolTip(tr("Frames per second in the top left corner."));
   hacks_layout->addWidget(fps_box_);
@@ -925,6 +943,10 @@ void InstallerWindow::LoadSettings(const QString& path) {
     resolution_custom_edit_->setVisible(resolution_combo_->currentData().toString() == "custom");
   }
   choice("anisotropy", anisotropy_combo_);
+  choice("power_mode", power_combo_);
+  if (values.contains("spin_lead_ms")) {
+    spin_lead_ms_ = values.value("spin_lead_ms");
+  }
   flag("fps_counter", fps_box_);
   flag("fps_30", fps30_box_);
   flag("frame_generation", framegen_box_);
@@ -1026,6 +1048,10 @@ void InstallerWindow::StartInstall() {
                 : resolution_combo_->currentData().toString())
         << "\n"
         << "anisotropy = " << anisotropy_combo_->currentData().toString() << "\n"
+        << "# How the game waits for each frame: stock, or performance (a steadier 60 fps,\n"
+        << "# more power), which spins the last spin_lead_ms (0 to 16) before it\n"
+        << "power_mode = " << power_combo_->currentData().toString() << "\n"
+        << "spin_lead_ms = " << spin_lead_ms_ << "\n"
         << "fps_counter = " << (fps_box_->isChecked() ? "true" : "false") << "\n"
         << "fps_30 = " << (fps30_box_->isChecked() ? "true" : "false") << "\n"
         << "frame_generation = " << (framegen_box_->isChecked() ? "true" : "false") << "\n"

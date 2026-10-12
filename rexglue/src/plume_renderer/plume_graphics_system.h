@@ -96,7 +96,9 @@ class PlumeGraphicsSystem final : public system::IGraphicsSystem {
   void StopPresentWorker();
   void StartVsyncWorker();
   void StopVsyncWorker();
-  void MarkVblank();
+  // `scheduled`: when this vblank was due on the steady clock - when it was
+  // meant to happen rather than when the worker got round to it.
+  void MarkVblank(std::chrono::steady_clock::time_point scheduled);
   // Holds the title's swap to one per vblank, as the console's flip does. The
   // title has no limiter of its own and ran at whatever the encoder managed -
   // 75 frames a second in the race - with its game running fast to match.
@@ -167,6 +169,11 @@ class PlumeGraphicsSystem final : public system::IGraphicsSystem {
   std::atomic<bool> call_trace_requested_{false};
   std::atomic<uint64_t> vblank_count_{0};
   uint64_t last_swap_vblank_ = 0;
+  // When the last vblank was due and the time between two, for performance power
+  // mode to know when to start spinning. The time is written with the count,
+  // under vblank_mutex_.
+  std::chrono::steady_clock::time_point last_vblank_time_{};
+  std::atomic<int64_t> vblank_period_ns_{0};
   std::mutex vblank_mutex_;
   std::condition_variable vblank_cv_;
 

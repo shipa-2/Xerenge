@@ -228,6 +228,17 @@ XERENGE_NO_VBLANK_PACE=1 no vblank pacing, but the monitor's vsync still applies
 XERENGE_INTERPOLATION=1  work in progress: interpolate frames between logic steps
 ```
 
+Power mode decides how the game's thread waits for the vblank. Stock, the
+default, sleeps until the frame is due, which lets the CPU clock down; on a
+handheld such as the Steam Deck the next heavy frame then starts on a slow
+core and dips below 60 now and then. Performance sleeps until 8 ms before the
+vblank and spins for the rest, so the clocks stay up, for a few watts more
+(about 10 W against 8 on the Deck). `power_mode` (`stock` or `performance`) in
+`xerenge.conf` or the installer, `XERENGE_POWER_MODE`, `./run.sh --power=MODE`;
+`spin_lead_ms` or `XERENGE_SPIN_LEAD_MS` (0 to 16) changes the 8. Not on
+Android, where a spinning core only costs battery and heat. The log's "frame
+headroom" line says the mode and how much of the wait was spun.
+
 If the frame rate stops at 75 or some other odd figure with `XERENGE_UNLOCK_FPS`,
 look for an overlay that limits it - MangoHud does, and `MANGOHUD=0` turns it
 off.
