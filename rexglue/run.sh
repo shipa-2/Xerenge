@@ -59,6 +59,9 @@
 #                       plume draws the frame at this size and scales it onto
 #                       the window, e.g. 1280x720, the size the title renders
 #                       at itself. A hack for slow GPUs.
+#   ./run.sh --colour-grade=AMOUNT
+#                       how much of the title's colour grading (its yellow
+#                       cast) plume keeps, 0 to 1; 1 is the console's look.
 #   ./run.sh --async-present
 #                       plume hands a frame to the GPU and lets the title go on
 #                       at once, instead of waiting for the GPU to finish it.
@@ -180,6 +183,7 @@ for arg in "$@"; do
         --lobby-server=*) ONLINE=1; REAL_LOBBY=1; LOBBY_SERVER=${arg#*=} ;;
         --online-address=*) ONLINE_ADDRESS=${arg#*=} ;;
         --render-resolution=*) RENDER_RESOLUTION=${arg#*=} ;;
+        --colour-grade=*) COLOUR_GRADE=${arg#*=} ;;
         --async-present) ASYNC_PRESENT=1 ;;
         --no-early-submit) ACQUIRE_FIRST=1 ;;
         --full-vertices) FULL_VERTICES=1 ;;
@@ -257,6 +261,7 @@ else
     set -- "$@" --fullscreen
 fi
 [ -n "$RENDER_RESOLUTION" ] && XERENGE_RENDER_RESOLUTION=$RENDER_RESOLUTION && export XERENGE_RENDER_RESOLUTION
+[ -n "$COLOUR_GRADE" ] && XERENGE_COLOUR_GRADE=$COLOUR_GRADE && export XERENGE_COLOUR_GRADE
 [ -n "$ASYNC_PRESENT" ] && XERENGE_ASYNC_PRESENT=1 && export XERENGE_ASYNC_PRESENT
 [ -n "$ACQUIRE_FIRST" ] && XERENGE_ACQUIRE_FIRST=1 && export XERENGE_ACQUIRE_FIRST
 [ -n "$FULL_VERTICES" ] && XERENGE_FULL_VERTICES=1 && export XERENGE_FULL_VERTICES

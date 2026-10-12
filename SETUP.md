@@ -259,6 +259,7 @@ Early submit is on unless turned off; the others are off unless asked for.
 ```
 ./run.sh --render-resolution=1280x720   draw the frame at this size and scale it
                                         onto the window
+./run.sh --colour-grade=0.5             keep half of the title's colour grading
 ./run.sh --async-present                let the title start its next frame while
                                         the GPU is still drawing this one
 ./run.sh --no-early-submit              turn early submit (below) off
@@ -286,6 +287,11 @@ Early submit is on unless turned off; the others are off unless asked for.
   the size the title renders at on the console, so nothing is lost that the
   title drew; above it the frame is drawn at the window's size. Fewer pixels
   for a GPU that is short of them.
+* `--colour-grade=AMOUNT` (`colour_grade` in `xerenge.conf`) - the frame's last
+  pass looks every pixel up in a 32x32x32 colour table, the title's grading,
+  which is what gives the picture its yellow-brown cast. plume draws that table
+  towards a neutral one as it is loaded: 1 keeps the console's look, 0 shows
+  the colours as drawn, anything between mixes the two.
 * `--async-present` - normally the frame is handed to the GPU and the title
   waits for the GPU to finish it before it goes on. With this it goes on at
   once and the wait moves to the start of the next frame, so the title's own

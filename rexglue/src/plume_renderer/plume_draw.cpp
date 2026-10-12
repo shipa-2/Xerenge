@@ -4805,6 +4805,48 @@ void ClearFirstPass(plume::RenderCommandList* list, const RenderPassBreak* pass,
   }
 }
 
+namespace {
+// XERENGE_COLOUR_GRADE: how much of the title's colour grading is kept, 0 to 1
+// (1, the default: all of it, as on the console; 0: none - the colours as
+// drawn). The grade is what gives the frame its yellow-brown cast.
+float ColourGradeStrength() {
+  static const float strength = [] {
+    const char* v = std::getenv("XERENGE_COLOUR_GRADE");
+    if (!v || !*v) {
+      return 1.0f;
+    }
+    return std::clamp(std::strtof(v, nullptr), 0.0f, 1.0f);
+  }();
+  return strength;
+}
+
+// The table drawn towards the identity one (as identity_lut_ holds it: red
+// across, green down, blue by layer) by 1 - XERENGE_COLOUR_GRADE.
+void SoftenColourGrade(uint8_t* texels, uint32_t n, uint32_t row_bytes, bool bgra) {
+  const float keep = ColourGradeStrength();
+  if (keep >= 1.0f || n == 0) {
+    return;
+  }
+  const uint32_t r = bgra ? 2 : 0;
+  const uint32_t b = bgra ? 0 : 2;
+  for (uint32_t layer = 0; layer < n; ++layer) {
+    for (uint32_t y = 0; y < n; ++y) {
+      uint8_t* row = texels + (size_t(layer) * n + y) * row_bytes;
+      for (uint32_t x = 0; x < n; ++x) {
+        uint8_t* t = row + size_t(x) * 4;
+        const float identity[3] = {float((x + 0.5) / n * 255.0), float((y + 0.5) / n * 255.0),
+                                   float(double(layer) / n * 255.0)};
+        const uint32_t channel[3] = {r, 1, b};
+        for (uint32_t c = 0; c < 3; ++c) {
+          const float graded = t[channel[c]];
+          t[channel[c]] = uint8_t(std::lround(identity[c] + (graded - identity[c]) * keep));
+        }
+      }
+    }
+  }
+}
+}  // namespace
+
 bool PlumeSecondTargetEnabled() {
   // XERENGE_NO_SECOND_TARGET: no render target 1 (motion vectors, read only by
   // the motion blur) - on a phone's tiled GPU every pixel was written twice.
@@ -4861,6 +4903,14 @@ void PlumeDrawContext::UploadLayeredTexture(plume::RenderCommandList* list, uint
     row_bytes = rb;
     row_texels = rt;
     all.insert(all.end(), pixels.begin(), pixels.begin() + size_t(rb) * height);
+  }
+  // A cube of colours, n x n x n: the colour grading table the frame's last
+  // pass looks every pixel up in - the yellow cast. Softened, or taken out,
+  // by XERENGE_COLOUR_GRADE.
+  if (width == height && height == layers && width <= 64 && bpb == 4 &&
+      (host_format == plume::RenderFormat::R8G8B8A8_UNORM ||
+       host_format == plume::RenderFormat::B8G8R8A8_UNORM)) {
+    SoftenColourGrade(all.data(), width, row_bytes, host_format == plume::RenderFormat::B8G8R8A8_UNORM);
   }
   if (!tex.texture || tex.width != width || tex.height != height || tex.layers != layers) {
     if (tex.index == 0) {

@@ -114,6 +114,8 @@ res=$(value render_resolution)
 aniso=$(value anisotropy)
 if [ "$aniso" = off ]; then export XERENGE_MAX_ANISOTROPY=1
 elif [ -n "$aniso" ]; then export XERENGE_MAX_ANISOTROPY="$aniso"; fi
+grade=$(value colour_grade)
+[ -n "$grade" ] && export XERENGE_COLOUR_GRADE="$grade"
 [ "$(value fps_counter)" = true ] && export XERENGE_FPS_SHOW=1
 [ "$(value fps_30)" = true ] && export XERENGE_FPS_30=1
 [ "$(value frame_generation)" = true ] && export XERENGE_FRAME_GENERATION=120
@@ -222,6 +224,7 @@ if /i "%culling%"=="true" set "XERENGE_CULL=1"
 if /i "%reflection_split%"=="true" set "XERENGE_REFLECTION_SPLIT=1"
 if defined render_resolution set "XERENGE_RENDER_RESOLUTION=%render_resolution%"
 if /i "%anisotropy%"=="off" (set "XERENGE_MAX_ANISOTROPY=1") else if defined anisotropy set "XERENGE_MAX_ANISOTROPY=%anisotropy%"
+if defined colour_grade set "XERENGE_COLOUR_GRADE=%colour_grade%"
 if /i "%fps_counter%"=="true" set "XERENGE_FPS_SHOW=1"
 if /i "%fps_30%"=="true" set "XERENGE_FPS_30=1"
 if /i "%frame_generation%"=="true" set "XERENGE_FRAME_GENERATION=120"
@@ -600,6 +603,18 @@ InstallerWindow::InstallerWindow(QWidget* parent) : QWidget(parent) {
                                    "off is fastest."));
   anisotropy_row->addWidget(anisotropy_combo_, 1);
   hacks_layout->addLayout(anisotropy_row);
+  auto* grade_row = new QHBoxLayout;
+  grade_row->addWidget(new QLabel(tr("Colour grading")));
+  grade_combo_ = new QComboBox;
+  grade_combo_->addItem(tr("As on the console"), "1");
+  grade_combo_->addItem(tr("Half"), "0.5");
+  grade_combo_->addItem(tr("Off"), "0");
+  grade_combo_->setCurrentIndex(0);
+  grade_combo_->setToolTip(tr("The game's colour grading, which gives the picture its "
+                              "yellow-brown cast. Half keeps some of its mood; off shows the "
+                              "colours as drawn."));
+  grade_row->addWidget(grade_combo_, 1);
+  hacks_layout->addLayout(grade_row);
   fps_box_ = new QCheckBox(tr("Frame counter"));
   fps_box_->setToolTip(tr("Frames per second in the top left corner."));
   hacks_layout->addWidget(fps_box_);
@@ -915,6 +930,7 @@ void InstallerWindow::LoadSettings(const QString& path) {
     resolution_custom_edit_->setVisible(resolution_combo_->currentData().toString() == "custom");
   }
   choice("anisotropy", anisotropy_combo_);
+  choice("colour_grade", grade_combo_);
   flag("fps_counter", fps_box_);
   flag("fps_30", fps30_box_);
   flag("frame_generation", framegen_box_);
@@ -1016,6 +1032,8 @@ void InstallerWindow::StartInstall() {
                 : resolution_combo_->currentData().toString())
         << "\n"
         << "anisotropy = " << anisotropy_combo_->currentData().toString() << "\n"
+        << "# How much of the game's colour grading (its yellow cast) is kept: 1, 0.5 or 0\n"
+        << "colour_grade = " << grade_combo_->currentData().toString() << "\n"
         << "fps_counter = " << (fps_box_->isChecked() ? "true" : "false") << "\n"
         << "fps_30 = " << (fps30_box_->isChecked() ? "true" : "false") << "\n"
         << "frame_generation = " << (framegen_box_->isChecked() ? "true" : "false") << "\n"
