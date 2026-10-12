@@ -67,6 +67,18 @@ echo "== generating the code"
 # The title's shaders, translated from this copy of the game: the renderer
 # links them in, so this comes before configuring. They are the game's own
 # code, which is why they are made here and not kept in the repository.
+# They are translated once and kept. A translator or shader header newer than
+# they are means they are stale - the build would go through and the game
+# draw with the old shaders - so then they are made again.
+for cache in shader_cache.cpp shader_cache_runtime.cpp; do
+    for newer in "$root/XenosRecomp/build/XenosRecomp/XenosRecomp$XR_EXE" \
+                 "$root/XenosRecomp/XenosRecomp/shader_common.h"; do
+        if [ -s "$project/generated/$cache" ] && [ "$newer" -nt "$project/generated/$cache" ]; then
+            echo "== generated/$cache is older than $newer: translating again"
+            rm -f "$project/generated/$cache"
+        fi
+    done
+done
 if [ ! -s "$project/generated/shader_cache.cpp" ]; then
     echo "== translating the game's shaders"
     if [ ! -x "$root/XenosRecomp/build/XenosRecomp/XenosRecomp$XR_EXE" ]; then
