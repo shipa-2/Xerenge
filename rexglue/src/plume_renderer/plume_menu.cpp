@@ -1279,7 +1279,7 @@ struct PlumeMenu::State {
       ++lines;
     }
 #ifdef __ANDROID__
-    const std::string keys = "Tap an item to change it, drag the list to scroll.";
+    const std::string keys = "Pad: D-pad, A accept, B close, X default, LB RB page";
 #else
     const std::string keys =
         "Pad: D-pad, A accept, B close, X default, LB RB page    "
