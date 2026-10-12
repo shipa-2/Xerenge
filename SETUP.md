@@ -244,6 +244,7 @@ Useful modes:
 ./run.sh --gdb            run under a debugger
 ./run.sh --windowed       run in a window; fullscreen (--fullscreen) is the default
 ./run.sh --fps            frames per second in the top left corner (plume)
+./run.sh --menu           the settings menu (below) open from the start (plume)
 ```
 
 Any other option `run.sh` does not know goes to the game as it is, so the
@@ -349,6 +350,44 @@ costs nothing and can be replayed offline:
 changes its colour, which is the quickest way from something visibly wrong to
 the draw responsible. `draw` then prints that draw's targets, blending, bound
 textures and every constant buffer.
+
+## The settings menu
+
+With plume the game has a settings menu of its own: **F1** on the keyboard, or
+**Back and Start together** on a pad, opens and closes it (Esc, or B, closes it
+too). While it is open the game sees neither the keyboard nor the pad, so
+nothing you press steers the car; it does not pause the game, which goes on
+behind it. Pad: D-pad or left stick to move and change, A to accept, B to
+close, X for an item's default, LB and RB for the previous and next page.
+Keyboard: arrows, Enter, Esc, Delete for the default, Tab or Page Up and Page
+Down for the page. The mouse works too: click, and the wheel scrolls.
+
+On Android a pad's Back and Start together open it. Android has no Windowed,
+Renderer or Controls items, and its anisotropic filtering goes to 8x at most,
+4x unless set. Its `xerenge.conf` is the one in the app's files directory, and
+the app's own settings screen keeps what the menu wrote.
+
+The pages are Display, Graphics, Post-processing, Online, Controls, Advanced
+and Debug - every setting of `xerenge.conf`, apart from `culling`, which stays
+a setting of the file. Most settings are read once, when the game starts, and
+are marked *restart* in the menu: they are saved and apply the next time the
+game is started. These apply at once:
+
+* Windowed, FPS counter and Crash mode smoothing (Display).
+* Anisotropic filtering (Graphics).
+* Colour grading, Brightness and Shadow lift (Post-processing).
+
+Brightness and Shadow lift are described under `--brightness` above. The keys
+of the Controls page are changed by pressing the key asked for; the gamertag and the lobby server
+are typed on the keyboard.
+
+What the menu changes is written back into `xerenge.conf` in place, comments and
+all, when the game was started by its launcher, which tells it where the file is
+(`XERENGE_CONF`). Only the line of the setting changed is touched, and the file
+is written beside itself and renamed over the old one; the installer and the
+Android settings screen keep the lines they have no control for. Started any other way - `run.sh` - the settings that apply at
+once last for the run and the others cannot be changed. `./run.sh --menu`, or
+`XERENGE_MENU_OPEN=1`, starts with the menu open.
 
 ## Playing online
 

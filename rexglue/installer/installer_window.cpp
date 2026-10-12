@@ -79,6 +79,8 @@ constexpr const char* kLauncher = R"SH(#!/bin/sh
 # xerenge.conf beside this file and are read at every start.
 dir=$(cd "$(dirname "$0")" && pwd)
 conf="$dir/xerenge.conf"
+# The in-game menu (F1) writes the settings it changes back into this file.
+export XERENGE_CONF="$conf"
 value() {
     sed -n "s/^[[:space:]]*$1[[:space:]]*=[[:space:]]*//p" "$conf" 2>/dev/null | tail -n 1
 }
@@ -201,6 +203,8 @@ set "dir=%~dp0"
 set "bloom=false"
 set "motion_blur=false"
 set "renderer=plume"
+rem The in-game menu (F1) writes the settings it changes back into this file.
+set "XERENGE_CONF=%dir%xerenge.conf"
 if exist "%dir%xerenge.conf" (
     for /f "usebackq eol=# tokens=1,2 delims== " %%a in ("%dir%xerenge.conf") do set "%%a=%%b"
 )

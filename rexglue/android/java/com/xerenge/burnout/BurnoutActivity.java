@@ -37,6 +37,8 @@ public class BurnoutActivity extends SDLActivity {
         String driver = getSharedPreferences(InstallerActivity.PREFS, MODE_PRIVATE)
                 .getString(InstallerActivity.PREF_DRIVER, null);
         try {
+            // Where the in-game menu writes the settings it changes back to.
+            Os.setenv("XERENGE_CONF", Settings.file(this).getAbsolutePath(), true);
             if (driver != null && new File(driver).isFile()) {
                 Os.setenv("XERENGE_VULKAN_DRIVER", driver, true);
                 Os.setenv("XERENGE_NATIVE_LIB_DIR", getApplicationInfo().nativeLibraryDir, true);

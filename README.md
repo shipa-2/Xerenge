@@ -32,6 +32,11 @@ cd rexglue && ./run.sh --plume
 The same works on a Mac, Apple silicon or Intel, and there is an installer app
 for it too; SETUP.md has what both need.
 
+In the game, **F1** (or Back and Start on a pad) opens a settings menu with
+plume: every setting of `xerenge.conf`, some applied at once - colour grading,
+brightness, shadow lift, anisotropic filtering, the FPS counter - the rest saved
+for the next start. See "The settings menu" in SETUP.md.
+
 That verifies the image, extracts it, builds the SDK and builds the title.
 [`SETUP.md`](SETUP.md) covers the steps separately, what each one does, and what
 to do when something goes wrong. The scripts are:
