@@ -127,6 +127,8 @@ shadow_lift=$(value shadow_lift)
 [ -n "$shadow_lift" ] && export XERENGE_SHADOW_LIFT="$shadow_lift"
 [ "$(value fps_counter)" = true ] && export XERENGE_FPS_SHOW=1
 [ "$(value perf_overlay)" = true ] && export XERENGE_PERF_OVERLAY=1
+power=$(value power_mode)
+[ -n "$power" ] && export XERENGE_POWER_MODE="$power"
 [ "$(value fps_30)" = true ] && export XERENGE_FPS_30=1
 [ "$(value frame_generation)" = true ] && export XERENGE_FRAME_GENERATION=120
 [ "$(value crash_interpolation)" = false ] && export XERENGE_CRASH_INTERPOLATION=0
@@ -243,6 +245,7 @@ if defined brightness set "XERENGE_BRIGHTNESS=%brightness%"
 if defined shadow_lift set "XERENGE_SHADOW_LIFT=%shadow_lift%"
 if /i "%fps_counter%"=="true" set "XERENGE_FPS_SHOW=1"
 if /i "%perf_overlay%"=="true" set "XERENGE_PERF_OVERLAY=1"
+if defined power_mode set "XERENGE_POWER_MODE=%power_mode%"
 if /i "%fps_30%"=="true" set "XERENGE_FPS_30=1"
 if /i "%frame_generation%"=="true" set "XERENGE_FRAME_GENERATION=120"
 if /i "%crash_interpolation%"=="false" set "XERENGE_CRASH_INTERPOLATION=0"
@@ -982,6 +985,9 @@ void InstallerWindow::LoadSettings(const QString& path) {
   if (values.contains("perf_overlay")) {
     perf_overlay_ = values.value("perf_overlay");
   }
+  if (values.contains("power_mode")) {
+    power_mode_ = values.value("power_mode");
+  }
   flag("fps_counter", fps_box_);
   flag("fps_30", fps30_box_);
   flag("frame_generation", framegen_box_);
@@ -1094,6 +1100,9 @@ void InstallerWindow::StartInstall() {
         << "fps_counter = " << (fps_box_->isChecked() ? "true" : "false") << "\n"
         << "# The frame-time graph, set in the game's menu (F1), on its Advanced page\n"
         << "perf_overlay = " << perf_overlay_ << "\n"
+        << "# How the game waits for each frame: stock, or performance (a steadier 60 fps,\n"
+        << "# more power). Set in the game's menu (F1), on its Advanced page\n"
+        << "power_mode = " << power_mode_ << "\n"
         << "fps_30 = " << (fps30_box_->isChecked() ? "true" : "false") << "\n"
         << "frame_generation = " << (framegen_box_->isChecked() ? "true" : "false") << "\n"
         << "crash_interpolation = " << (crash_interp_box_->isChecked() ? "true" : "false") << "\n"

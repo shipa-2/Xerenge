@@ -12,6 +12,11 @@
 #include <cstring>
 #include <fstream>
 #include <xxhash.h>
+#if defined(__x86_64__) || defined(_M_X64) || defined(__i386__)
+#include <immintrin.h>
+#elif defined(_M_ARM64)
+#include <intrin.h>
+#endif
 
 #include <SDL3/SDL.h>
 #if defined(__ANDROID__)
@@ -42,6 +47,7 @@
 #include "plume_renderer/plume_interp.h"
 #include "plume_renderer/plume_parallel.h"
 #include "plume_renderer/plume_perf.h"
+#include "plume_renderer/plume_settings.h"
 #include "plume_renderer/plume_shader_cache.h"
 #include "plume_renderer/plume_swapchain.h"
 #include "shader_cache.h"
@@ -1644,6 +1650,20 @@ namespace {
 // The vsync worker produces the vblanks; a swap it happens to process while
 // pumping the ring must not wait for one.
 thread_local bool tl_vsync_worker = false;
+
+// What a spin loop says to the core: the loop is waiting, so give the other
+// hardware thread and the power budget the cycles. Never a system call.
+inline void CpuRelax() {
+#if defined(__x86_64__) || defined(_M_X64) || defined(__i386__)
+  _mm_pause();
+#elif defined(__aarch64__)
+  // isb rather than yield: yield is a no-op on most cores, isb stalls the
+  // pipeline for a few cycles, which is what pause does on x86.
+  asm volatile("isb" ::: "memory");
+#elif defined(_M_ARM64)
+  __yield();
+#endif
+}
 }  // namespace
 
 void PlumeGraphicsSystem::PaceSwapToVblank() {
@@ -1681,23 +1701,78 @@ void PlumeGraphicsSystem::PaceSwapToVblank() {
                   RexFrameClockProvider() ? "" : " (no frame clock from the game)");
     }
   }
-  vblank_cv_.wait_for(lock, std::chrono::milliseconds(100), [this, interval] {
-    return vblank_count_.load(std::memory_order_acquire) >= last_swap_vblank_ + interval;
-  });
+  // The power mode (see plume_settings.h): a thread asleep for the best part of
+  // every frame lets its core clock down, and the next heavy frame then starts
+  // slow and misses. Performance mode sleeps only until a lead before the
+  // vblank and spins the rest, so the core never idles long enough to.
+  const settings::PowerMode mode = settings::GetPowerMode();
+  {
+    static int shown_mode = -1;
+    if (int(mode) != shown_mode) {
+      shown_mode = int(mode);
+      if (mode == settings::PowerMode::kPerformance) {
+        REXLOG_INFO("plume: power mode performance - the title's thread sleeps until {:.1f} ms "
+                    "before each vblank and spins the rest",
+                    settings::SpinLeadMs());
+      } else {
+        REXLOG_INFO("plume: power mode {} - the title's thread sleeps until the vblank",
+                    settings::PowerModeName(mode));
+      }
+    }
+  }
+  const uint64_t target = last_swap_vblank_ + interval;
+  const auto reached = [this, target] {
+    return vblank_count_.load(std::memory_order_acquire) >= target;
+  };
+  const auto deadline = wait_started + std::chrono::milliseconds(100);
+  int64_t spun_ns = 0;
+  const int64_t period_ns = vblank_period_ns_.load(std::memory_order_relaxed);
+  if (mode == settings::PowerMode::kPerformance && period_ns > 0 && !reached()) {
+    // When the vblank we wait for is due: the last one's time, whose count we
+    // read under the same lock, and the periods since.
+    const uint64_t counted = vblank_count_.load(std::memory_order_acquire);
+    const auto due =
+        last_vblank_time_ + std::chrono::nanoseconds(period_ns * int64_t(target - counted));
+    const auto spin_from =
+        due - std::chrono::microseconds(int64_t(settings::SpinLeadMs() * 1000.0f));
+    if (spin_from > wait_started) {
+      vblank_cv_.wait_until(lock, std::min(spin_from, deadline), reached);
+    }
+    if (!reached()) {
+      // No lock and no system call from here: MarkVblank takes the lock to
+      // count, and a call into the kernel is what lets the core idle.
+      lock.unlock();
+      const auto spin_started = std::chrono::steady_clock::now();
+      for (uint32_t i = 0; !reached(); ++i) {
+        CpuRelax();
+        if ((i & 63) == 0 && std::chrono::steady_clock::now() >= deadline) {
+          break;
+        }
+      }
+      spun_ns = std::chrono::duration_cast<std::chrono::nanoseconds>(
+                    std::chrono::steady_clock::now() - spin_started)
+                    .count();
+    }
+  } else {
+    vblank_cv_.wait_for(lock, std::chrono::milliseconds(100), reached);
+  }
   last_swap_vblank_ = vblank_count_.load(std::memory_order_acquire);
   {
     // Time left over in a frame: how long the title waited here. What the
     // title and the renderer took between two waits is the rest.
-    static uint64_t waited_us = 0, swaps = 0;
+    static uint64_t waited_us = 0, spun_us = 0, swaps = 0;
     static auto last_report = std::chrono::steady_clock::now();
     const auto now = std::chrono::steady_clock::now();
     waited_us += uint64_t(std::chrono::duration_cast<std::chrono::microseconds>(now - wait_started)
                               .count());
+    spun_us += uint64_t(spun_ns / 1000);
     ++swaps;
     if (now - last_report >= std::chrono::seconds(2)) {
-      REXLOG_INFO("plume: frame headroom - waited {} us a frame for the vblank ({} swaps)",
-                  waited_us / swaps, swaps);
+      REXLOG_INFO("plume: frame headroom - waited {} us a frame for the vblank, {} of them spun "
+                  "(power mode {}, {} swaps)",
+                  waited_us / swaps, spun_us / swaps, settings::PowerModeName(mode), swaps);
       waited_us = 0;
+      spun_us = 0;
       swaps = 0;
       last_report = now;
     }
@@ -2407,15 +2482,25 @@ void PlumeGraphicsSystem::StartVsyncWorker() {
             std::max(uint64_t(1), uint64_t(double(guest_tick_frequency) / refresh_rate_hz));
         uint64_t last_frame_time = chrono::Clock::QueryGuestTickCount();
         tl_vsync_worker = true;
+        // The period and each vblank's due time on the clock the title's thread
+        // reads, for performance power mode: it starts spinning a lead before
+        // the next one, and this sleeps in 1 ms steps, so the time a vblank
+        // was due is not the time it was marked.
+        const double ns_per_tick = 1e9 / double(guest_tick_frequency);
+        vblank_period_ns_.store(int64_t(double(vsync_interval_ticks) * ns_per_tick),
+                                std::memory_order_relaxed);
 
         while (vsync_worker_running_) {
           // Consume the ring every tick so CP completion interrupts are not
           // delayed until the next vblank. Movie playback waits on those.
           PumpCommandProcessor();
           const uint64_t current_time = chrono::Clock::QueryGuestTickCount();
+          const auto steady_now = std::chrono::steady_clock::now();
           const uint64_t interval_ticks = vsync_interval_ticks;
           while (current_time - last_frame_time >= interval_ticks) {
-            MarkVblank();
+            const uint64_t late_ticks = current_time - last_frame_time - interval_ticks;
+            MarkVblank(steady_now -
+                       std::chrono::nanoseconds(int64_t(double(late_ticks) * ns_per_tick)));
             last_frame_time += interval_ticks;
           }
           rex::thread::Sleep(std::chrono::milliseconds(1));
@@ -2459,7 +2544,7 @@ void PlumeGraphicsSystem::DispatchCpInterrupts(uint32_t cpu_mask) {
   }
 }
 
-void PlumeGraphicsSystem::MarkVblank() {
+void PlumeGraphicsSystem::MarkVblank(std::chrono::steady_clock::time_point scheduled) {
   // The counter a fence publishes when its packet asks for the command
   // processor's own progress rather than a carried value. The reference
   // backend advances it here as well as on swap, so it climbs at the refresh
@@ -2470,6 +2555,7 @@ void PlumeGraphicsSystem::MarkVblank() {
   frame_counter_.fetch_add(1, std::memory_order_relaxed);
   {
     std::lock_guard lock(vblank_mutex_);
+    last_vblank_time_ = scheduled;
     vblank_count_.fetch_add(1, std::memory_order_release);
   }
   vblank_cv_.notify_all();

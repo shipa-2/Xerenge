@@ -240,7 +240,7 @@ final class Settings {
         for (Map.Entry<String, String> e : values.entrySet()) {
             String key = e.getKey();
             if (key.equals("colour_grade") || key.equals("brightness") || key.equals("shadow_lift")
-                    || key.equals("perf_overlay")
+                    || key.equals("perf_overlay") || key.equals("power_mode")
                     || key.equals("keyboard") || key.startsWith("keybind_")) {
                 out.append(key).append(" = ").append(e.getValue()).append('\n');
             }
@@ -323,6 +323,9 @@ final class Settings {
         if (!value("shadow_lift").isEmpty()) env("XERENGE_SHADOW_LIFT", value("shadow_lift"));
         if ("true".equals(value("fps_counter"))) env("XERENGE_FPS_SHOW", "1");
         if ("true".equals(value("perf_overlay"))) env("XERENGE_PERF_OVERLAY", "1");
+        // Stock unless the game's menu says otherwise: performance spins a core
+        // for a steadier frame rate, which costs a phone battery and heat.
+        if (!value("power_mode").isEmpty()) env("XERENGE_POWER_MODE", value("power_mode"));
         if ("true".equals(value("fps_30"))) env("XERENGE_FPS_30", "1");
         if ("true".equals(value("frame_generation"))) env("XERENGE_FRAME_GENERATION", "120");
         if ("false".equals(value("crash_interpolation"))) env("XERENGE_CRASH_INTERPOLATION", "0");

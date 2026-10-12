@@ -490,6 +490,18 @@ struct PlumeMenu::State {
                "FPS and frame-time graph in the corner."),
         [] { return std::string(BoolText(PerfOverlay())); },
         [](const std::string& v) { SetPerfOverlay(v == "true"); }));
+    advanced.items.push_back(Live(
+        Choose("Power mode", "power_mode", "stock",
+               {{"stock", "Stock"}, {"performance", "Performance"}},
+               "Performance keeps a core awake for a steadier 60 fps, a few watts more; "
+               "Stock sleeps between frames, with small dips."),
+        [] { return std::string(PowerModeName(GetPowerMode())); },
+        [](const std::string& v) {
+          PowerMode mode = PowerMode::kStock;
+          if (ParsePowerMode(v.c_str(), &mode)) {
+            SetPowerMode(mode);
+          }
+        }));
     advanced.items.push_back(Toggle("Present asynchronously", "async_present", false,
                                     "Hand a frame to the GPU and go on at once. It once showed "
                                     "black frames now and then."));

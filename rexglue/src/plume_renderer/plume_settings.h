@@ -48,4 +48,21 @@ void SetPerfOverlay(bool shown);
 bool CrashInterpolation();
 void SetCrashInterpolation(bool on);
 
+// XERENGE_POWER_MODE (stock or performance): how the title's thread waits for
+// the vblank between two frames. Stock sleeps for all of it, which lets the CPU
+// clock down; performance sleeps until a few milliseconds before the vblank and
+// spins the rest, so the next frame starts on a core that is still fast, at the
+// price of that core's power. See PaceSwapToVblank.
+enum class PowerMode : uint32_t { kStock, kPerformance };
+PowerMode GetPowerMode();
+void SetPowerMode(PowerMode mode);
+const char* PowerModeName(PowerMode mode);
+// "stock" or "performance" (a conf value or the environment's); false for
+// anything else.
+bool ParsePowerMode(const char* text, PowerMode* mode);
+
+// XERENGE_SPIN_LEAD_MS: how long before the vblank performance mode starts to
+// spin, 0 to 16 ms; 8 by default.
+float SpinLeadMs();
+
 }  // namespace rex::plume_renderer::settings

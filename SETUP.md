@@ -373,6 +373,18 @@ game is started. These apply at once:
   mode smoothing), and a bar graph of the last 120 frames against 50 ms - green up
   to 17.5 ms, yellow to 25, red above, a line at 16.7 ms. `perf_overlay` in
   `xerenge.conf`, `XERENGE_PERF_OVERLAY`, `./run.sh --perf`.
+* Power mode (Advanced): how the game's thread waits for the next frame.
+  Stock sleeps until the frame is due, which is the cheapest in power but lets
+  the CPU clock down, and the next heavy frame then starts on a slow core: a
+  handheld such as the Steam Deck dips below 60 now and then with most of
+  its power budget unused. Performance sleeps until 8 ms before the frame and
+  spins for the rest of the wait, so the clocks stay up and the frame time is
+  steady, for a few watts more (about 10 W against 8 on the Deck). Crash mode's
+  every-other-vblank pace is respected. `power_mode` (`stock` or `performance`)
+  in `xerenge.conf`, `XERENGE_POWER_MODE`, `./run.sh --power=MODE`;
+  `XERENGE_SPIN_LEAD_MS` changes the 8. Stock is the default everywhere, and on
+  a phone Performance only costs battery and heat. The log's "frame headroom"
+  line says the mode and how much of the wait was spun.
 * Anisotropic filtering (Graphics).
 * Colour grading, Brightness and Shadow lift (Post-processing).
 

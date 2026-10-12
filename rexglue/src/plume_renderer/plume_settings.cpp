@@ -31,6 +31,8 @@ struct State {
   std::atomic<bool> fps_shown{false};
   std::atomic<bool> crash_interpolation{true};
   std::atomic<bool> perf_overlay{false};
+  std::atomic<uint32_t> power_mode{uint32_t(PowerMode::kStock)};
+  std::atomic<float> spin_lead_ms{EnvFloat("XERENGE_SPIN_LEAD_MS", 8.0f, 0.0f, 16.0f)};
 
   State() {
     // The title's own request is capped at 4 on a phone by default (its GPU
@@ -52,6 +54,9 @@ struct State {
     const char* crash = std::getenv("XERENGE_CRASH_INTERPOLATION");
     crash_interpolation =
         crash == nullptr || (std::strcmp(crash, "0") != 0 && std::strcmp(crash, "false") != 0);
+    PowerMode mode = PowerMode::kStock;
+    ParsePowerMode(std::getenv("XERENGE_POWER_MODE"), &mode);
+    power_mode = uint32_t(mode);
   }
 };
 
@@ -61,6 +66,28 @@ State& Get() {
 }
 
 }  // namespace
+
+const char* PowerModeName(PowerMode mode) {
+  switch (mode) {
+    case PowerMode::kPerformance:
+      return "performance";
+    default:
+      return "stock";
+  }
+}
+
+bool ParsePowerMode(const char* text, PowerMode* mode) {
+  if (!text) {
+    return false;
+  }
+  for (PowerMode candidate : {PowerMode::kStock, PowerMode::kPerformance}) {
+    if (std::strcmp(text, PowerModeName(candidate)) == 0) {
+      *mode = candidate;
+      return true;
+    }
+  }
+  return false;
+}
 
 float ColourGrade() {
   return Get().colour_grade.load(std::memory_order_relaxed);
@@ -123,6 +150,17 @@ bool CrashInterpolation() {
 }
 void SetCrashInterpolation(bool on) {
   Get().crash_interpolation = on;
+}
+
+PowerMode GetPowerMode() {
+  return PowerMode(Get().power_mode.load(std::memory_order_relaxed));
+}
+void SetPowerMode(PowerMode mode) {
+  Get().power_mode = uint32_t(mode);
+}
+
+float SpinLeadMs() {
+  return Get().spin_lead_ms.load(std::memory_order_relaxed);
 }
 
 }  // namespace rex::plume_renderer::settings

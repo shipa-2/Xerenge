@@ -57,6 +57,11 @@
 #   ./run.sh --fps      frames per second in the top left corner (plume).
 #   ./run.sh --perf     the performance overlay (plume): fps, the frame time and a
 #                       graph of the last 120 frames in the top left corner.
+#   ./run.sh --power=MODE
+#                       how the title's thread waits for the next frame (plume):
+#                       stock sleeps, which lets the CPU clock down
+#                       and costs a dip now and then; performance sleeps, then
+#                       spins the last 8 ms, for a steady 60 at a few watts more.
 #   ./run.sh --render-resolution=WIDTHxHEIGHT
 #                       plume draws the frame at this size and scales it onto
 #                       the window, e.g. 1280x720, the size the title renders
@@ -212,6 +217,7 @@ for arg in "$@"; do
         --cull) CULL=1 ;;
         --fps) FPS_SHOW=1 ;;
         --perf) PERF_OVERLAY=1 ;;
+        --power=*) POWER_MODE=${arg#*=} ;;
         --windowed) WINDOWED=1 ;;
         --fullscreen) WINDOWED= ;;
         # Any other option goes to the game as it is: its own settings, e.g.
@@ -296,6 +302,7 @@ fi
 [ -n "$CULL" ] && XERENGE_CULL=1 && export XERENGE_CULL
 [ -n "$FPS_SHOW" ] && XERENGE_FPS_SHOW=1 && export XERENGE_FPS_SHOW
 [ -n "$PERF_OVERLAY" ] && XERENGE_PERF_OVERLAY=1 && export XERENGE_PERF_OVERLAY
+[ -n "$POWER_MODE" ] && XERENGE_POWER_MODE=$POWER_MODE && export XERENGE_POWER_MODE
 # shellcheck disable=SC2086 # a list of options, split on purpose
 [ -n "$GAME_ARGS" ] && set -- "$@" $GAME_ARGS
 
