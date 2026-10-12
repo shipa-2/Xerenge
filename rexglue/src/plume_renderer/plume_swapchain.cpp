@@ -10,6 +10,9 @@
 
 #include "diagnostics.h"
 #include "plume_renderer/plume_framegen.h"
+#include "plume_renderer/plume_menu.h"
+#include "plume_renderer/plume_menu_draw.h"
+#include "plume_renderer/plume_settings.h"
 
 #include <SDL3/SDL.h>
 #include <SDL3/SDL_vulkan.h>
@@ -32,15 +35,6 @@ namespace {
 // frame that missed a vblank by that much was held to the next - 30 fps.
 constexpr uint32_t kBufferCount = 3;
 constexpr plume::RenderFormat kSwapchainFormat = kColorTargetFormat;
-
-// XERENGE_FPS_SHOW=1: presents per second, in the top left corner.
-bool FpsShown() {
-  static const bool shown = [] {
-    const char* text = std::getenv("XERENGE_FPS_SHOW");
-    return text != nullptr && *text != '\0' && *text != '0';
-  }();
-  return shown;
-}
 
 // The counter, drawn as seven-segment digits made of cleared rectangles: no
 // font, no texture and no pipeline, so it costs nothing to draw and cannot
@@ -896,6 +890,21 @@ void PlumeSwapchain::CheckProbe() {
   }
 }
 
+void PlumeSwapchain::DrawMenu(plume::RenderCommandList* list, ImDrawData* data,
+                              const plume::RenderFramebuffer* framebuffer, uint32_t width,
+                              uint32_t height, uint32_t color_count, bool depth) {
+  if (!menu_draw_ && !menu_draw_failed_) {
+    menu_draw_ = std::make_unique<PlumeMenuDraw>();
+    if (!menu_draw_->Initialize(device_)) {
+      menu_draw_.reset();
+      menu_draw_failed_ = true;
+    }
+  }
+  if (menu_draw_) {
+    menu_draw_->Draw(list, data, {framebuffer, width, height, color_count, depth});
+  }
+}
+
 void PlumeSwapchain::ClearAndPresent(float r, float g, float b, float a, DrawEncodeFn encode,
                                      void* encode_context, ResolveFn resolve, bool hold) {
   hold = hold && scene_texture_ != nullptr;
@@ -1103,11 +1112,30 @@ void PlumeSwapchain::ClearAndPresent(float r, float g, float b, float a, DrawEnc
     encode(encode_context, command_list_.get(), width, height, draw_target, pass);
   }
 
-  const uint32_t fps = FpsShown() ? CountFps() : 0;
-  if (FpsShown() && !scene_texture_) {
-    // Drawn straight into the swap chain image: the counter goes on last.
+  const uint32_t fps = settings::FpsShown() ? CountFps() : 0;
+
+  // A snapshot is of the scene target, where the menu is not drawn (it goes
+  // on the window's image, after the copy). To show it in one, the menu is
+  // drawn into the target for the frame the snapshot is taken of.
+  double snapshot_seconds = 0.0;
+  const bool snapshot_now =
+      scene_texture_ && snapshot_pending_ < 0.0 && SnapshotDue(&snapshot_seconds);
+  PlumeMenu& menu = PlumeMenu::Get();
+  const bool menu_in_target = snapshot_now && menu.Visible();
+  ImDrawData* const menu_data =
+      menu.Visible() ? menu.Frame(menu_in_target ? width : window_width,
+                                  menu_in_target ? height : window_height)
+                     : nullptr;
+  if (!scene_texture_ && (settings::FpsShown() || menu_data)) {
+    // Drawn straight into the swap chain image: the counter and the menu go on last.
     command_list_->setFramebuffer(draw_framebuffer);
-    DrawFpsCounter(command_list_.get(), height, fps);
+    if (settings::FpsShown()) {
+      DrawFpsCounter(command_list_.get(), height, fps);
+    }
+    if (menu_data) {
+      DrawMenu(command_list_.get(), menu_data, draw_framebuffer, width, height, 1,
+               depth_texture_ != nullptr);
+    }
   }
   // Closing the pass is what makes copying out of the target legal: while it
   // is bound for writing, moving it to a copy source is not.
@@ -1115,6 +1143,26 @@ void PlumeSwapchain::ClearAndPresent(float r, float g, float b, float a, DrawEnc
 
   if (resolve && scene_texture_) {
     resolve(encode_context, command_list_.get(), width, height, draw_target, RenderPassBreak{});
+  }
+  if (menu_data && menu_in_target) {
+    // Last, so that the copy of the title's front buffer over the target (the
+    // resolve above) does not take it away. Attachments as the frame began.
+    if (depth_texture_) {
+      const plume::RenderTextureBarrier attachments[3] = {
+          plume::RenderTextureBarrier(draw_target, plume::RenderTextureLayout::COLOR_WRITE),
+          plume::RenderTextureBarrier(depth_texture_.get(),
+                                      plume::RenderTextureLayout::DEPTH_WRITE),
+          plume::RenderTextureBarrier(second_target, plume::RenderTextureLayout::COLOR_WRITE)};
+      command_list_->barriers(plume::RenderBarrierStage::GRAPHICS, nullptr, 0, attachments,
+                              second_target ? 3 : 2);
+    } else {
+      command_list_->barriers(
+          plume::RenderBarrierStage::GRAPHICS,
+          plume::RenderTextureBarrier(draw_target, plume::RenderTextureLayout::COLOR_WRITE));
+    }
+    DrawMenu(command_list_.get(), menu_data, draw_framebuffer, width, height,
+             second_target ? 2 : 1, depth_texture_ != nullptr);
+    command_list_->setFramebuffer(nullptr);
   }
 
   // What goes to the window: the scene target, or - FXAA and sharpening on -
@@ -1170,8 +1218,7 @@ void PlumeSwapchain::ClearAndPresent(float r, float g, float b, float a, DrawEnc
       probe_pending_ = true;
       probe_summary_ = g_plume_frame_summary;
     }
-    double snapshot_seconds = 0.0;
-    if (snapshot_pending_ < 0.0 && SnapshotDue(&snapshot_seconds)) {
+    if (snapshot_now) {
       if (!snapshot_buffer_ || snapshot_width_ != width || snapshot_height_ != height) {
         if (snapshot_buffer_ && snapshot_mapped_) {
           snapshot_buffer_->unmap();
@@ -1206,13 +1253,21 @@ void PlumeSwapchain::ClearAndPresent(float r, float g, float b, float a, DrawEnc
       out->copyTexture(swapchain_texture, shown);
     }
     // On the image shown, after the copy: drawn into the target, the counter
-    // would go wherever the title copies that target to.
-    if (FpsShown()) {
+    // and the menu would go wherever the title copies that target to.
+    const bool menu_on_image = menu_data && !menu_in_target;
+    if (settings::FpsShown() || menu_on_image) {
       out->barriers(plume::RenderBarrierStage::GRAPHICS,
                     plume::RenderTextureBarrier(swapchain_texture,
                                                 plume::RenderTextureLayout::COLOR_WRITE));
       out->setFramebuffer(framebuffer);
-      DrawFpsCounter(out, window_height, fps);
+      if (settings::FpsShown()) {
+        DrawFpsCounter(out, window_height, fps);
+      }
+      if (menu_on_image) {
+        // The window's images carry the depth target only when it is theirs in size.
+        DrawMenu(out, menu_data, framebuffer, window_width, window_height, 1,
+                 depth_texture_ != nullptr && width == window_width && height == window_height);
+      }
       out->setFramebuffer(nullptr);
     }
   }

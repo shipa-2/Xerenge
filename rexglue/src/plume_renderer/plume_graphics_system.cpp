@@ -4,6 +4,7 @@
  */
 #include <set>
 #include "plume_renderer/plume_graphics_system.h"
+#include "plume_renderer/plume_menu.h"
 #include "diagnostics.h"
 
 #include <cmath>
@@ -341,6 +342,9 @@ void PlumeGraphicsSystem::AttachPresentationWindow(ui::Window* window) {
     swapchain_.reset();
     return;
   }
+
+  // The keyboard for the in-game menu comes from the same window.
+  PlumeMenu::Get().AttachWindow(window_);
 
   draw_context_ = std::make_unique<PlumeDrawContext>();
   if (!draw_context_->Initialize(render_device_.get())) {
