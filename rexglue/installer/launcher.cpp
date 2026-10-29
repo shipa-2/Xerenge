@@ -204,6 +204,7 @@ std::vector<std::string> Prepare(const std::filesystem::path& dir, const Config&
   if (conf.Is("frame_generation", "true")) Env("XERENGE_FRAME_GENERATION", "120");
   if (conf.Is("crash_interpolation", "false")) Env("XERENGE_CRASH_INTERPOLATION", "0");
   if (!conf.Is("aspect_16_9", "false")) Env("XERENGE_ASPECT_16_9", "1");
+  if (conf.Has("menu_video")) Env("XERENGE_MENU_VIDEO", conf.Get("menu_video"));
 
   // Debug mode: the debug_* settings decide what is logged.
   std::string level = "info";

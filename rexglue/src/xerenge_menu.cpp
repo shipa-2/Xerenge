@@ -35,6 +35,7 @@
 #include "custom_music.h"
 #include "mods.h"
 #include "guest_memory.h"
+#include "widescreen.h"
 #include "xerenge_settings.h"
 
 extern "C" void __imp__sub_821EC580(PPCContext& __restrict, uint8_t*);
@@ -564,5 +565,7 @@ REX_HOOK_RAW(sub_821FF308) {
     g_achievement_popup = -1;
     ShowAchievementPopup(ctx, base, index);
   }
+  // A menu is shown: a video behind it is its background (widescreen.cpp).
+  xerenge::NoteMenuDrawn();
   __imp__sub_821FF308(ctx, base);
 }

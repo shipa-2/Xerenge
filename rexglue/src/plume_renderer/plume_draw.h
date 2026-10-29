@@ -250,6 +250,11 @@ struct GuestDrawSnapshot {
   bool interface_draw = false;
   // ... with that box against the screen's left edge (the music player).
   bool interface_left = false;
+  // ... or across the whole screen (the crash border, a full-screen flash).
+  bool interface_fill = false;
+  // ... or where its element goes, from the title's layout: 0 undecided,
+  // 1 left edge, 2 middle, 3 right edge.
+  uint8_t interface_edge = 0;
   // The title's 2D object the draw belongs to (0: none), moved to an edge whole.
   uint32_t interface_object = 0;
   // Alpha test (RB_COLORCONTROL, device + 0x2D7C) and its reference (device +

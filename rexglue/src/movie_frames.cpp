@@ -31,6 +31,7 @@
 #include <rex/system/kernel_state.h>
 
 #include "guest_memory.h"
+#include "widescreen.h"
 
 extern "C" void __imp__sub_82482680(PPCContext& __restrict, uint8_t*);  // Render
 extern "C" void __imp__sub_824823F0(PPCContext& __restrict, uint8_t*);  // retire callback
@@ -86,7 +87,12 @@ REX_HOOK_RAW(sub_82482680) {
       ctx.r3.u32 = renderer;
     }
   }
+  // A menu's background: over the whole frame (widescreen.cpp).
+  const bool menu_video = xerenge::EnterMenuVideo();
   __imp__sub_82482680(ctx, base);
+  if (menu_video) {
+    xerenge::LeaveMenuVideo();
+  }
   if (!Enabled()) {
     return;
   }

@@ -905,6 +905,8 @@ uint32_t GpuPhysical(uint32_t address) {
 void TakeDrawState(rex::system::IGraphicsSystem::GuestDrawBuffers& buffers) {
   buffers.from_interface = xerenge::DrawingInterface();
   buffers.interface_left = xerenge::DrawingInterfaceLeft();
+  buffers.interface_fill = xerenge::DrawingInterfaceFill();
+  buffers.interface_edge = xerenge::InterfaceEdge();
   buffers.interface_object = xerenge::InterfaceObject();
   std::lock_guard lock(g_state_mutex);
   buffers.vertex_shader_object = g_state.vertex_shader;
@@ -1121,6 +1123,7 @@ REX_HOOK_RAW(D3DDevice_ClearF) {
 
 REX_HOOK_RAW(D3DDevice_DrawIndexedVertices) {
   Trace(fmt::format("DrawIndexed prim={} rt={:08X}", ctx.r4.u32, CurrentRenderTarget()));
+  xerenge::TraceInterfaceDraw("DrawIndexed", uint32_t(ctx.lr), ctx.r1.u32, base);
   // The declaration read where it is used, so the stride that goes with it is
   // known. One sample says little; several with different strides pin down how
   // the words are framed, because the stride bounds every offset in them.
@@ -1185,6 +1188,8 @@ REX_HOOK_RAW(D3DDevice_DrawIndexedVertices) {
     buffers.start_index = ctx.r6.u32;
     buffers.from_interface = xerenge::DrawingInterface();
     buffers.interface_left = xerenge::DrawingInterfaceLeft();
+    buffers.interface_fill = xerenge::DrawingInterfaceFill();
+    buffers.interface_edge = xerenge::InterfaceEdge();
     buffers.interface_object = xerenge::InterfaceObject();
     // The target's size, as TakeDrawState gives the other draws: without it
     // the reflection's faces - 128x128 targets, all of them indexed draws -
@@ -1471,6 +1476,7 @@ REX_HOOK_RAW(D3DDevice_SetRenderTarget) {
 
 REX_HOOK_RAW(D3DDevice_DrawVertices) {
   Trace(fmt::format("DrawVertices prim={} rt={:08X}", ctx.r4.u32, CurrentRenderTarget()));
+  xerenge::TraceInterfaceDraw("DrawVertices", uint32_t(ctx.lr), ctx.r1.u32, base);
   NoteD3D(7, ctx);
   DescribeDraw("DrawVertices", ctx.r4.u32, 0, ctx.r5.u32, ctx.r6.u32);
   // DrawVertices(device, primitiveType, startVertex, vertexCount)
@@ -1520,6 +1526,7 @@ REX_HOOK_RAW(D3DDevice_DrawVertices) {
 // frame is encoded, by which time they are there.
 REX_HOOK_RAW(D3DDevice_BeginVertices) {
   Trace(fmt::format("BeginVertices prim={} n={} rt={:08X}", ctx.r4.u32, ctx.r5.u32, CurrentRenderTarget()));
+  xerenge::TraceInterfaceDraw("BeginVertices", uint32_t(ctx.lr), ctx.r1.u32, base);
   NoteD3D(8, ctx);
   const uint32_t primitive_type = ctx.r4.u32;
   const uint32_t vertex_count = ctx.r5.u32;

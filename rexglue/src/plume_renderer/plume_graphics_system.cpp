@@ -1026,6 +1026,8 @@ void PlumeGraphicsSystem::PublishDrawSnapshot(uint32_t prim_type, uint32_t sourc
   snap.d3d_vertex_buffer = buffers.vertex_buffer;
   snap.interface_draw = buffers.from_interface;
   snap.interface_left = buffers.interface_left;
+  snap.interface_fill = buffers.interface_fill;
+  snap.interface_edge = buffers.interface_edge;
   snap.interface_object = buffers.interface_object;
   snap.d3d_vertex_stride = buffers.vertex_stride;
   snap.d3d_index_buffer = buffers.index_buffer;

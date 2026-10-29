@@ -284,7 +284,25 @@ PER_FRAME_HOOK(sub_820EE348)  // CB4World::Render
 PER_FRAME_HOOK(sub_821632E0)  // CB4SparkArray::Render
 PER_FRAME_HOOK(sub_82182438)  // CB4PostProcessRenderer::Render
 PER_FRAME_INTERFACE_HOOK(sub_820B4BC0)  // CB4FlashManager::Render
-PER_FRAME_INTERFACE_HOOK(sub_821FF008)  // CB4CustomRevengeMeter::Render
+// ... and for one drawn through the race's camera, which is widened to the
+// screen (widescreen.cpp): over the whole frame, like the scene it shares the
+// camera with.
+#define PER_FRAME_INTERFACE_FILL_HOOK(name)                        \
+  extern "C" void __imp__##name(PPCContext& __restrict, uint8_t*); \
+  REX_HOOK_RAW(name) {                                             \
+    ++g_per_frame_depth;                                           \
+    xerenge::EnterInterfaceFill();                                 \
+    __imp__##name(ctx, base);                                      \
+    xerenge::LeaveInterfaceFill();                                 \
+    --g_per_frame_depth;                                           \
+  }
+
+// The revenge meter, the vertical flame on the results and menu screens. In
+// the 16:9 box it came out squeezed towards the middle by the screen's
+// widening (x 209 to 335 of 1280 where the menu's rank diamonds expect it
+// around 145 on a 21:9 screen); moved to the left edge as a HUD object, it
+// was off them the other way.
+PER_FRAME_INTERFACE_FILL_HOOK(sub_821FF008)  // CB4CustomRevengeMeter::Render
 PER_FRAME_HOOK(sub_822AE800)  // CB4SoundManager::Update
 
 // For the renderer (plume reads rex_frame_clock_provider): where the drawn state is

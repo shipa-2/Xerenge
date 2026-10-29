@@ -105,6 +105,9 @@ class InstallerWindow : public QWidget {
   // Performance power mode's spin before each vblank, in ms; edited in the
   // conf only, kept by an update.
   QString spin_lead_ms_ = "8";
+  // A menu's background video on a screen wider than 16:9: zoom, stretch or
+  // box; edited in the conf only, kept by an update.
+  QString menu_video_ = "zoom";
   QCheckBox* fps_box_ = nullptr;
   QCheckBox* portable_box_ = nullptr;
   QCheckBox* fps30_box_ = nullptr;

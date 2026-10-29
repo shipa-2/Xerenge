@@ -831,6 +831,9 @@ void InstallerWindow::LoadSettings(const QString& path) {
   if (values.contains("spin_lead_ms")) {
     spin_lead_ms_ = values.value("spin_lead_ms");
   }
+  if (values.contains("menu_video")) {
+    menu_video_ = values.value("menu_video");
+  }
   flag("fps_counter", fps_box_);
   flag("portable", portable_box_);
   flag("fps_30", fps30_box_);
@@ -910,6 +913,9 @@ void InstallerWindow::StartInstall() {
         << "windowed = " << (windowed_box_->isChecked() ? "true" : "false") << "\n"
         << "# The console's 16:9 with black bars on a wider screen; false: the game widens to fill it\n"
         << "aspect_16_9 = " << (aspect_box_->isChecked() ? "true" : "false") << "\n"
+        << "# Widened, the video behind a menu: zoom (fills the width, top and bottom cut),\n"
+        << "# stretch (fills it, too wide) or box (16:9, the menu runs past it into the bars)\n"
+        << "menu_video = " << menu_video_ << "\n"
         << "# The name shown to others online (empty: Player)\n"
         << "gamertag = " << gamertag_edit_->text().trimmed() << "\n"
         << "# Local multiplayer: the copies on one network find each other's games\n"
