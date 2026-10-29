@@ -58,6 +58,10 @@ thread_local uint32_t g_object_serial = 0;
 // The edge of the announcement being drawn (PanelEdge), from its panel, for the
 // elements after it in the same layer; 0 before any panel.
 thread_local uint8_t g_message_edge = 0;
+// Whether the layer being drawn is on a screen wider than 16:9 (WideningFactor),
+// read once a layer: when not, the element hooks leave the title alone - nothing
+// moves, and the vertex batch is not flushed where the title would not.
+thread_local bool g_widened = false;
 
 float GuestFloat(const uint8_t* base, uint32_t address) {
   const uint32_t bits = xerenge::LoadGuestU32(base, address);
@@ -74,6 +78,12 @@ void StoreGuestFloat(uint8_t* base, uint32_t address, float value) {
 
 // The screen the scene is drawn for against 16:9: above 1 wider (21:9, 18:9),
 // below it narrower (16:10, 4:3); 1 when it is 16:9, or the renderer has not said.
+// XERENGE_HUD_LOG: where the HUD's pieces go, read once.
+bool HudLog() {
+  static const bool on = std::getenv("XERENGE_HUD_LOG") != nullptr;
+  return on;
+}
+
 float WideningFactor() {
   const char* text = std::getenv("XERENGE_SCREEN_ASPECT");
   if (!text) {
@@ -161,7 +171,7 @@ bool EnterMenuVideo() {
     return false;
   }
   static std::atomic<bool> told{false};
-  if (std::getenv("XERENGE_HUD_LOG") && !told.exchange(true)) {
+  if (HudLog() && !told.exchange(true)) {
     REXLOG_INFO("widescreen: a menu's background video, over the whole frame");
   }
   ++g_interface_fill_depth;
@@ -174,7 +184,7 @@ void LeaveMenuVideo() {
 
 void EnterInterfaceObject() {
   static std::atomic<bool> told{false};
-  if (std::getenv("XERENGE_HUD_LOG") && !told.exchange(true)) {
+  if (HudLog() && !told.exchange(true)) {
     REXLOG_INFO("widescreen: first HUD object drawn");
   }
   ++g_interface_depth;
@@ -332,7 +342,7 @@ void ForgetLayerEdges() {
     forgotten = g_layer_edges.size();
     g_layer_edges.clear();
   }
-  if (forgotten != 0 && std::getenv("XERENGE_HUD_LOG")) {
+  if (forgotten != 0 && HudLog()) {
     REXLOG_INFO("widescreen: a new HUD: {} layer edges forgotten", forgotten);
   }
 }
@@ -358,7 +368,7 @@ REX_HOOK_RAW(sub_821931F8) {
     std::lock_guard lock(g_layer_edges_mutex);
     g_layer_edges[layer] = edge;
   }
-  if (std::getenv("XERENGE_HUD_LOG")) {
+  if (HudLog()) {
     REXLOG_INFO("widescreen: component {:08X} layer {:08X} align {} -> {}", component, layer,
                 align, edge == 1 ? "left" : edge == 3 ? "right" : edge == 2 ? "middle" : "unset");
   }
@@ -371,11 +381,14 @@ REX_HOOK_RAW(sub_821931F8) {
 extern "C" void __imp__sub_82353218(PPCContext& __restrict, uint8_t*);
 REX_HOOK_RAW(sub_82353218) {
   const uint8_t outer_message_edge = g_message_edge;
+  const bool outer_widened = g_widened;
   g_message_edge = 0;
+  g_widened = WideningFactor() > 1.0f;
   xerenge::EnterInterfaceObject();
   __imp__sub_82353218(ctx, base);
   xerenge::LeaveInterfaceObject();
   g_message_edge = outer_message_edge;
+  g_widened = outer_widened;
 }
 
 // Gt2dRenderer batches the vertices the elements give it in one buffer
@@ -474,7 +487,7 @@ uint8_t PanelEdge(const uint8_t* base, uint32_t rect) {
 // list node (RenderObjects's r31): one render function draws many elements.
 void LogElement(const char* name, uint32_t node, const uint8_t* base, uint32_t rect,
                 uint8_t edge, uint8_t layer_edge) {
-  static const bool on = std::getenv("XERENGE_HUD_LOG") != nullptr;
+  const bool on = HudLog();
   if (!on) {
     return;
   }
@@ -510,7 +523,7 @@ constexpr uint32_t kNodeLayer = 64;
 #define ELEMENT_HOOK_FULL(name, depth, centred, sticky, panel)           \
   extern "C" void __imp__##name(PPCContext& __restrict, uint8_t*);       \
   REX_HOOK_RAW(name) {                                                   \
-    if (uint32_t(ctx.lr) != kRenderObjectsLoop) {                        \
+    if (uint32_t(ctx.lr) != kRenderObjectsLoop || !g_widened) {         \
       __imp__##name(ctx, base);                                          \
       return;                                                            \
     }                                                                    \
