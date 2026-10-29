@@ -2,8 +2,8 @@
 
 Xerenge looks for mods in a `mods` folder inside the game's files - the folder
 that holds `default.xex`, `fe`, `language` and the rest (`game` in an installed
-copy, `game_eu`/`game_us` in a checkout). Each mod is a folder of its own with a
-`mod.cfg` in it:
+copy, `game_eu`/`game_us` in a checkout; the installer makes it). Each mod is a
+folder of its own with a `mod.cfg` in it:
 
 ```
 game/

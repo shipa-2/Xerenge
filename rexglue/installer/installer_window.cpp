@@ -1072,7 +1072,12 @@ void InstallerWindow::StartInstall() {
                      return CopyRuntime(progress);
                    });
                  }});
-  steps_.append({tr("Writing the settings"), 1, [this] { StepFinished(WriteSettings()); }});
+  steps_.append({tr("Writing the settings"), 1, [this] {
+                   // The folder mods are put in (MODDING.md), there to be found
+                   // beside the game's own files.
+                   QDir().mkpath(QDir(install_dir_).filePath("game/mods"));
+                   StepFinished(WriteSettings());
+                 }});
   if (shortcuts_) {
     steps_.append({tr("Creating the shortcuts"), 1, [this] { StepFinished(CreateShortcuts()); }});
   }
