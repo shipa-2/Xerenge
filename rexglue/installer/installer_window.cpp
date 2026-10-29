@@ -216,8 +216,14 @@ QString DefaultInstallDir() {
 
 QString CopyFile(const QString& from, const QString& to) {
   QFile::remove(to);
-  if (!QFile::copy(from, to)) {
-    return QObject::tr("Could not copy %1 to %2").arg(from, to);
+  QFile source(from);
+  if (!source.copy(to)) {
+    // What usually stands in the way on Windows: the game still running, its
+    // files in use, or a folder the installer may not write to (GitHub #65).
+    return QObject::tr("Could not copy %1 to %2 (%3). Close the game if it is running; a folder "
+                       "such as Program Files needs the installer run as administrator, or "
+                       "choose a folder of your own.")
+        .arg(from, to, source.errorString());
   }
   // Keep the permissions: the game and its libraries must stay executable.
   QFile::setPermissions(to, QFile::permissions(from));
@@ -992,6 +998,21 @@ void InstallerWindow::StartInstall() {
   if (!QDir().mkpath(install_dir_)) {
     Refuse(tr("Cannot create %1.").arg(install_dir_));
     return;
+  }
+  // Found out before the long steps, not at the end of them (GitHub #59, #65):
+  // a folder the installer may not write to - Program Files without
+  // administrator rights, a folder an antivirus guards.
+  {
+    QFile probe(QDir(install_dir_).filePath(".xerenge-write-test"));
+    if (!probe.open(QIODevice::WriteOnly)) {
+      Refuse(tr("Cannot write into %1 (%2). Run the installer as administrator, choose another "
+                "folder, or allow the installer in your antivirus (Windows Security: "
+                "Ransomware protection > Controlled folder access).")
+                 .arg(install_dir_, probe.errorString()));
+      return;
+    }
+    probe.close();
+    probe.remove();
   }
   log_path_ = QDir(install_dir_).filePath("install.log");
   QFile::remove(log_path_);

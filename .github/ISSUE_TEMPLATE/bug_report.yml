@@ -4,7 +4,7 @@ body:
   - type: markdown
     attributes:
       value: |
-        A report without the log, the version and the hardware has to wait for questions first and is looked at many times later. See [CONTRIBUTING.md](https://github.com/shipa-2/Xerenge/blob/main/CONTRIBUTING.md).
+        **The log is required: an issue without burnout.log attached is closed as invalid, without further explanation.** A report without the version and the hardware has to wait for questions first and is looked at many times later. See [CONTRIBUTING.md](https://github.com/shipa-2/Xerenge/blob/main/CONTRIBUTING.md).
   - type: input
     id: version
     attributes:
@@ -31,7 +31,7 @@ body:
     attributes:
       label: Log and settings
       description: |
-        Attach burnout.log from a run with the problem (Windows - %LOCALAPPDATA%\xerenge-burnout, Linux - ~/.local/state/xerenge-burnout, macOS - ~/Library/Logs/xerenge-burnout, Android - the installer's Log folder) and xerenge.conf from the install folder. Drag the files here.
+        Attach burnout.log from a run with the problem (Windows - %LOCALAPPDATA%\xerenge-burnout, Linux - ~/.local/state/xerenge-burnout, macOS - ~/Library/Logs/xerenge-burnout, Android - the installer's Log folder) and xerenge.conf from the install folder. Drag the files here (zip them if GitHub refuses them; no links to file hosts). Required: without the log the issue is closed as invalid.
     validations:
       required: true
   - type: textarea

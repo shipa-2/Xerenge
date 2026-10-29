@@ -5,6 +5,11 @@ comes with everything needed gets looked at first. One that says only "it doesn'
 work" has to wait for a round of questions before anyone can start, and is looked
 at **many times later** than a complete one - or closed if the details never come.
 
+**A report without a log is closed as invalid, without further explanation.**
+The log is the one thing every report needs: without it nothing can be
+checked, whatever the problem is. If the installer is what failed, attach its
+`install.log` (the error names where it is) instead.
+
 ## Before you open an issue
 
 - Update to the **latest build artifact** and check that the problem is still there. Open
@@ -28,8 +33,9 @@ at **many times later** than a complete one - or closed if the details never com
 3. **The settings:** what you changed in the installer (renderer, resolution,
    hacks, server address). Attaching `xerenge.conf` from the install folder is
    the easiest way.
-4. **The log** of a run where the problem happened, attached as a file (not
-   pasted into the text):
+4. **The log - required.** The log of a run where the problem happened, attached
+   to the issue as a file (not pasted into the text, not a link to a file host;
+   zip it if GitHub refuses it as it is):
    - Windows: `%LOCALAPPDATA%\xerenge-burnout\burnout.log`
    - Linux: `~/.local/state/xerenge-burnout/burnout.log`
    - macOS: `~/Library/Logs/xerenge-burnout/burnout.log`
@@ -37,6 +43,7 @@ at **many times later** than a complete one - or closed if the details never com
      copied there.
 
    The log is overwritten on the next start, so copy it right after the run.
+   Without the log the issue is closed as invalid.
 5. **Steps to reproduce:** what you did, what you expected and what happened
    instead. Where in the game (event, track, menu), and whether it happens every
    time.
