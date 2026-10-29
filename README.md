@@ -178,8 +178,6 @@ with their descriptions under Player File > Stats.
 
 Open:
 
-* The Wayland surface extension is offered by the loader but never enabled, so
-  runs go through X11.
 * plume: a black frame still flashes very occasionally, and a texture
   sometimes shows wrong for half a second during a race.
 

@@ -717,15 +717,20 @@ jobs:
 
           **Online play works out of the box** - the installer points at the server (`94639.snk.wtf`), where everyone plays together; there is nothing to set up. An install from before the server is moved to it when the installer runs over it.
 
-          **What's new in 0.4.8:**
-          - **Settings in the game**: Driver Details > Settings has GRAPHICS, HACKS and DEBUG pages next to the sound rows - the installer's options as the game's own rows, kept in `xerenge.conf`. Bloom, motion blur, anti-aliasing and sharpening change at once; for the rest, leaving Settings offers to restart the game (A restarts it, B keeps playing). The European release also gets a Language row there.
-          - **A real launcher instead of scripts**: `Burnout Revenge.exe` on Windows, `burnout_revenge` on Linux and macOS, beside the installed game - it reads `xerenge.conf` and starts the game. **Steam users:** the old `Burnout Revenge.cmd` / `burnout-revenge` are gone; add the new launcher to Steam as a non-Steam game instead (GitHub #26).
-          - **Xbox Live and Burnout Clips connect in seconds** again, not after 2 minutes (GitHub #24).
-          - **EA Trax no longer goes silent** after skipping a challenge-complete, rank-up or signature takedown video (GitHub #29).
-          - **GRAPHICS in the pause menu**: the race's Options get bloom, motion blur, sharpening and anti-aliasing, changed without leaving the race.
-          - **News**: the game's News screen shows the latest Xerenge release's notes.
-          - **Debug > RenderDoc**: off hides RenderDoc's "Capturing Vulkan" overlay where RenderDoc is installed, e.g. on a Steam Deck (GitHub #31).
-          - **Online**: a player joining a game hosted through another server is told about it before the host invites them (GitHub #34).
+          **What's new in 0.4.9:**
+          - **Wide screens**: on a screen wider than 16:9 the race HUD goes to the screen's edges, the crash border and flashes cover the whole frame, and the menus' background videos fill the width (`menu_video` = zoom, stretch or box in `xerenge.conf`). Keep 16:9 turns it off. By GOATS2K (GitHub #53).
+          - **Your own music**: Driver Details > Song Manager, LT switches EA Trax for the songs of a `music` folder beside the game (MP3 and WMA, names from their tags), RT sets their order. The folder is read again each time EA Trax is opened.
+          - **Mods**: translations into languages the game was never released in, with fonts of their own - see `MODDING.md`. The installer makes `game/mods`; the Russian mod comes with the release.
+          - **Saves from Xenia and from a console**: a Xenia profile folder put beside the game's saves, or a save package in `import/`, is taken in at the first start (GitHub #46).
+          - **Button icons**: Driver Details > Settings > BUTTON ICONS - XBOX (the game's own) or PLAYSTATION.
+          - **Achievements**: a notice as one is earned, and the full list under Player File > Stats.
+          - **Online**: players on the internet reach each other through their routers (NAT traversal, GitHub #49); quick match finds only games of the kind asked for, Ranked or Player Match (GitHub #35).
+          - **Phones with a Mali GPU**: textures are re-encoded for the GPU on all cores, and the first start prepares them in the background, so tracks and menus load without stalls (GitHub #32).
+          - **Portable**: a box in the installer keeps the saves, caches and logs in the game's folder (GitHub #42).
+          - **Linux**: runs natively on Wayland in a Wayland session.
+          - **Smoother starts**: shader pipelines are made ahead and the driver's compiled ones kept between runs.
+          - **Installer**: says why a copy failed and what to do (the game running, Program Files, Controlled folder access), and checks the folder before the long steps (GitHub #59, #65).
+          - B on the main menu asks whether to quit the game.
 
           EOF
           gh release create "v$VERSION" --title "$VERSION" --latest --target "$GITHUB_SHA" \
