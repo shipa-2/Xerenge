@@ -1242,6 +1242,12 @@ Fields Server::GameRecord(const Game& game, const Connection& to) const {
     const bool across = player->role == Role::kLobby && !IsLocalAddress(seen) && seen != seen_to;
     record["ADDR" + n] = across ? seen : own;
     record["LADDR" + n] = record["ADDR" + n];  // which of the two the title picks is not known
+    // ... and, for Xerenge (the title passes over a field it does not know), the
+    // address on its own network that its XNADDR names: a peer finds by it
+    // the player its title is asking to reach, and sends to ADDR (GitHub #67).
+    if (across) {
+      record["XLADDR" + n] = own;
+    }
     record["MADDR" + n] = player->maddr;
     record["OPPART" + n] = "0";
     record["OPPARAM" + n] = player->user_params;

@@ -17,10 +17,12 @@
 #include <algorithm>
 #include <cstdint>
 #include <cstring>
+#include <map>
 #include <string>
 
 #include <rex/cvar.h>
 #include <rex/hook.h>
+#include <rex/kernel/xam/online.h>
 #include <rex/logging.h>
 #include <rex/ppc.h>
 #include "ealobby/aries.h"
@@ -683,6 +685,70 @@ REX_HOOK_RAW(sub_8240D398) {
     std::string text;
     if ((selector == 0x686F7374u || selector == 0x73656C66u || selector == 0x73756964u) &&
         pointer != 0) {
+namespace {
+
+// An IPv4 as text ("192.168.0.5") in network byte order; 0 when it is not one.
+uint32_t DottedAddress(const std::string& text) {
+  uint8_t bytes[4] = {};
+  int part = 0;
+  uint32_t value = 0;
+  bool digit = false;
+  for (size_t i = 0; i <= text.size(); ++i) {
+    const char c = i < text.size() ? text[i] : '.';
+    if (c >= '0' && c <= '9') {
+      value = value * 10 + uint32_t(c - '0');
+      digit = true;
+      if (value > 255) return 0;
+    } else if (c == '.' && digit && part < 4) {
+      bytes[part++] = uint8_t(value);
+      value = 0;
+      digit = false;
+    } else {
+      return 0;
+    }
+  }
+  uint32_t address = 0;
+  if (part == 4) std::memcpy(&address, bytes, 4);
+  return address;
+}
+
+bool OnOwnNetwork(uint32_t address_be) {
+  uint8_t b[4];
+  std::memcpy(b, &address_be, 4);
+  return b[0] == 10 || (b[0] == 172 && b[1] >= 16 && b[1] < 32) || (b[0] == 192 && b[1] == 168) ||
+         (b[0] == 100 && b[1] >= 64 && b[1] < 128);
+}
+
+// A game record's players as the lobby server gives them: one behind another
+// router at ADDRn, its router's address, with XLADDRn the address on its own
+// network that its XNADDR names - for the title's peer addresses (GitHub #67).
+void NoteRecordAddresses(const std::string& text) {
+  std::map<std::string, std::string> fields;
+  size_t start = 0;
+  while (start < text.size()) {
+    size_t end = text.find('\n', start);
+    if (end == std::string::npos) end = text.size();
+    const std::string line = text.substr(start, end - start);
+    if (const size_t equals = line.find('='); equals != std::string::npos) {
+      fields[line.substr(0, equals)] = line.substr(equals + 1);
+    }
+    start = end + 1;
+  }
+  for (int i = 0; i < 16; ++i) {
+    const auto pub = fields.find("ADDR" + std::to_string(i));
+    const auto own = fields.find("XLADDR" + std::to_string(i));
+    if (pub == fields.end() || own == fields.end()) continue;
+    const uint32_t public_be = DottedAddress(pub->second);
+    const uint32_t local_be = DottedAddress(own->second);
+    if (public_be && local_be && public_be != local_be && OnOwnNetwork(local_be) &&
+        !OnOwnNetwork(public_be)) {
+      rex::kernel::xam::NoteLobbyAddress(local_be, public_be);
+    }
+  }
+}
+
+}  // namespace
+
       for (uint32_t i = 0; i < 24; ++i) {
         const uint8_t c = *xerenge::GuestPointer(base, pointer + i);
         if (c == 0) {
@@ -695,6 +761,7 @@ REX_HOOK_RAW(sub_8240D398) {
     // the back chain (each frame's word 0 the caller's frame, the return
     // address 8 below it) - the game ends a session there, and why it did is
     // a few calls up.
+    NoteRecordAddresses(std::string(reinterpret_cast<const char*>(xerenge::GuestPointer(base, text)), length));
     std::string callers;
     if (selector == 0x73746F70u) {
       callers = fmt::format(" from {:08X}", uint32_t(ctx.lr));
