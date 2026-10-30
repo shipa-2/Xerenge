@@ -14,9 +14,13 @@
 #include <cstdint>
 #include <cstdio>
 #include <cstdlib>
+#include <chrono>
 #include <cstring>
 
 #include <rex/hook.h>
+#include <rex/input/input_system.h>
+#include <rex/runtime.h>
+#include <rex/system/kernel_state.h>
 #include <rex/logging.h>
 #include <rex/ppc.h>
 
@@ -38,6 +42,11 @@ uint32_t LoadU32(uint8_t* base, uint32_t address) {
 uint8_t LoadU8(uint8_t* base, uint32_t address) {
   return *xerenge::GuestPointer(base, address);
 }
+
+// LB: the song before (GitHub #55). Set by the music update's hook, taken by
+// the skip control's, which then answers pressed - the game's own skip, after
+// the playing order's next place (+740) was moved back.
+bool g_back_pending = false;
 
 uint32_t g_lines = 0;
 bool Room() {
@@ -64,6 +73,11 @@ REX_HOOK_RAW(sub_8210F940) {
     last_binding = binding;
   }
   __imp__sub_8210F940(ctx, base);
+  if (action == kSkipAction && g_back_pending) {
+    g_back_pending = false;
+    ctx.r3.u64 = 1;
+    return;
+  }
   if (action == kSkipAction) {
     // The press as a frame sees it. The control is "just pressed": button 20
     // down now (+37 + 20 of the pad) and not at the poll before (+9 + 20). The
@@ -114,6 +128,39 @@ REX_HOOK_RAW(sub_822CB4F0) {
         REXLOG_INFO("music: image dumped to {}", path);
       }
     }
+  }
+  // LB: back to the song's start, or - within its first three seconds - to the
+  // song before (GitHub #55). The song is started again by the game's own skip
+  // (RB's): the playing order's next place (+740, an index into the order at
+  // +192 of the +736 songs on) moved back one place - the song playing - or two
+  // - the one before it.
+  {
+    using Clock = std::chrono::steady_clock;
+    static uint32_t song = ~0u;
+    static Clock::time_point started = Clock::now();
+    static bool lb_was = false;
+    const uint32_t playing = LoadU32(base, music + 748);
+    if (playing != song) {
+      song = playing;
+      started = Clock::now();
+    }
+    auto* kernel_state = REX_KERNEL_STATE();
+    auto* input = kernel_state ? static_cast<rex::input::InputSystem*>(kernel_state->emulator()->input_system())
+                               : nullptr;
+    rex::input::X_INPUT_STATE state{};
+    const bool lb = input && input->GetState(0, &state) == 0 && (uint16_t(state.gamepad.buttons) & 0x0100);
+    const uint32_t count = LoadU32(base, music + 736);
+    if (lb && !lb_was && count != 0 && LoadU32(base, music + 784) == 0 && LoadU32(base, music + 20) != 2) {
+      const bool restart = Clock::now() - started > std::chrono::seconds(3);
+      const uint32_t back = restart || count == 1 ? 1 : 2;
+      const uint32_t next = LoadU32(base, music + 740) % count;
+      const uint32_t place = (next + count * 2 - back) % count;
+      xerenge::StoreGuestU32(base, music + 740, place);
+      g_back_pending = true;
+      started = Clock::now();
+      REXLOG_INFO("music: LB - {}", restart ? "the song from its start" : "the song before");
+    }
+    lb_was = lb;
   }
   __imp__sub_822CB4F0(ctx, base);
   struct Fields {
