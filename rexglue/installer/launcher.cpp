@@ -245,8 +245,13 @@ std::vector<std::string> Prepare(const std::filesystem::path& dir, const Config&
   if (conf.Has("video_driver")) {
     Env("SDL_VIDEODRIVER", conf.Get("video_driver"));
   } else if (!driver || !*driver) {
+    // Started from RenderDoc: X11, whose window its capture layer hooks (a
+    // Wayland one it does not, and F12 captured nothing).
     const char* wayland = std::getenv("WAYLAND_DISPLAY");
-    Env("SDL_VIDEODRIVER", wayland && *wayland && renderer == "plume" ? "wayland" : "x11");
+    const char* renderdoc = std::getenv("ENABLE_VULKAN_RENDERDOC_CAPTURE");
+    Env("SDL_VIDEODRIVER", wayland && *wayland && renderer == "plume" && !(renderdoc && *renderdoc)
+                               ? "wayland"
+                               : "x11");
   }
   // The game's libraries beside it.
   const char* library_path = std::getenv("LD_LIBRARY_PATH");

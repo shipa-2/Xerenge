@@ -260,9 +260,12 @@ elif [ "$PRESET" = mac-arm64 ] || [ "$PRESET" = mac-amd64 ]; then
     :
 else
     # Native Wayland in a Wayland session (plume makes its surface through
-    # SDL), X11 otherwise and for xenos; SDL_VIDEODRIVER set already wins.
+    # SDL), X11 otherwise, for xenos and under RenderDoc (--capture, or started
+    # from RenderDoc: its capture layer does not hook a Wayland window, and F12
+    # captured nothing); SDL_VIDEODRIVER set already wins.
     if [ -z "$SDL_VIDEODRIVER" ]; then
-        if [ -n "$WAYLAND_DISPLAY" ] && [ "$GPU_BACKEND" != xenos ]; then
+        if [ -n "$WAYLAND_DISPLAY" ] && [ "$GPU_BACKEND" != xenos ] && [ "$MODE" != capture ] &&
+           [ -z "$ENABLE_VULKAN_RENDERDOC_CAPTURE" ]; then
             SDL_VIDEODRIVER=wayland
         else
             SDL_VIDEODRIVER=x11
