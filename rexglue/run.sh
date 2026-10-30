@@ -263,9 +263,12 @@ else
     # SDL), X11 otherwise, for xenos and under RenderDoc (--capture, or started
     # from RenderDoc: its capture layer does not hook a Wayland window, and F12
     # captured nothing); SDL_VIDEODRIVER set already wins.
+    # RenderDoc on in xerenge.conf (renderdoc, the Debug page's row): the game
+    # loads it, and its layer on a Wayland window left no picture at all.
+    RENDERDOC_CONF=$(sed -n "s/^[[:space:]]*renderdoc[[:space:]]*=[[:space:]]*//p" ../xerenge.conf 2>/dev/null | tail -n 1 | tr -d "[:space:]")
     if [ -z "$SDL_VIDEODRIVER" ]; then
         if [ -n "$WAYLAND_DISPLAY" ] && [ "$GPU_BACKEND" != xenos ] && [ "$MODE" != capture ] &&
-           [ -z "$ENABLE_VULKAN_RENDERDOC_CAPTURE" ]; then
+           [ -z "$ENABLE_VULKAN_RENDERDOC_CAPTURE" ] && [ "$RENDERDOC_CONF" = false ]; then
             SDL_VIDEODRIVER=wayland
         else
             SDL_VIDEODRIVER=x11

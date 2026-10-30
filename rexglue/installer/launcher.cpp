@@ -245,11 +245,13 @@ std::vector<std::string> Prepare(const std::filesystem::path& dir, const Config&
   if (conf.Has("video_driver")) {
     Env("SDL_VIDEODRIVER", conf.Get("video_driver"));
   } else if (!driver || !*driver) {
-    // Started from RenderDoc: X11, whose window its capture layer hooks (a
-    // Wayland one it does not, and F12 captured nothing).
+    // RenderDoc on (renderdoc in the conf, the Debug page's row), or started
+    // from RenderDoc: X11. Its capture layer does not hook a Wayland window,
+    // and loaded on one it left no picture at all.
     const char* wayland = std::getenv("WAYLAND_DISPLAY");
     const char* renderdoc = std::getenv("ENABLE_VULKAN_RENDERDOC_CAPTURE");
-    Env("SDL_VIDEODRIVER", wayland && *wayland && renderer == "plume" && !(renderdoc && *renderdoc)
+    const bool renderdoc_on = !conf.Is("renderdoc", "false") || (renderdoc && *renderdoc);
+    Env("SDL_VIDEODRIVER", wayland && *wayland && renderer == "plume" && !renderdoc_on
                                ? "wayland"
                                : "x11");
   }
