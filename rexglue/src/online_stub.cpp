@@ -636,55 +636,6 @@ REX_HOOK_RAW(sub_824095D8) {
 }
 
 
-// LobbyApi's game record from its text (record, text): the text's length as
-// it reaches the parser, and the players it took out of it - the count at
-// record+524, the names from record+536, 140 bytes apart. A host that does
-// not find itself among them ends the game.
-REX_HOOK_RAW(sub_82411A58) {
-  const uint32_t record = ctx.r3.u32;
-  const uint32_t text = ctx.r4.u32;
-  size_t length = 0;
-  if (Online() && text) {
-    while (length < 8192 && *xerenge::GuestPointer(base, text + uint32_t(length)) != 0) {
-      ++length;
-    }
-  }
-  __imp__sub_82411A58(ctx, base);
-  if (Online() && record) {
-    const uint32_t count = xerenge::LoadGuestU32(base, record + 524);
-    std::string players;
-    for (uint32_t i = 0; i < count && i < 8; ++i) {
-      std::string name;
-      for (uint32_t j = 0; j < 16; ++j) {
-        const char c = char(*xerenge::GuestPointer(base, record + 536 + i * 140 + j));
-        if (c == 0) {
-          break;
-        }
-        name += (c >= 32 && c < 127) ? c : '?';
-      }
-      players += " \"" + name + "\"";
-    }
-    REXLOG_INFO("--online: game record parsed from {} byte(s) of text: count {}, players{}",
-                length, int32_t(count), players);
-  }
-}
-// ProtoMangleControl(ref, selector, value, value2, pointer): how the game's
-// net layer tells DirtySock's session code about a game - 'host' (the host's
-// XUID, 8 bytes at ref+0x70), 'suid', 'sess' (create the Xbox Live session)
-// and more. Logged per selector, with the XUID where it is one.
-REX_HOOK_RAW(sub_8240D398) {
-  if (Online()) {
-    const uint32_t selector = ctx.r4.u32;
-    const uint32_t pointer = ctx.r7.u32;
-    std::string name;
-    for (int shift = 24; shift >= 0; shift -= 8) {
-      const char c = char((selector >> shift) & 0xFF);
-      name += (c >= 32 && c < 127) ? c : '.';
-    }
-    // 'host', 'self' and 'suid' take an XUID as "$" and hex; its text, as given.
-    std::string text;
-    if ((selector == 0x686F7374u || selector == 0x73656C66u || selector == 0x73756964u) &&
-        pointer != 0) {
 namespace {
 
 // An IPv4 as text ("192.168.0.5") in network byte order; 0 when it is not one.
@@ -749,6 +700,56 @@ void NoteRecordAddresses(const std::string& text) {
 
 }  // namespace
 
+// LobbyApi's game record from its text (record, text): the text's length as
+// it reaches the parser, and the players it took out of it - the count at
+// record+524, the names from record+536, 140 bytes apart. A host that does
+// not find itself among them ends the game.
+REX_HOOK_RAW(sub_82411A58) {
+  const uint32_t record = ctx.r3.u32;
+  const uint32_t text = ctx.r4.u32;
+  size_t length = 0;
+  if (Online() && text) {
+    while (length < 8192 && *xerenge::GuestPointer(base, text + uint32_t(length)) != 0) {
+      ++length;
+    }
+    NoteRecordAddresses(std::string(reinterpret_cast<const char*>(xerenge::GuestPointer(base, text)), length));
+  }
+  __imp__sub_82411A58(ctx, base);
+  if (Online() && record) {
+    const uint32_t count = xerenge::LoadGuestU32(base, record + 524);
+    std::string players;
+    for (uint32_t i = 0; i < count && i < 8; ++i) {
+      std::string name;
+      for (uint32_t j = 0; j < 16; ++j) {
+        const char c = char(*xerenge::GuestPointer(base, record + 536 + i * 140 + j));
+        if (c == 0) {
+          break;
+        }
+        name += (c >= 32 && c < 127) ? c : '?';
+      }
+      players += " \"" + name + "\"";
+    }
+    REXLOG_INFO("--online: game record parsed from {} byte(s) of text: count {}, players{}",
+                length, int32_t(count), players);
+  }
+}
+// ProtoMangleControl(ref, selector, value, value2, pointer): how the game's
+// net layer tells DirtySock's session code about a game - 'host' (the host's
+// XUID, 8 bytes at ref+0x70), 'suid', 'sess' (create the Xbox Live session)
+// and more. Logged per selector, with the XUID where it is one.
+REX_HOOK_RAW(sub_8240D398) {
+  if (Online()) {
+    const uint32_t selector = ctx.r4.u32;
+    const uint32_t pointer = ctx.r7.u32;
+    std::string name;
+    for (int shift = 24; shift >= 0; shift -= 8) {
+      const char c = char((selector >> shift) & 0xFF);
+      name += (c >= 32 && c < 127) ? c : '.';
+    }
+    // 'host', 'self' and 'suid' take an XUID as "$" and hex; its text, as given.
+    std::string text;
+    if ((selector == 0x686F7374u || selector == 0x73656C66u || selector == 0x73756964u) &&
+        pointer != 0) {
       for (uint32_t i = 0; i < 24; ++i) {
         const uint8_t c = *xerenge::GuestPointer(base, pointer + i);
         if (c == 0) {
@@ -761,7 +762,6 @@ void NoteRecordAddresses(const std::string& text) {
     // the back chain (each frame's word 0 the caller's frame, the return
     // address 8 below it) - the game ends a session there, and why it did is
     // a few calls up.
-    NoteRecordAddresses(std::string(reinterpret_cast<const char*>(xerenge::GuestPointer(base, text)), length));
     std::string callers;
     if (selector == 0x73746F70u) {
       callers = fmt::format(" from {:08X}", uint32_t(ctx.lr));
