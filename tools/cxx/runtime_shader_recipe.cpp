@@ -4,6 +4,7 @@
 #include "shader_containers.hpp"
 #include "sha256.hpp"
 
+#include <optional>
 #include <algorithm>
 #include <cstdio>
 #include <cstring>
@@ -59,9 +60,12 @@ struct TemplateHit {
     std::string micro;
 };
 
-const TemplateHit* BestTemplate(std::string_view code, const std::vector<SourceFile>& files) {
+// The closest container of the code's size, returned by value: a pointer to
+// the local it was kept in outlived it, and the recipe got the hash of
+// whatever the stack held by then - a template no build could find.
+std::optional<TemplateHit> BestTemplate(std::string_view code, const std::vector<SourceFile>& files) {
     TemplateHit best;
-    const TemplateHit* found = nullptr;
+    bool found = false;
     for (const SourceFile& file : files) {
         for (const ContainerMatch& match : FindContainers(file.data)) {
             if (match.physical_size != code.size()) {
@@ -70,18 +74,18 @@ const TemplateHit* BestTemplate(std::string_view code, const std::vector<SourceF
             const size_t off = match.offset + match.virtual_size;
             const std::string_view micro(file.data.data() + off, match.physical_size);
             const float score = MicrocodeSimilarity(micro, code);
-            if (found == nullptr || score > best.score) {
+            if (!found || score > best.score) {
                 best.score = score;
                 best.source = file.name;
                 best.micro.assign(micro.begin(), micro.end());
-                found = &best;
+                found = true;
             }
         }
     }
-    if (found == nullptr || found->score < kMinSimilarity) {
-        return nullptr;
+    if (!found || best.score < kMinSimilarity) {
+        return std::nullopt;
     }
-    return found;
+    return best;
 }
 
 std::vector<std::string> Patches(const std::string& template_micro, const std::string& code) {
@@ -159,7 +163,7 @@ int MakeRuntimeShaderRecipe(const std::string& image_path, const std::string& ga
             const auto code_bytes = ReadFileBytes(micro_path.string());
             const std::string code(reinterpret_cast<const char*>(code_bytes.data()), code_bytes.size());
 
-            if (const TemplateHit* hit = BestTemplate(code, files)) {
+            if (const std::optional<TemplateHit> hit = BestTemplate(code, files)) {
                 const std::string code_hash = Sha256Hex(code);
                 const std::string template_hash = Sha256Hex(hit->micro);
                 std::string row = stage + " " + name + " " + code_hash + " template " + hit->source +
