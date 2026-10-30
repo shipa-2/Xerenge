@@ -1434,6 +1434,140 @@ bool FixPreviewFallThrough(Blob& b, Constants& c) {
   return false;
 }
 
+// changeCustomPlaylist (removeCurrentList, a click, SetNextPlaylist,
+// setUpTracks) sets the screen's title again too: the title was set once, on
+// entering, and the music folder's page in it (custom_music.cpp's
+// [MY MUSIC 3/35]) did not follow LB/RB. The click's code - from the PushData
+// naming SfxEnum to its CallMethod and Pop - becomes gStdTitle.screen.setText
+// and a branch over what is left of it: the function keeps its size (a branch
+// out of a function's body ends the function here), and loses the click.
+bool RetitleOnSwitch(Blob& b, Constants& c) {
+  const uint32_t set_next = c.String("SetNextPlaylist");
+  const uint32_t sfx = c.String("SfxEnum");
+  const uint32_t size = uint32_t(b.bytes.size());
+  // A PushData's items are constants or (type 8) entries of the ConstantPool
+  // set up before it - the class code's are.
+  std::vector<uint32_t> pool;
+  const auto items_hold = [&](uint32_t at, uint32_t wanted) {
+    const uint32_t count = b.U32(Operand(at)), list = b.U32(Operand(at) + 4);
+    for (uint32_t i = 0; i < count && i < 16 && list + i * 4 + 4 <= size; ++i) {
+      uint32_t item = b.U32(list + i * 4);
+      if (item < c.entries.size() && c.entries[item].type == 8 && c.entries[item].value < pool.size()) {
+        item = pool[c.entries[item].value];
+      }
+      if (item == wanted) {
+        return true;
+      }
+    }
+    return false;
+  };
+  for (uint32_t op = 0; op + 40 < size; ++op) {
+    if (b.bytes[op] == 0x88) {
+      const uint32_t count = b.U32(Operand(op)), list = b.U32(Operand(op) + 4);
+      if (count > 0 && count < 4096 && !(list & 3) && list + count * 4 <= size) {
+        pool.assign(count, 0);
+        for (uint32_t i = 0; i < count; ++i) pool[i] = b.U32(list + i * 4);
+      }
+      continue;
+    }
+    if (b.bytes[op] != 0x8E) {
+      continue;
+    }
+    const uint32_t size_at = Operand(op) + 16;
+    const uint32_t body = size_at + 12, body_size = b.U32(size_at);
+    if (body_size < 16 || body_size > 256 || body + body_size > size) {
+      continue;
+    }
+    bool holds = false;
+    uint32_t click = 0;
+    for (uint32_t at = body; at < body + body_size; ++at) {
+      if (b.bytes[at] == 0x96) {
+        holds = holds || items_hold(at, set_next);
+        if (!click && items_hold(at, sfx)) {
+          click = at;
+        }
+      }
+    }
+    if (!holds || !click) {
+      continue;
+    }
+    uint32_t end = 0;
+    for (uint32_t at = click; at + 1 < body + body_size; ++at) {
+      if (b.bytes[at] == 0x52 && b.bytes[at + 1] == 0x17) {
+        end = at + 2;
+        break;
+      }
+    }
+    if (!end) {
+      continue;
+    }
+    // The PushData lists, after the movie's data.
+    const auto list = [&](std::vector<uint32_t> items) {
+      b.Align(4);
+      const uint32_t at = b.Here();
+      for (uint32_t item : items) b.Put32(item);
+      return at;
+    };
+    struct Push {
+      uint32_t count, list;
+    };
+    const std::vector<Push> pushes = {
+        // The subtitle's key with the time after it (GetTimer, the op - the movies'
+        // getTimer() was undefined): a text field set to the
+        // string it already holds is not looked up again, and the page in it
+        // would stay as it was (xerenge_menu.cpp takes the key by its start).
+        {1, list({c.String("$FEDRIVERDETEATRAX")})},
+        {4, list({c.String("$FESONGMANAGER"), c.Int(2), c.Value(4, 2), c.String("gStdTitle")})},
+        {1, list({c.String("screen")})},
+        {1, list({c.String("setText")})}};
+    // After each PushData: GetTimer and Add2; GetMember; GetMember; CallMethod.
+    const std::vector<std::vector<uint8_t>> after = {{0x34, 0x47}, {0x4E}, {0x4E}, {0x52}};
+    // How far it goes, before anything is written: past the click's end, it
+    // would write over setUpTracks.
+    {
+      uint32_t q = click;
+      for (size_t i = 0; i < pushes.size(); ++i) {
+        q = Operand(q) + 8 + uint32_t(after[i].size());
+      }
+      if (q + 1 > end) {
+        REXLOG_WARN("menu: song manager movie: the title's code does not fit in the click's");
+        return false;
+      }
+    }
+    uint32_t p = click;
+    const auto put_push = [&](const Push& push) {
+      b.bytes[p] = 0x96;
+      const uint32_t operand = Operand(p);
+      for (uint32_t q = p + 1; q < operand; ++q) b.bytes[q] = 0;
+      b.Set32(operand, push.count);
+      b.Set32(operand + 4, push.list);
+      p = operand + 8;
+    };
+    for (size_t i = 0; i < pushes.size(); ++i) {
+      put_push(pushes[i]);
+      for (uint8_t op_after : after[i]) b.bytes[p++] = op_after;
+    }
+    b.bytes[p++] = 0x17;  // Pop
+    // A branch over the rest of the click's code, or Padding where no branch fits.
+    if (Operand(p) + 4 <= end) {
+      b.bytes[p] = 0x99;
+      const uint32_t operand = Operand(p);
+      for (uint32_t q = p + 1; q < operand; ++q) b.bytes[q] = 0;
+      b.Set32(operand, end - (operand + 4));
+      p = operand + 4;
+    }
+    if (p > end) {
+      REXLOG_WARN("menu: song manager movie: the title's code does not fit in the click's");
+      return false;
+    }
+    for (; p < end; ++p) {
+      b.bytes[p] = 0xFF;
+    }
+    return true;
+  }
+  return false;
+}
+
 // Driver Details > Song Manager (custom_music.cpp): its playlist switch shown
 // (by HasCustomPlaylists) on LT, and the playing order on RT in place of LT.
 // What the screen's input handler compares the key with, INPUTCODE.CYCLESONG
@@ -1467,6 +1601,9 @@ bool RebuildSongManager(const uint8_t* data, size_t data_size, const uint8_t* co
   // and SetNextPlayList, which no one answers, and the switch never showed.
   SwapConstant(b, c.String("HasCustomPlayLists"), c.String("HasCustomPlaylists"));
   SwapConstant(b, c.String("SetNextPlayList"), c.String("SetNextPlaylist"));
+  if (!RetitleOnSwitch(b, c)) {
+    REXLOG_WARN("menu: song manager movie: changeCustomPlaylist not found");
+  }
   // The switch's word, PLAYLIST (, which the online
   // menus share): a key of ours in its place, which answers spaces as wide -
   // the icon alone, where the movie's layout by the word's width puts it.

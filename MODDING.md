@@ -308,7 +308,8 @@ and why a font was not used, if it was not.
 Not a mod, but close: the songs of a `music` folder (beside the game, or
 `music_dir = <folder>` in `xerenge.conf`; with `recursive_scan = true` the
 folders inside it are read too) can take EA Trax's place - **Driver
-Details > Song Manager**, LT. MP3 and WMA; the names come from the files' tags
+Details > Song Manager**, LT; LB and RB turn its pages when the folder has more than 41 songs (the game
+has room for 41 at a time, `[MY MUSIC 3/35]` in the title). MP3 and WMA; the names come from the files' tags
 (or from `Artist - Title.mp3`). With a localisation mod whose fonts have the
 letters, the names are shown as they are; without one, Cyrillic in them is
 written in Latin letters. Which list is chosen is kept in `xerenge.conf` as

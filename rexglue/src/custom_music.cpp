@@ -22,13 +22,18 @@
 #include <cstdlib>
 #include <cstring>
 #include <filesystem>
+#include <atomic>
+#include <chrono>
 #include <memory>
+#include <map>
 #include <mutex>
+#include <thread>
 #include <string>
 #include <vector>
 
 #include <rex/filesystem/devices/host_path_device.h>
 #include <rex/hook.h>
+#include <rex/kernel/xam/pad.h>
 #include <rex/kernel/xam/xmp.h>
 #include <rex/logging.h>
 #include <rex/memory.h>
@@ -59,7 +64,17 @@ std::mutex g_mutex;
 bool g_scanned = false;
 bool g_mounted = false;
 std::filesystem::path g_dir;
-std::vector<Track> g_tracks;
+std::vector<std::filesystem::path> g_files;  // the whole folder
+std::vector<Track> g_tracks;                 // the page on show, in the game's 41 places
+uint32_t g_page = 0;
+// The folder listed again in the background (Rescan), for the next visit.
+std::vector<std::filesystem::path> g_next_files;
+bool g_next_listed = false;
+bool g_listing = false;
+// A page turn asked for by LB/RB (+1, -1), which the pressed LT's SetNextPlaylist
+// takes; whether Song Manager is on show (xerenge_menu.cpp).
+std::atomic<int> g_turn{0};
+std::atomic<bool> g_song_manager{false};
 bool g_custom = false;   // the folder's songs chosen
 bool g_applied = false;  // the table holds what g_custom says
 uint32_t g_saved_data = 0;
@@ -273,9 +288,25 @@ Tags ReadTags(const std::filesystem::path& file) {
     const long size = std::ftell(in);
     std::fseek(in, 0, SEEK_SET);
     constexpr long kMax = 4 << 20;  // tags with a large picture still fit
-    data.resize(size_t(std::min(size, kMax)));
+    // Only the tags, not the song: an ID3v2 tag's size is in its header, and
+    // a WMA's ASF header object says its own (a music folder on a network
+    // share took a second for a few songs, read 4 MB each).
+    uint8_t head[30] = {};
+    const size_t got = std::fread(head, 1, sizeof(head), in);
+    long want = 64 << 10;
+    if (got >= 10 && std::memcmp(head, "ID3", 3) == 0) {
+      want = 10 + long((head[6] & 0x7F) << 21 | (head[7] & 0x7F) << 14 | (head[8] & 0x7F) << 7 |
+                       (head[9] & 0x7F)) + 16;
+    } else if (got >= 24 && head[0] == 0x30 && head[1] == 0x26 && head[2] == 0xB2 && head[3] == 0x75) {
+      uint64_t object = 0;
+      for (int i = 7; i >= 0; --i) object = object << 8 | head[16 + i];
+      want = long(std::min<uint64_t>(object, uint64_t(kMax)));
+    }
+    std::fseek(in, 0, SEEK_SET);
+    const long read = std::min({size, kMax, std::max(want, 30L)});
+    data.resize(size_t(read));
     data.resize(std::fread(data.data(), 1, data.size(), in));
-    if (size > kMax && size >= 128) {  // ID3v1 from the real end
+    if (size > read && size >= 128) {  // ID3v1 from the real end
       std::vector<uint8_t> tail(128);
       std::fseek(in, size - 128, SEEK_SET);
       if (std::fread(tail.data(), 1, 128, in) == 128 && std::memcmp(tail.data(), "TAG", 3) == 0) {
@@ -347,44 +378,55 @@ std::vector<uint32_t> CodePoints(const std::string& utf8) {
 
 // The folder's songs: the files XMP can play, named by their tags (ID3, ASF),
 // or by the file's name - "Artist - Title" split into the two.
-void Scan() {
-  if (g_scanned) {
-    return;
-  }
-  g_scanned = true;
-  if (const char* env = std::getenv("XERENGE_MUSIC_DIR"); env && *env) {
-    g_dir = env;
-  } else if (const std::string conf = xerenge::settings::ConfString("music_dir", ""); !conf.empty()) {
-    g_dir = conf;
-  } else {
-    g_dir = xerenge::settings::GameFolder() / "music";
-  }
-  std::error_code ec;
-  std::vector<std::filesystem::path> files;
-  const auto take = [&](const std::filesystem::directory_entry& entry) {
-    const std::string ext = Lower(entry.path().extension().string());
-    if (entry.is_regular_file(ec) && (ext == ".mp3" || ext == ".wma")) {
-      files.push_back(entry.path());
-    }
-  };
-  // recursive_scan = true in xerenge.conf: the folders inside it too (a
-  // library sorted by artist and album).
-  if (xerenge::settings::ConfString("recursive_scan", "false") == "true") {
-    for (const auto& entry : std::filesystem::recursive_directory_iterator(
-             g_dir, std::filesystem::directory_options::skip_permission_denied, ec)) {
-      take(entry);
-    }
-  } else {
-    for (const auto& entry : std::filesystem::directory_iterator(g_dir, ec)) {
-      take(entry);
+// --- pages ------------------------------------------------------------------
+//
+// The game has room for 41 songs - the table, the playing order, the files'
+// handles and the songs' on/off flags are all made for 41 - so a bigger folder
+// is shown 41 at a time: the page's songs are put in the game's 41 places, and
+// LB/RB in Song Manager turn the page (the pad filter below presses LT for the
+// game, whose answer - SetNextPlaylist, building the list again - turns it).
+
+uint32_t PageCount() {
+  return uint32_t((g_files.size() + kSlots - 1) / kSlots);
+}
+
+// The songs' tags, by file: read for the whole folder in the background once
+// it is listed (a network share took seconds a page), so a page turns at once.
+std::mutex g_tags_mutex;
+std::map<std::filesystem::path, Tags> g_tags;
+
+Tags CachedTags(const std::filesystem::path& file) {
+  {
+    std::lock_guard<std::mutex> lock(g_tags_mutex);
+    if (auto found = g_tags.find(file); found != g_tags.end()) {
+      return found->second;
     }
   }
-  std::sort(files.begin(), files.end());
-  if (files.size() > kSlots) {
-    REXLOG_WARN("music: {} songs in {}, the first {} of them taken", files.size(), g_dir.string(), kSlots);
-    files.resize(kSlots);
-  }
-  for (const auto& file : files) {
+  Tags tags = ReadTags(file);
+  std::lock_guard<std::mutex> lock(g_tags_mutex);
+  return g_tags.emplace(file, std::move(tags)).first->second;
+}
+
+void ReadAllTags(std::vector<std::filesystem::path> files) {
+  std::thread([files = std::move(files)] {
+    const auto start = std::chrono::steady_clock::now();
+    for (const auto& file : files) {
+      CachedTags(file);
+    }
+    REXLOG_INFO("music: tags of {} song(s) read in {} ms", files.size(),
+                std::chrono::duration_cast<std::chrono::milliseconds>(std::chrono::steady_clock::now() - start)
+                    .count());
+  }).detach();
+}
+
+// The page's songs, their names from their files (only the page's: a folder of
+// thousands on a network share is read 41 at a time).
+void LoadPage() {
+  g_tracks.clear();
+  g_strings.clear();  // the old ones stay in guest memory, a few bytes a page
+  const size_t first = size_t(g_page) * kSlots;
+  for (size_t i = first; i < g_files.size() && i < first + kSlots; ++i) {
+    const auto& file = g_files[i];
     Track track;
     track.file = file;
     const std::string stem = file.stem().string();
@@ -397,13 +439,99 @@ void Scan() {
     }
     track.album = file.parent_path().filename().string();
     // The file's own tags, where it has them, over what its name says.
-    const Tags tags = ReadTags(file);
+    const Tags tags = CachedTags(file);
     if (!tags.title.empty()) track.title = tags.title;
     if (!tags.artist.empty()) track.artist = tags.artist;
     if (!tags.album.empty()) track.album = tags.album;
     g_tracks.push_back(std::move(track));
   }
-  REXLOG_INFO("music: {} song(s) in {}", g_tracks.size(), g_dir.string());
+}
+
+// LB/RB in Song Manager, with the folder's songs on show and more than a page
+// of them: LT pressed for the game for a moment - its switch, whose
+// SetNextPlaylist turns the page instead (g_turn) and whose list is built
+// again. LB and RB themselves are kept from the game there.
+void PadFilter(uint32_t user, uint16_t& buttons, uint8_t& left_trigger, uint8_t&) {
+  constexpr uint16_t kLB = 0x0100, kRB = 0x0200;
+  using Clock = std::chrono::steady_clock;
+  static uint16_t was = 0;
+  static Clock::time_point pressing{};
+  if (user != 0) {
+    return;
+  }
+  const uint16_t shoulders = buttons & (kLB | kRB);
+  const uint16_t down = shoulders & ~was;
+  was = shoulders;
+  if (!g_song_manager.load() || !g_custom) {
+    return;
+  }
+  {
+    std::lock_guard<std::mutex> lock(g_mutex);
+    if (PageCount() < 2) {
+      return;
+    }
+  }
+  buttons &= uint16_t(~(kLB | kRB));
+  const auto now = Clock::now();
+  if (down && now >= pressing) {
+    g_turn = (down & kRB) ? 1 : -1;
+    pressing = now + std::chrono::milliseconds(120);
+  }
+  if (now < pressing) {
+    left_trigger = 255;
+  }
+}
+
+// The folder's songs, sorted; with recursive_scan = true in xerenge.conf the
+// folders inside it too (a library sorted by artist and album).
+std::vector<std::filesystem::path> ListFolder(const std::filesystem::path& dir) {
+  std::error_code ec;
+  std::vector<std::filesystem::path> files;
+  const auto take = [&](const std::filesystem::directory_entry& entry) {
+    const std::string ext = Lower(entry.path().extension().string());
+    if (entry.is_regular_file(ec) && (ext == ".mp3" || ext == ".wma")) {
+      files.push_back(entry.path());
+    }
+  };
+  if (xerenge::settings::ConfString("recursive_scan", "false") == "true") {
+    for (const auto& entry : std::filesystem::recursive_directory_iterator(
+             dir, std::filesystem::directory_options::skip_permission_denied, ec)) {
+      take(entry);
+    }
+  } else {
+    for (const auto& entry : std::filesystem::directory_iterator(dir, ec)) {
+      take(entry);
+    }
+  }
+  std::sort(files.begin(), files.end());
+  return files;
+}
+
+void Scan() {
+  if (g_scanned) {
+    return;
+  }
+  g_scanned = true;
+  if (const char* env = std::getenv("XERENGE_MUSIC_DIR"); env && *env) {
+    g_dir = env;
+  } else if (const std::string conf = xerenge::settings::ConfString("music_dir", ""); !conf.empty()) {
+    g_dir = conf;
+  } else {
+    g_dir = xerenge::settings::GameFolder() / "music";
+  }
+  std::vector<std::filesystem::path> files = ListFolder(g_dir);
+  g_files = std::move(files);
+  if (g_files.size() > kSlots) {
+    ReadAllTags(g_files);
+  }
+  const uint32_t pages = PageCount();
+  if (g_page >= pages) {
+    g_page = pages ? pages - 1 : 0;
+  }
+  LoadPage();
+  REXLOG_INFO("music: {} song(s) in {}{}", g_files.size(), g_dir.string(),
+              pages > 1 ? fmt::format(", {} pages of {} (LB/RB in Song Manager)", pages, kSlots)
+                        : std::string());
   if (g_tracks.empty()) {
     return;
   }
@@ -414,6 +542,7 @@ void Scan() {
     return;
   }
   g_mounted = true;
+  rex::kernel::xam::SetPadFilter(PadFilter);
   auto device = std::make_unique<rex::filesystem::HostPathDevice>("\\Device\\XerengeMusic", g_dir, true);
   if (device->Initialize() && REX_KERNEL_FS()->RegisterDevice(std::move(device))) {
     REX_KERNEL_FS()->RegisterSymbolicLink("xmusic:", "\\Device\\XerengeMusic");
@@ -518,20 +647,43 @@ namespace xerenge::music {
 
 void Rescan(uint8_t* base) {
   std::lock_guard<std::mutex> lock(g_mutex);
-  const bool had = !g_tracks.empty();
-  g_scanned = false;
-  g_tracks.clear();
-  g_strings.clear();  // the old ones stay in guest memory, a few bytes a visit
-  Scan();
-  if (!g_tracks.empty()) {
-    if (g_custom) {
-      Apply(base);
+  // The folder was listed at the start; entering Song Manager takes the
+  // listing made in the background since (a network share took seconds), and
+  // starts the next - what is added now is there from the next visit.
+  if (!g_scanned) {
+    Scan();
+  } else if (g_next_listed) {
+    g_next_listed = false;
+    const bool had = !g_tracks.empty();
+    if (g_next_files != g_files) {
+      g_files = std::move(g_next_files);
+      const uint32_t pages = PageCount();
+      if (g_page >= pages) {
+        g_page = pages ? pages - 1 : 0;
+      }
+      LoadPage();
+      REXLOG_INFO("music: {} song(s) in {} now", g_files.size(), g_dir.string());
+      if (!g_tracks.empty()) {
+        if (g_custom) {
+          Apply(base);
+        }
+      } else if (had && g_saved_data) {
+        // The folder emptied while its songs were chosen: the game's back.
+        g_custom = false;
+        std::memcpy(xerenge::GuestPointer(base, g_saved_data + kTable), g_saved_table, sizeof(g_saved_table));
+        Store32(base, g_saved_data + kCount, g_saved_count);
+      }
     }
-  } else if (had && g_saved_data) {
-    // The folder emptied while its songs were chosen: the game's back.
-    g_custom = false;
-    std::memcpy(xerenge::GuestPointer(base, g_saved_data + kTable), g_saved_table, sizeof(g_saved_table));
-    Store32(base, g_saved_data + kCount, g_saved_count);
+  }
+  if (!g_listing && !g_dir.empty()) {
+    g_listing = true;
+    std::thread([dir = g_dir] {
+      std::vector<std::filesystem::path> files = ListFolder(dir);
+      std::lock_guard<std::mutex> lock(g_mutex);
+      g_next_files = std::move(files);
+      g_next_listed = true;
+      g_listing = false;
+    }).detach();
   }
 }
 
@@ -542,6 +694,16 @@ void Prepare(uint8_t* base) {
 bool Custom() {
   std::lock_guard<std::mutex> lock(g_mutex);
   return g_custom;
+}
+
+void SetSongManagerShown(bool shown) {
+  g_song_manager = shown;
+}
+
+std::string Title() {
+  std::lock_guard<std::mutex> lock(g_mutex);
+  const uint32_t pages = PageCount();
+  return pages > 1 ? fmt::format("[MY MUSIC {}/{}]", g_page + 1, pages) : std::string("[MY MUSIC]");
 }
 
 }  // namespace xerenge::music
@@ -570,6 +732,15 @@ REX_HOOK_RAW(sub_8212BB98) {
   std::lock_guard<std::mutex> lock(g_mutex);
   Scan();
   if (g_tracks.empty()) {
+    return;
+  }
+  // LB/RB's page turn (PadFilter), not the switch.
+  if (const int turn = g_turn.exchange(0); turn != 0 && g_custom && PageCount() > 1) {
+    const uint32_t pages = PageCount();
+    g_page = uint32_t((int64_t(g_page) + turn + pages) % pages);
+    LoadPage();
+    Apply(base);
+    REXLOG_INFO("music: page {} of {}", g_page + 1, pages);
     return;
   }
   g_custom = !g_custom;

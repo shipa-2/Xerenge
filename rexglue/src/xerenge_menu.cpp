@@ -422,6 +422,8 @@ REX_HOOK_RAW(sub_821E6BA8) {
     const std::string next = GuestString(base, requested);
     g_on_settings = IsSettings(next);
     g_on_main_menu = next.size() >= 14 && next.compare(next.size() - 14, 14, "/Main/MainMenu") == 0;
+    xerenge::music::SetSongManagerShown(next.size() >= 19 &&
+                                        next.compare(next.size() - 19, 19, "DriverDetailsEATrax") == 0);
     constexpr uint32_t kMusic = 0x8268748C;  // the soundtrack's state; +780: paused for a video
     const bool left_video = on_show.size() > 5 && on_show.compare(on_show.size() - 5, 5, "Video") == 0 &&
                             next != on_show;
@@ -464,6 +466,20 @@ REX_HOOK_RAW(sub_8210FCF8) {
   };
   static uint32_t guest[std::size(kTexts)] = {};
   const char* key = reinterpret_cast<const char*>(xerenge::GuestPointer(base, ctx.r4.u32));
+  // Song Manager's subtitle as settings_movie.cpp sets it again after a switch
+  // or a page turn: its key with a number after it, so the text field looks it
+  // up anew. The game's own text for it under its own key.
+  constexpr char kSongManagerKey[] = "FEDRIVERDETEATRAX";
+  if (ctx.r4.u32 >= 0x10000 && std::strncmp(key, kSongManagerKey, sizeof(kSongManagerKey) - 1) == 0 &&
+      key[sizeof(kSongManagerKey) - 1] != 0) {
+    static uint32_t plain = 0;
+    if (!plain) {
+      plain = REX_KERNEL_MEMORY()->SystemHeapAlloc(sizeof(kSongManagerKey), 0x10);
+      std::memcpy(xerenge::GuestPointer(base, plain), kSongManagerKey, sizeof(kSongManagerKey));
+    }
+    ctx.r4.u64 = plain;
+    key = kSongManagerKey;
+  }
   // A localisation mod's text first (mods.cpp).
   if (ctx.r4.u32 >= 0x10000) {
     if (const uint32_t text = xerenge::mods::Text(base, key)) {
@@ -510,15 +526,20 @@ REX_HOOK_RAW(sub_8210FCF8) {
   }
   // Song Manager's subtitle while the music folder's songs are chosen.
   if (ctx.r4.u32 >= 0x10000 && std::strcmp(key, "FEDRIVERDETEATRAX") == 0 && xerenge::music::Custom()) {
+    // With the page, when the folder has more than one (custom_music.cpp):
+    // made again when it changes.
     static uint32_t mine = 0;
-    if (!mine) {
-      const char* text = "[MY MUSIC]";
-      const size_t length = std::strlen(text);
-      mine = REX_KERNEL_MEMORY()->SystemHeapAlloc(uint32_t(length + 1) * 2, 0x10);
+    static std::string shown;
+    const std::string text = xerenge::music::Title();
+    if (!mine || text != shown) {
+      shown = text;
+      // A new string each time: the movie keeps the one it was given, and the
+      // same place written over did not change what it shows.
+      mine = REX_KERNEL_MEMORY()->SystemHeapAlloc(64 * 2, 0x10);
       uint8_t* out = xerenge::GuestPointer(base, mine);
-      for (size_t c = 0; c <= length; ++c) {
+      for (size_t c = 0; c <= text.size() && c < 63; ++c) {
         out[c * 2] = 0;
-        out[c * 2 + 1] = uint8_t(text[c]);
+        out[c * 2 + 1] = c < text.size() ? uint8_t(text[c]) : 0;
       }
     }
     ctx.r3.u64 = mine;
