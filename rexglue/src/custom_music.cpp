@@ -86,6 +86,18 @@ std::string Lower(std::string text) {
   return text;
 }
 
+// The soundtrack's songs: its object's data, or - before the object is set,
+// when the menus' first song is already playing and its names are read - the
+// data's own place, once the game has filled it.
+constexpr uint32_t kSoundtrackData = 0x8268748C;
+
+uint32_t SoundtrackData(uint8_t* base) {
+  if (const uint32_t soundtrack = Load32(base, kSoundtrack)) {
+    return Load32(base, soundtrack);
+  }
+  return Load32(base, kSoundtrackData + kCount) != 0 ? kSoundtrackData : 0;
+}
+
 // --- a song's tags ----------------------------------------------------------
 
 struct Tags {
@@ -438,8 +450,7 @@ uint32_t GuestString(uint8_t* base, const std::string& utf8) {
 
 // The table as g_custom says: the folder's songs, or the game's.
 void Apply(uint8_t* base) {
-  const uint32_t soundtrack = Load32(base, kSoundtrack);
-  const uint32_t data = soundtrack ? Load32(base, soundtrack) : 0;
+  const uint32_t data = SoundtrackData(base);
   if (!data || g_tracks.empty()) {
     return;
   }
@@ -469,6 +480,7 @@ void Apply(uint8_t* base) {
       }
     }
     Store32(base, data + kCount, uint32_t(g_tracks.size()));
+    REXLOG_INFO("music: the folder's {} song(s) put in the soundtrack at {:08X}", g_tracks.size(), data);
   } else {
     std::memcpy(xerenge::GuestPointer(base, data + kTable), g_saved_table, sizeof(g_saved_table));
     Store32(base, data + kCount, g_saved_count);
@@ -479,8 +491,7 @@ void Apply(uint8_t* base) {
 void EnsureApplied(uint8_t* base) {
   std::lock_guard<std::mutex> lock(g_mutex);
   Scan();
-  const uint32_t soundtrack = Load32(base, kSoundtrack);
-  const uint32_t data = soundtrack ? Load32(base, soundtrack) : 0;
+  const uint32_t data = SoundtrackData(base);
   if (g_custom && (!g_applied || data != g_saved_data)) {
     Apply(base);
   }
@@ -507,6 +518,10 @@ void Rescan(uint8_t* base) {
     std::memcpy(xerenge::GuestPointer(base, g_saved_data + kTable), g_saved_table, sizeof(g_saved_table));
     Store32(base, g_saved_data + kCount, g_saved_count);
   }
+}
+
+void Prepare(uint8_t* base) {
+  EnsureApplied(base);
 }
 
 bool Custom() {
@@ -558,4 +573,19 @@ REX_HOOK_RAW(sub_821EBDF0) {
 REX_HOOK_RAW(sub_821EBE28) {
   EnsureApplied(base);
   __imp__sub_821EBE28(ctx, base);
+}
+
+// Where the soundtrack's object is set (two setters): the folder's songs put in
+// it at once, before the first song's names are read for the music player -
+// the menus' first song otherwise showed the game's names over the folder's.
+extern "C" void __imp__sub_821AAB28(PPCContext& __restrict, uint8_t*);
+extern "C" void __imp__sub_821AAB88(PPCContext& __restrict, uint8_t*);
+REX_HOOK_RAW(sub_821AAB28) {
+  __imp__sub_821AAB28(ctx, base);
+  EnsureApplied(base);
+}
+
+REX_HOOK_RAW(sub_821AAB88) {
+  __imp__sub_821AAB88(ctx, base);
+  EnsureApplied(base);
 }

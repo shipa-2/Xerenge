@@ -556,6 +556,7 @@ REX_HOOK_RAW(sub_821DF3A8) {
 extern "C" void __imp__sub_821FF308(PPCContext& __restrict, uint8_t*);
 REX_HOOK_RAW(sub_821FF308) {
   CheckQuitButton(ctx, base);
+  xerenge::music::Prepare(base);
   if (g_popup_pending) {
     g_popup_pending = false;
     ShowRestartPopup(ctx, base);
