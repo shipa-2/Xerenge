@@ -108,6 +108,10 @@ class InstallerWindow : public QWidget {
   // A menu's background video on a screen wider than 16:9: zoom, stretch or
   // box; edited in the conf only, kept by an update.
   QString menu_video_ = "zoom";
+  // The music folder (empty: music/ beside the game) and whether the folders
+  // in it are read too; edited in the conf only, kept by an update.
+  QString music_dir_;
+  QString recursive_scan_ = "false";
   QCheckBox* fps_box_ = nullptr;
   QCheckBox* portable_box_ = nullptr;
   QCheckBox* fps30_box_ = nullptr;

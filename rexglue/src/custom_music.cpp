@@ -361,10 +361,22 @@ void Scan() {
   }
   std::error_code ec;
   std::vector<std::filesystem::path> files;
-  for (const auto& entry : std::filesystem::directory_iterator(g_dir, ec)) {
+  const auto take = [&](const std::filesystem::directory_entry& entry) {
     const std::string ext = Lower(entry.path().extension().string());
     if (entry.is_regular_file(ec) && (ext == ".mp3" || ext == ".wma")) {
       files.push_back(entry.path());
+    }
+  };
+  // recursive_scan = true in xerenge.conf: the folders inside it too (a
+  // library sorted by artist and album).
+  if (xerenge::settings::ConfString("recursive_scan", "false") == "true") {
+    for (const auto& entry : std::filesystem::recursive_directory_iterator(
+             g_dir, std::filesystem::directory_options::skip_permission_denied, ec)) {
+      take(entry);
+    }
+  } else {
+    for (const auto& entry : std::filesystem::directory_iterator(g_dir, ec)) {
+      take(entry);
     }
   }
   std::sort(files.begin(), files.end());
@@ -383,7 +395,7 @@ void Scan() {
     } else {
       track.title = stem;
     }
-    track.album = g_dir.filename().string();
+    track.album = file.parent_path().filename().string();
     // The file's own tags, where it has them, over what its name says.
     const Tags tags = ReadTags(file);
     if (!tags.title.empty()) track.title = tags.title;
@@ -416,7 +428,10 @@ void Scan() {
       return path;
     }
     const size_t number = size_t((lower[at + 7] - '0') * 10 + (lower[at + 8] - '0'));
-    return "xmusic:\\" + g_tracks[number % g_tracks.size()].file.filename().string();
+    // Its path under the folder, subfolders and all (recursive_scan).
+    std::string relative = g_tracks[number % g_tracks.size()].file.lexically_relative(g_dir).string();
+    std::replace(relative.begin(), relative.end(), '/', '\\');
+    return "xmusic:\\" + relative;
   });
 }
 

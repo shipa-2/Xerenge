@@ -834,6 +834,12 @@ void InstallerWindow::LoadSettings(const QString& path) {
   if (values.contains("menu_video")) {
     menu_video_ = values.value("menu_video");
   }
+  if (values.contains("music_dir")) {
+    music_dir_ = values.value("music_dir");
+  }
+  if (values.contains("recursive_scan")) {
+    recursive_scan_ = values.value("recursive_scan");
+  }
   flag("fps_counter", fps_box_);
   flag("portable", portable_box_);
   flag("fps_30", fps30_box_);
@@ -916,6 +922,10 @@ void InstallerWindow::StartInstall() {
         << "# Widened, the video behind a menu: zoom (fills the width, top and bottom cut),\n"
         << "# stretch (fills it, too wide) or box (16:9, the menu runs past it into the bars)\n"
         << "menu_video = " << menu_video_ << "\n"
+        << "# Your own music for Song Manager (LT): the folder (empty: music beside the game)\n"
+        << "music_dir = " << music_dir_ << "\n"
+        << "# true: the folders inside it are read too\n"
+        << "recursive_scan = " << recursive_scan_ << "\n"
         << "# The name shown to others online (empty: Player)\n"
         << "gamertag = " << gamertag_edit_->text().trimmed() << "\n"
         << "# Local multiplayer: the copies on one network find each other's games\n"

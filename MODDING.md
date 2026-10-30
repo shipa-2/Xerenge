@@ -306,7 +306,8 @@ and why a font was not used, if it was not.
 ### Your own music
 
 Not a mod, but close: the songs of a `music` folder (beside the game, or
-`music_dir = <folder>` in `xerenge.conf`) can take EA Trax's place - **Driver
+`music_dir = <folder>` in `xerenge.conf`; with `recursive_scan = true` the
+folders inside it are read too) can take EA Trax's place - **Driver
 Details > Song Manager**, LT. MP3 and WMA; the names come from the files' tags
 (or from `Artist - Title.mp3`). With a localisation mod whose fonts have the
 letters, the names are shown as they are; without one, Cyrillic in them is
