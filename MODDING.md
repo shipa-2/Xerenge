@@ -23,6 +23,85 @@ comment. `Type` says what the mod is; the rest depends on the type.
 
 So far there is one type: **localisation**.
 
+## A translation, step by step
+
+What it takes, from nothing to the game speaking your language. Each step is
+explained further in the sections after this one.
+
+**1. Get the tools.** Two small command-line programs from this repository,
+built with any C++17 compiler (g++, clang++, or MSVC's `cl /std:c++17`):
+
+```bash
+git clone https://github.com/shipa-2/Xerenge
+cd Xerenge/rexglue
+c++ -std=c++17 -O2 tools/localeexport/localeexport.cpp -o localeexport
+c++ -std=c++17 -O2 -Ithirdparty/stb tools/fontgen/fontgen.cpp src/game_font.cpp -o fontgen
+```
+
+`localeexport` writes the game's text out for you to translate; `fontgen`
+turns fonts into the game's own and shows how they will look.
+
+**2. Make the mod's folder** in the installed game's `game/mods/` (the
+installer makes `mods`): say `game/mods/locale_tha/`, with a `mod.cfg`:
+
+```
+Version = 0.1
+Type = Localization
+Name = Thai
+Localization = locale_tha.txt
+```
+
+**3. Export the game's English text** as the template (run from the installed
+game's folder, the one with `game/` in it, with the tools copied there):
+
+```bash
+./localeexport game/language/strings/MainUK.bin game/mods/locale_tha/locale_tha.txt game/fe/*.bin
+```
+
+(`MainUS.bin` on the American disc.) That is every string of the game, one a
+line - several thousand. Translate them in place, in any editor that saves
+UTF-8. Lines you delete, or leave as they are, read in English; so start
+with the menus you see first and grow it from there.
+
+**4. Start the game** and choose your language's `Name` in **Driver Details >
+Settings > LANGUAGE**; restart the game once when it offers to, so the mod's
+fonts are made. After that, editing the text file and restarting the game is
+enough to see a change. `burnout.log` says how
+many strings were read (`mods:` lines), and which font was made and why one
+was not.
+
+**5. Fonts, if your alphabet is not the game's.** The game's fonts have the
+basic Latin letters and Western European accents (À-ÿ) - not, for one, Č, Ć,
+Š, Ž or Đ, nor Cyrillic, Greek, Thai or any other script. A letter the font
+does not have is drawn as nothing. Give the mod a font with your letters
+(`FontBig`, `FontBigDistressed`, `FontSmall` in `mod.cfg`), in one of the
+three forms below:
+
+- a **TrueType/OpenType font** (`FontBig = MyFont.ttf`, in the mod's folder) -
+  the quickest start: every character your text file uses is drawn from it,
+  sized to the game's capitals. Choose one whose licence allows sharing (SIL
+  Open Font License - the Noto fonts, for one);
+- a **BMFont** (`.fnt` + `.png`) - letters drawn by hand, to match the game's
+  look;
+- a **recipe** - new letters put together from the game's own (a mirrored
+  letter, an accent moved onto another): for alphabets close to Latin, such
+  as Č or Đ, or Cyrillic.
+
+The game's fonts were made for Latin, so for other scripts keep in mind:
+
+- **Combining marks** (Thai vowels and tone marks, many Indic signs) are
+  placed as the font gives them, one after another; marks stacked on marks
+  are not rearranged. Check the result on screen.
+- **Lines break at spaces.** A language written without spaces between words
+  (Thai, Chinese, Japanese) does not wrap by itself: put `\n` where a line
+  should break in long texts.
+- **The atlas is the game's size** (see below): a large alphabet in a big
+  font may not fit. Leaving out the accented Latin letters is done for you;
+  if it still does not fit, `burnout.log` says so.
+
+**6. Share it** - the mod's folder without `.cache`, with your text and fonts
+you may give away. See *Sharing a mod* at the end.
+
 ## Localisation mods
 
 A localisation mod puts its own text in place of the game's, and its own fonts
@@ -93,7 +172,7 @@ language file into this format, with its name where it is known and its hash
 where it is not:
 
 ```bash
-tools/localeexport/localeexport game/language/strings/MainUK.bin strings_template.txt game/fe/*.bin
+./localeexport game/language/strings/MainUK.bin strings_template.txt game/fe/*.bin
 ```
 
 (`MainUK.bin` on the European disc, `MainUS.bin` on the American one; the
@@ -131,9 +210,9 @@ a mirrored R, Б from E over B, И from a mirrored N, and so on) - a draft to
 redraw letter by letter in any image editor:
 
 ```bash
-tools/fontgen/fontgen export game/language/fonts/Big.bin Big mods/locale_rus
-tools/fontgen/fontgen export game/language/fonts/BigDistressed.bin BigDistressed mods/locale_rus
-tools/fontgen/fontgen export game/language/fonts/small.bin Small mods/locale_rus
+./fontgen export game/language/fonts/Big.bin Big mods/locale_rus
+./fontgen export game/language/fonts/BigDistressed.bin BigDistressed mods/locale_rus
+./fontgen export game/language/fonts/small.bin Small mods/locale_rus
 ```
 
 `fontgen fnt <game font> <your .fnt> <out.bin>` (or `fontgen ttf ...`) makes the
