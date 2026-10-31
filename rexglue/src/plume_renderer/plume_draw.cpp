@@ -5669,21 +5669,60 @@ bool PlumeDrawContext::UploadHostTexture(plume::RenderCommandList* list, uint64_
 bool PlumeDrawContext::HoldsThinFrame(const std::vector<GuestDrawSnapshot>& draws) {
   uint32_t d3d = 0;
   uint32_t copies = 0;
+  uint32_t to_front = 0;
   for (const auto& d : draws) {
     copies += d.is_resolve ? 1 : 0;
+    to_front += (d.is_resolve && IsKnownFrontBuffer(d.resolve_dest)) ? 1 : 0;
     d3d += (!d.is_clear && !d.is_resolve && d.d3d_vertex_buffer != 0) ? 1 : 0;
   }
   // 8, not 50: the title screen draws some 45 a frame over its video, and on a
   // phone its bare video frames came through (the logo and frame blinking out).
   // Video alone averages one draw and is still shown.
-  const bool hold = d3d == 0 && copies == 0 && hold_average_ >= 8.0;
+  //
+  // Thin is under 30% of the frames before, not only none: a title screen's
+  // frame of its video and a copy of it (0 of ~95 draws, the copy into the
+  // video's own target), and one of 11 of them shown from the target half drawn,
+  // came up on a desktop as the logo flashing out. A frame with copies is held
+  // only when it has no draw at all: its copies are then skipped, the video a
+  // frame late. A real change of screen to fewer draws is held for some ten
+  // frames, until the average has come down.
+  const bool thin = hold_average_ >= 8.0 && double(d3d) < hold_average_ * 0.3;
+  // Even with a copy into a front buffer: the title screen's video is updated
+  // in a frame of its own (D3, the video, a copy into the video's target), and
+  // a frame of the title is now and then cut in two, its menu drawn in one
+  // frame here and copied to the front in the next (video, D2, the copy) -
+  // which starts by clearing, so the copy held two draws. Shown, either made
+  // the logo and the menu blink out.
+  (void)to_front;
+  // And the first half of such a frame cut in two: the video copied into its
+  // own target, then part of the menu drawn over it, with no copy to the front
+  // after it - the rest of the menu and that copy come in the next frame,
+  // which draws on without clearing. Shown from the target, a third of the
+  // interface (the buttons, the text) blinked out; held, the next frame's half
+  // lands on the last whole picture.
+  bool half = false;
+  if (copies != 0 && to_front == 0 && last_shown_from_copy_) {
+    bool video_copied = false;
+    bool drawn_after = false;
+    for (const auto& d : draws) {
+      if (d.is_resolve) {
+        video_copied = video_copied || video_copy_dests_.count(d.resolve_dest) != 0;
+        drawn_after = false;
+      } else if (!d.is_clear && d.d3d_vertex_buffer != 0 && !d.has_video_frame()) {
+        drawn_after = true;
+      }
+    }
+    half = video_copied && drawn_after;
+  }
+  const bool hold = thin || half;
   hold_average_ = hold_average_ * 0.9 + double(d3d) * 0.1;
   if (hold) {
     static std::atomic<uint32_t> held{0};
     const uint32_t n = held.fetch_add(1, std::memory_order_relaxed) + 1;
     if (n <= 4 || (n % 500) == 0) {
-      REXLOG_INFO("plume: frame {} has {} entries and no Direct3D draw; showing the last picture again ({} so far)",
-                  frame_serial_, draws.size(), n);
+      REXLOG_INFO("plume: frame {} has {} entries and {} Direct3D draw(s) against {:.0f}; showing the last "
+                  "picture again ({} so far)",
+                  frame_serial_, draws.size(), d3d, hold_average_, n);
     }
   }
   return hold;
