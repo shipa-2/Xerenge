@@ -9,11 +9,8 @@
 // miles. The functions making that test are wrapped here, and while one runs
 // the word reads as another language's; the strings, and the two functions that
 // choose by the language itself (sub_821F6100, sub_821F6AF0), are left alone.
-#include <chrono>
-#include <algorithm>
 #include <cstdint>
 #include <cstring>
-#include <map>
 #include <string>
 
 #include <rex/hook.h>
@@ -91,6 +88,7 @@ METRIC_HOOK(sub_821F8590)
 METRIC_HOOK(sub_821F8650)
 METRIC_HOOK(sub_821F8748)
 METRIC_HOOK(sub_820AD618)
+
 
 namespace xerenge::units {
 

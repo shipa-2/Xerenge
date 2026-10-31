@@ -275,11 +275,7 @@ constexpr float kPageStep = 34.0f;
 // GRAPHICS page's four rows likewise.
 constexpr float kPauseChoiceX = -80.0f;
 constexpr float kPauseButtonX = 217.8f;
-// The volumes, SPEED COUNTER and GRAPHICS, centred on 298 as the game's three
-// items were (256, 298, 340).
-constexpr float kPauseMainY[] = {235.0f, 277.0f, 319.0f, 361.0f};
-// The row of the pause menu's own page: the speedometer's unit (Settings 17).
-constexpr uint32_t kSpeedRowId = 17;
+constexpr float kPauseMainY[] = {256.0f, 298.0f, 340.0f};  // the volumes where the game has them
 constexpr float kPausePageFirstY = 177.0f;
 constexpr float kPauseStep = 42.0f;
 // The game's rows, left out of our pages.
@@ -526,23 +522,12 @@ bool Rebuild(const uint8_t* data, size_t data_size, const uint8_t* constants, si
         }
       }
     }
-    // SPEED COUNTER (MPH/KPH) among them, under the volumes (GitHub #55).
-    std::string speed_row;
-    for (const auto& row : rows) {
-      if (row.id == kSpeedRowId) {
-        speed_row = "xerenge_row" + std::to_string(row.id);
-        place(choice_character, speed_row, kPauseChoiceX, kPauseMainY[2], choice_row(row, 2, false));
-      }
-    }
-    place(button_character, "xerenge_graphics_btn", kPauseButtonX, kPauseMainY[3],
-          button_row("GRAPHICS", 0, 3, false));
+    place(button_character, "xerenge_graphics_btn", kPauseButtonX, kPauseMainY[2],
+          button_row("GRAPHICS", 0, 2, false));
     std::vector<std::string> graphics;
-    int tab = 4;
+    int tab = 3;
     float y = kPausePageFirstY;
     for (const auto& row : rows) {
-      if (row.id == kSpeedRowId) {
-        continue;
-      }
       const std::string name = "xerenge_row" + std::to_string(row.id);
       place(choice_character, name, kPauseChoiceX, y, choice_row(row, tab++, false));
       graphics.push_back(name);
@@ -577,21 +562,14 @@ bool Rebuild(const uint8_t* data, size_t data_size, const uint8_t* constants, si
         call0(name, on ? "enable" : "disable");
       }
     };
-    std::vector<std::string> main_rows = {"btn_volume_effects", "btn_volume_music", "xerenge_graphics_btn"};
-    if (!speed_row.empty()) {
-      main_rows.insert(main_rows.begin() + 2, speed_row);
-    }
+    const std::vector<std::string> main_rows = {"btn_volume_effects", "btn_volume_music", "xerenge_graphics_btn"};
     const auto show_page = [&](bool to_graphics) {
       page_rows(to_graphics ? main_rows : graphics, false);
       page_rows(to_graphics ? graphics : main_rows, true);
-      {
+      if (to_graphics) {
         // row.mIsVisible = true: goNext/goPrevious do nothing without it, and
-        // only the row's showOptions sets it, which a row hidden at first missed -
-        // and SPEED COUNTER, placed by us on the volumes' page, never had it.
-        for (const auto& name : to_graphics ? graphics : main_rows) {
-          if (name.rfind("xerenge_row", 0) != 0) {
-            continue;
-          }
+        // only the row's showOptions sets it, which a row hidden at first missed.
+        for (const auto& name : graphics) {
           code.Push({c.String(name)});
           code.Op(0x1C);
           code.Push({c.String("mIsVisible"), c.Bool(true)});
@@ -599,7 +577,7 @@ bool Rebuild(const uint8_t* data, size_t data_size, const uint8_t* constants, si
         }
       }
       // gFM.selectItemByIdx(first row of the page)
-      code.Push({c.Int(to_graphics ? 4 : 3), c.Int(1), c.String("gFM")});
+      code.Push({c.Int(to_graphics ? 3 : 2), c.Int(1), c.String("gFM")});
       code.Op(0x1C);
       code.Push({c.String("selectItemByIdx")});
       code.Op(0x52);
@@ -616,12 +594,6 @@ bool Rebuild(const uint8_t* data, size_t data_size, const uint8_t* constants, si
       set("xerengeOnGraphics", c.Bool(to_graphics));
     };
     set("xerengeOnGraphics", c.Bool(false));
-    if (!speed_row.empty()) {
-      code.Push({c.String(speed_row)});
-      code.Op(0x1C);
-      code.Push({c.String("mIsVisible"), c.Bool(true)});
-      code.Op(0x4F);
-    }
     // The GRAPHICS page's rows, set up like any (hidden from the start, they came
     // up without their values), put away until GRAPHICS is chosen.
     page_rows(graphics, false);
@@ -748,11 +720,7 @@ bool Rebuild(const uint8_t* data, size_t data_size, const uint8_t* constants, si
       code.EndFunction(body);
     }
     code.Op(0x1D);
-    std::vector<std::string> arrow_rows = graphics;
-    if (!speed_row.empty()) {
-      arrow_rows.push_back(speed_row);
-    }
-    for (const auto& name : arrow_rows) {
+    for (const auto& name : graphics) {
       code.Push({c.String("xerengeArrows")});
       code.Op(0x1C);
       code.Push({c.Int(1), c.String(name)});

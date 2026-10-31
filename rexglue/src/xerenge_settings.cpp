@@ -224,17 +224,17 @@ const std::vector<Setting>& Settings() {
     bloom.live = [](int option) { XerengeSetMenuBloom(option == 1); };
     bloom.running = [] { return std::getenv("XERENGE_NO_BLOOM") ? 0 : 1; };
     s.push_back(bloom);
+    Setting blur{16, kGraphics, "BLUR", "motion_blur", OffOn(), 0};
+    blur.restart = false;
+    blur.live = [](int option) { XerengeSetMenuMotionBlur(option == 1); };
+    blur.running = [] { return std::getenv("XERENGE_NO_MOTION_BLUR") ? 0 : 1; };
+    s.push_back(blur);
     // The speedometer's and the menus' unit (speed_units.cpp), at once.
     Setting speed{17, kGraphics, "SPEED COUNTER", "speed_units", {{"MPH", "mph"}, {"KPH", "kph"}}, 0};
     speed.restart = false;
     speed.live = [](int option) { units::SetKilometres(option == 1); };
     speed.running = [] { return units::KilometresShown() ? 1 : 0; };
     s.push_back(speed);
-    Setting blur{16, kGraphics, "BLUR", "motion_blur", OffOn(), 0};
-    blur.restart = false;
-    blur.live = [](int option) { XerengeSetMenuMotionBlur(option == 1); };
-    blur.running = [] { return std::getenv("XERENGE_NO_MOTION_BLUR") ? 0 : 1; };
-    s.push_back(blur);
 
     // The frame rates: 30 is fps_30, 120 frame_generation (for the race and
     // Crash mode alike), Crash mode's 60 crash_interpolation.
@@ -334,7 +334,7 @@ std::vector<Row> Rows(Page page) {
   std::vector<Row> rows;
   if (page == kPause) {
     // What changes without a restart, in the order the pause menu shows it.
-    for (const int id : {15, 16, 14, 13, 17}) {
+    for (const int id : {15, 16, 14, 13}) {
       if (const Setting* s = Find(id)) {
         Row row{s->label, {}, s->id};
         for (const Option& o : s->options) {
