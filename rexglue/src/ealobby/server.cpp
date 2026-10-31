@@ -776,6 +776,32 @@ void Server::HandleLobby(Connection& connection, const Message& message) {
     if (connection.id == 0) {
       connection.id = next_user_++;
     }
+    // The same player logged in again over an earlier connection of theirs
+    // that is still here: a phone gone from its Wi-Fi to the mobile network
+    // leaves the old one open, unanswered, and stayed in its game twice - its
+    // old self at its old address, which the others tried to reach. The old
+    // one is taken out of its game and shut, and closes as any other.
+    if (!connection.xuid.empty()) {
+      for (auto& [fd, other] : connections_) {
+        if (other.get() == &connection || other->role != Role::kLobby || other->fd < 0 ||
+            other->user != name || other->xuid != connection.xuid) {
+          continue;
+        }
+        Log("lobby: " + name + " logged in again from " + connection.peer + " - its connection from " +
+            other->peer + " dropped");
+        if (other->remote_link >= 0) {
+          DropRemote(*other, true);
+        }
+        LeaveGame(*other);
+        shutdown(ToNative(other->fd),
+#ifdef _WIN32
+                 SD_BOTH
+#else
+                 SHUT_RDWR
+#endif
+        );
+      }
+    }
     SendWho(connection);
     return;
   }
