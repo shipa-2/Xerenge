@@ -9,11 +9,18 @@
 // miles. The functions making that test are wrapped here, and while one runs
 // the word reads as another language's; the strings, and the two functions that
 // choose by the language itself (sub_821F6100, sub_821F6AF0), are left alone.
+#include <chrono>
+#include <algorithm>
 #include <cstdint>
+#include <cstring>
+#include <map>
+#include <string>
 
 #include <rex/hook.h>
 #include <rex/logging.h>
+#include <rex/memory.h>
 #include <rex/ppc.h>
+#include <rex/system/kernel_state.h>
 
 #include "guest_memory.h"
 #include "xerenge_settings.h"
@@ -24,15 +31,18 @@ constexpr uint32_t kLanguage = 0x82825BCC;
 constexpr uint32_t kNotEnglish = 2;
 
 // speed_units in xerenge.conf: kph, mph, or the game's own choice (unset).
+// Read at the start, then as Settings changes it (SetKilometres): the pause
+// menu's SPEED row takes effect in the race at once.
+int g_kph = -1;
+
 bool Kilometres() {
-  static const bool kph = [] {
-    const bool on = xerenge::settings::ConfString("speed_units", "") == "kph";
-    if (on) {
+  if (g_kph < 0) {
+    g_kph = xerenge::settings::ConfString("speed_units", "") == "kph" ? 1 : 0;
+    if (g_kph) {
       REXLOG_INFO("units: kilometres per hour (speed_units = kph)");
     }
-    return on;
-  }();
-  return kph;
+  }
+  return g_kph == 1;
 }
 
 // The word as the test sees it, for one call: an English game's 0 or 1 made
@@ -81,3 +91,18 @@ METRIC_HOOK(sub_821F8590)
 METRIC_HOOK(sub_821F8650)
 METRIC_HOOK(sub_821F8748)
 METRIC_HOOK(sub_820AD618)
+
+namespace xerenge::units {
+
+void SetKilometres(bool kph) {
+  g_kph = kph ? 1 : 0;
+  // The number follows at once; the word beside it is the HUD's own copy,
+  // made when it was built, and follows from the next event.
+  REXLOG_INFO("units: {} per hour", kph ? "kilometres" : "miles");
+}
+
+bool KilometresShown() {
+  return Kilometres();
+}
+
+}  // namespace xerenge::units
