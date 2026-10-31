@@ -1256,6 +1256,9 @@ void PlumeGraphicsSystem::PublishDrawSnapshot(uint32_t prim_type, uint32_t sourc
           }
         }
       }
+      if (RangeReadable(memory_, device + 0x3208, 16)) {
+        CopyBeDwords(memory_, snap.d3d_viewport, device + 0x3208, 4);
+      }
       // PA_CL_VTE_CNTL (0x2206) from the same block, if the device keeps it.
       uint32_t vte = 0;
       CopyBeDwords(memory_, &vte, device + kD3DRenderStateOffset + (0x2206 - 0x2200) * 4, 1);

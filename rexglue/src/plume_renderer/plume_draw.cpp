@@ -8449,6 +8449,46 @@ void PlumeDrawContext::EncodeDraws(plume::RenderCommandList* list,
         view_x = (int32_t(width) - int32_t(view_w)) / 2;
         view_y = (int32_t(height) - int32_t(view_h)) / 2;
       }
+      {
+        // XERENGE_VIEWPORT_LOG: each new guest viewport a 3D draw comes with,
+        // for split screen (GitHub #60) - one player's half each.
+        static const bool viewport_log = std::getenv("XERENGE_VIEWPORT_LOG") != nullptr;
+        if (viewport_log && !boxed && snap.d3d_vertex_buffer != 0) {
+          static std::mutex seen_mutex;
+          static std::set<std::tuple<int, int, int, int, uint32_t, uint32_t>> seen;
+          std::lock_guard lock(seen_mutex);
+          if (seen.size() < 200 &&
+              seen.emplace(int(snap.d3d_viewport[0]), int(snap.d3d_viewport[1]),
+                           int(snap.d3d_viewport[2]), int(snap.d3d_viewport[3]),
+                           snap.d3d_target_width, snap.d3d_target_height)
+                  .second) {
+            REXLOG_INFO("plume: frame {} 3D viewport {},{} {}x{} target {}x{} vs={:016X}",
+                        frame_serial_, snap.d3d_viewport[0], snap.d3d_viewport[1],
+                        snap.d3d_viewport[2], snap.d3d_viewport[3], snap.d3d_target_width,
+                        snap.d3d_target_height, snap.vs_hash);
+          }
+        }
+      }
+      // The title's own viewport, when it covers only part of its target:
+      // split screen (GitHub #60) gives each player a half. Drawn over the
+      // whole target, each player's scene filled the screen and the last one
+      // drawn won. Not for a pass whose positions come in pixels (passthrough):
+      // those are placed against the whole target already.
+      if (!boxed && !menu_video && !passthrough && snap.d3d_vertex_buffer != 0 &&
+          snap.d3d_target_width != 0 && snap.d3d_target_height != 0) {
+        const uint32_t tw = snap.d3d_target_width;
+        // The tiled scene's target is one band (1280x256) and still the whole
+        // frame, drawn band by band: its viewports are the frame's.
+        const uint32_t th = tw >= 1280 && snap.d3d_target_height < 720 ? 720u : snap.d3d_target_height;
+        const uint32_t* vp = snap.d3d_viewport;
+        if (vp[2] != 0 && vp[3] != 0 && vp[0] + vp[2] <= tw && vp[1] + vp[3] <= th &&
+            (vp[2] < tw || vp[3] < th)) {
+          view_x += int32_t(uint64_t(vp[0]) * view_w / tw);
+          view_y += int32_t(uint64_t(vp[1]) * view_h / th);
+          view_w = std::max(1u, uint32_t(uint64_t(vp[2]) * view_w / tw));
+          view_h = std::max(1u, uint32_t(uint64_t(vp[3]) * view_h / th));
+        }
+      }
       use_viewport(snap.d3d_vertex_buffer != 0, view_x, view_y, view_w, view_h);
       // The title's scissor, scaled from its render target's pixels to the
       // area that target is drawn over here.

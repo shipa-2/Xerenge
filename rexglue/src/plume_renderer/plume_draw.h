@@ -277,6 +277,9 @@ struct GuestDrawSnapshot {
   // in render target pixels, when its scissor test is on (device + 0x2EB0).
   bool scissor_enabled = false;
   int32_t scissor_rect[4] = {};
+  // The title's viewport (D3DDevice_SetViewport, device + 0x3208: x, y, width,
+  // height) in render target pixels - one player's half in split screen.
+  uint32_t d3d_viewport[4] = {};
   uint32_t d3d_target_height = 0;
   // Not a draw at all: a marker for where the title asked the render target to
   // be copied out. It has to keep its place among the draws, because the title

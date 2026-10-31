@@ -291,6 +291,9 @@ std::vector<std::string> Prepare(const std::filesystem::path& dir, const Config&
   args.push_back(conf.Is("windowed", "true") ? "--no-fullscreen" : "--fullscreen");
   if (conf.Is("keyboard", "true")) {
     args.push_back("--mnk_mode=true");
+    if (conf.Has("keyboard_player")) {
+      args.push_back("--keyboard_player=" + conf.Get("keyboard_player"));
+    }
     for (const auto& [key, value] : conf.lines) {
       if (key.rfind("keybind_", 0) == 0 && !value.empty()) {
         args.push_back("--" + key + "=" + value);
