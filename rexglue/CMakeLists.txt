@@ -20,6 +20,7 @@ set(BURNOUT_SOURCES
     src/xerenge_settings.cpp
     src/xerenge_restart.cpp
     src/music_trace.cpp
+    src/speed_units.cpp
     src/custom_music.cpp
     src/game_font.cpp
     src/mods.cpp
