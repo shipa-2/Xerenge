@@ -717,20 +717,16 @@ jobs:
 
           **Online play works out of the box** - the installer points at the server (`94639.snk.wtf`), where everyone plays together; there is nothing to set up. An install from before the server is moved to it when the installer runs over it.
 
-          **What's new in 0.4.9:**
-          - **Wide screens**: on a screen wider than 16:9 the race HUD goes to the screen's edges, the crash border and flashes cover the whole frame, and the menus' background videos fill the width (`menu_video` = zoom, stretch or box in `xerenge.conf`). Keep 16:9 turns it off. By GOATS2K (GitHub #53).
-          - **Your own music**: Driver Details > Song Manager, LT switches EA Trax for the songs of a `music` folder beside the game (MP3 and WMA, names from their tags), RT sets their order. The folder is read again each time EA Trax is opened.
-          - **Mods**: translations into languages the game was never released in, with fonts of their own - see `MODDING.md`. The installer makes `game/mods`; the Russian mod comes with the release.
-          - **Saves from Xenia and from a console**: a Xenia profile folder put beside the game's saves, or a save package in `import/`, is taken in at the first start (GitHub #46).
-          - **Button icons**: Driver Details > Settings > BUTTON ICONS - XBOX (the game's own) or PLAYSTATION.
-          - **Achievements**: a notice as one is earned, and the full list under Player File > Stats.
-          - **Online**: players on the internet reach each other through their routers (NAT traversal, GitHub #49); quick match finds only games of the kind asked for, Ranked or Player Match (GitHub #35).
-          - **Phones with a Mali GPU**: textures are re-encoded for the GPU on all cores, and the first start prepares them in the background, so tracks and menus load without stalls (GitHub #32).
-          - **Portable**: a box in the installer keeps the saves, caches and logs in the game's folder (GitHub #42).
-          - **Linux**: runs natively on Wayland in a Wayland session.
-          - **Smoother starts**: shader pipelines are made ahead and the driver's compiled ones kept between runs.
-          - **Installer**: says why a copy failed and what to do (the game running, Program Files, Controlled folder access), and checks the folder before the long steps (GitHub #59, #65).
-          - B on the main menu asks whether to quit the game.
+          **What's new in 0.4.10:**
+          - **Split screen**: each player's view is drawn in its own half of the screen; before, the second player's scene covered the first (GitHub #60). To play two at one PC on a keyboard and a pad, set `keyboard = true` and `keyboard_player = 2` in `xerenge.conf`: the keyboard becomes player 2 and the pad stays player 1.
+          - **Online across networks**: players behind different routers, on mobile internet or behind a VPN join each other's games; the game looks at its own address again every few seconds, so a phone moving from Wi-Fi to mobile data keeps being reachable, and the server drops the old connection of a player who logs in again (GitHub #49, #67).
+          - **Your own music, any size**: the music folder is read in pages of 41 songs, turned with LB/RB in Song Manager (`[MY MUSIC 3/35]` in its title); `recursive_scan = true` reads the folders inside it too, and `music_dir` in `xerenge.conf` points at a folder of your choice. The chosen folder is in place from the first menu (GitHub #70).
+          - **LB goes back a song**: wherever RB skips, LB restarts the song, or within its first three seconds goes to the one before (GitHub #55).
+          - **Kilometres per hour**: SPEED COUNTER (MPH/KPH) on the GRAPHICS settings page, or `speed_units = kph` in `xerenge.conf` - the speedometer and the menus' speeds in km/h on an English game too (GitHub #55).
+          - **Modified R185 DX**: its rims have spokes again (GitHub #48).
+          - **Title screen**: the menu strobes far less over the background video, most of all on phones.
+          - **Linux**: X11 is used whenever RenderDoc is on, so F12 captures work.
+          - `MODDING.md`: a step-by-step guide to translating the game.
 
           EOF
           gh release create "v$VERSION" --title "$VERSION" --latest --target "$GITHUB_SHA" \
