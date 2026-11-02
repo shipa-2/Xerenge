@@ -1287,7 +1287,8 @@ QString InstallerWindow::WriteSettings() const {
               "bloom = %1\n"
               "motion_blur = %2\n"
               "# plume (this project's renderer) or xenos (Xenia's)\n"
-              "renderer = %3\n")
+              "renderer = %3\n"
+              "# Windows, plume: render_api = d3d12 draws through Direct3D 12 instead of Vulkan\n")
           .arg(bloom_ ? "true" : "false", blur_ ? "true" : "false", xenia_ ? "xenos" : "plume") +
       extra_settings_;
   // What the file has that nothing here wrote - set in the game's menu, or by

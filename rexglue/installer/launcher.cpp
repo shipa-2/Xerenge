@@ -172,6 +172,8 @@ std::vector<std::string> Prepare(const std::filesystem::path& dir, const Config&
 
   const std::string renderer = conf.Is("renderer", "xenos") ? "xenos" : "plume";
   if (renderer == "plume") {
+    // render_api = d3d12 (Windows): plume through Direct3D 12 instead of Vulkan.
+    if (conf.Is("render_api", "d3d12")) Env("XERENGE_RENDER_API", "d3d12");
     for (const char* name : {"XERENGE_D3D_TARGETS", "XERENGE_D3D_UI", "XERENGE_SKIP_LOGOS",
                              "XERENGE_REAL_SHADERS", "XERENGE_D3D_DRAWS", "XERENGE_SECONDARY_TICKS"}) {
       Env(name, "1");

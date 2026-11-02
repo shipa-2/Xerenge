@@ -280,6 +280,9 @@ jobs:
           mkdir -p "$payload/bin" "$payload/tools"
           cp rexglue/build/burnout.exe "$payload/bin/burnout_eu.exe"
           find rexglue/build rexglue-sdk/out/win-amd64 -maxdepth 2 -name '*.dll' -not -path '*/Debug/*' -exec cp {} "$payload/bin/" \;
+          # DXC for render_api = d3d12: plume links the shaders' DXIL with their
+          # specialisation constants when it first needs them.
+          cp XenosRecomp/thirdparty/dxc-bin/bin/x64/dxcompiler.dll XenosRecomp/thirdparty/dxc-bin/bin/x64/dxil.dll "$payload/bin/"
           cp rexglue/plume_pipelines.txt "$payload/bin/"  # the pipelines met playing it through: made during the logos
           cp tools/bin/extract-image.exe "$payload/tools/"
           cp "rexglue/installer/build/Burnout Revenge.exe" "$payload/"
