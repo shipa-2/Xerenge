@@ -19,12 +19,19 @@ constexpr uint32_t kRegisters = 256;
 
 // The registers holding a shader's placement matrices: each named constant
 // runs from its start to the next one's.
-std::vector<uint16_t> ParseMatrixRegisters(const std::string& hlsl) {
+std::vector<uint16_t> ParseMatrixRegisters(const std::string& hlsl, bool instances_only = false) {
   std::vector<uint16_t> out;
-  static constexpr const char* kMatrices[] = {
+  static constexpr const char* kAll[] = {
       "gObjToProjMatrix",       "gCurrentWorldViewMatrix", "gPrevWorldViewMatrix",
       "gObjToWorldMatrix",      "gWorldToProjMatrix",      "gObjToWorldRotationMatrix",
       "gVertexShader_BlendMatrices", "gTransformArray"};
+  static constexpr const char* kInstances[] = {"gTransformArray"};
+  const auto matches = [&](const std::string& id) {
+    if (instances_only) {
+      return std::find(std::begin(kInstances), std::end(kInstances), id) != std::end(kInstances);
+    }
+    return std::find(std::begin(kAll), std::end(kAll), id) != std::end(kAll);
+  };
   // Every named vertex constant and where it starts.
   std::vector<std::pair<uint32_t, bool>> starts;  // register, is a matrix
   static constexpr std::string_view kDefine = "#define g";
@@ -39,10 +46,7 @@ std::vector<uint16_t> ParseMatrixRegisters(const std::string& hlsl) {
     }
     const uint32_t reg = uint32_t(std::strtoul(line.c_str() + base + kBase.size(), nullptr, 10));
     const std::string id = line.substr(8, line.find_first_of("( ", 8) - 8);
-    bool matrix = false;
-    for (const char* m : kMatrices) {
-      matrix |= id == m;
-    }
+    const bool matrix = matches(id);
     starts.emplace_back(reg, matrix);
   }
   std::sort(starts.begin(), starts.end());
@@ -143,6 +147,7 @@ ShaderSourceInfo ParseShaderSource(std::string_view src) {
   }
   info.consumed_locations = ParseConsumedLocations(src);
   info.matrix_registers = ParseMatrixRegisters(std::string(src));
+  info.instance_registers = ParseMatrixRegisters(std::string(src), true);
   return info;
 }
 

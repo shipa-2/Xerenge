@@ -82,7 +82,8 @@ int main(int argc, char** argv) {
         << ", " << (info.vertex_fetch ? "true" : "false") << ", "
         << (info.position_scaling ? "true" : "false") << ", "
         << (info.writes_oc1 ? "true" : "false") << ", " << info.sampler_slots << "u, "
-        << List(info.consumed_locations) << ", " << List(info.matrix_registers) << "});\n";
+        << List(info.consumed_locations) << ", " << List(info.matrix_registers) << ", "
+        << List(info.instance_registers) << "});\n";
   }
   out << "}\n\n}  // namespace rex::plume_renderer\n";
 

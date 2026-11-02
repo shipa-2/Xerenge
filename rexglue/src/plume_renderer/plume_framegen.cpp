@@ -91,6 +91,13 @@ const std::vector<uint16_t>& MatrixRegisters(uint64_t vs_hash) {
   return info ? info->matrix_registers : kNone;
 }
 
+// Those in gTransformArray (ShaderSourceInfo::instance_registers).
+const std::vector<uint16_t>& InstanceRegisters(uint64_t vs_hash) {
+  static const std::vector<uint16_t> kNone;
+  const ShaderSourceInfo* info = FindShaderSourceInfo(vs_hash);
+  return info ? info->instance_registers : kNone;
+}
+
 // A matrix element, not the garbage the title leaves in a register's unused
 // lanes - the .w of its world-view rows holds values like 1.8e22 that change
 // from frame to frame. Counted, they swamped every comparison: no movement
@@ -215,9 +222,17 @@ FramePairing PairFrames(const std::vector<GuestDrawSnapshot>& previous,
       // entries and the translations in thousands hid a piece of debris put
       // somewhere else entirely (a slot of the title's reused for a new one), and
       // it was drawn sliding across between the two.
+      // Not the instance slots: the title hands them to other objects - one
+      // tree's place in a slot one frame, another's the next - and drawn
+      // between the two, the trees burst apart (GitHub #79). Their objects
+      // stand still; the newer frame's places are the right ones.
+      const std::vector<uint16_t>& instances = InstanceRegisters(b.vs_hash);
       bool jumped = false;
       for (const uint16_t r : regs) {
         if (std::memcmp(&a.vs_constants[r * 4], &b.vs_constants[r * 4], 16) == 0) {
+          continue;
+        }
+        if (std::find(instances.begin(), instances.end(), r) != instances.end()) {
           continue;
         }
         match.registers.push_back(r);

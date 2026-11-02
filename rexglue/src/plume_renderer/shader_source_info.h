@@ -31,6 +31,10 @@ struct ShaderSourceInfo {
   std::vector<uint32_t> consumed_locations;
   // Vertex constant registers belonging to its placement matrices.
   std::vector<uint16_t> matrix_registers;
+  // Those of them in gTransformArray: one object's placement per slot, and the
+  // title gives the slots to other objects from frame to frame (trees, drawn
+  // many to a draw) - generated frames take them as they are (GitHub #79).
+  std::vector<uint16_t> instance_registers;
 };
 
 ShaderSourceInfo ParseShaderSource(std::string_view hlsl);
