@@ -52,6 +52,13 @@
 #include <rex/system/xmemory.h>
 
 #include "plume_renderer/plume_passthrough_spirv.h"
+#if defined(_WIN32)
+// The same passes for D3D12, compiled from passthrough.hlsl and video.hlsl.
+#include "plume_renderer/plume_passthrough_vs_dxil.h"
+#include "plume_renderer/plume_passthrough_ps_dxil.h"
+#include "plume_renderer/plume_video_vs_dxil.h"
+#include "plume_renderer/plume_video_ps_dxil.h"
+#endif
 #include "plume_renderer/plume_colour_table.h"
 #include "plume_renderer/plume_settings.h"
 #include "plume_renderer/plume_video_spirv.h"
@@ -2827,10 +2834,21 @@ bool PlumeDrawContext::Initialize(plume::RenderDevice* device) {
 }
 
 bool PlumeDrawContext::CreatePassthroughPipeline() {
-  passthrough_vs_ = device_->createShader(kPassthroughVsSpirv, kPassthroughVsSpirv_count * 4,
-                                          "main", plume::RenderShaderFormat::SPIRV);
-  passthrough_ps_ = device_->createShader(kPassthroughPsSpirv, kPassthroughPsSpirv_count * 4,
-                                          "main", plume::RenderShaderFormat::SPIRV);
+#if defined(_WIN32)
+  // D3D12: passthrough.hlsl, its texture the bindless one the vertex names.
+  if (!PlumeUsesVulkan()) {
+    passthrough_vs_ = device_->createShader(kPassthroughVsDxil, sizeof(kPassthroughVsDxil), "VSMain",
+                                            plume::RenderShaderFormat::DXIL);
+    passthrough_ps_ = device_->createShader(kPassthroughPsDxil, sizeof(kPassthroughPsDxil), "PSMain",
+                                            plume::RenderShaderFormat::DXIL);
+  } else
+#endif
+  {
+    passthrough_vs_ = device_->createShader(kPassthroughVsSpirv, kPassthroughVsSpirv_count * 4,
+                                            "main", plume::RenderShaderFormat::SPIRV);
+    passthrough_ps_ = device_->createShader(kPassthroughPsSpirv, kPassthroughPsSpirv_count * 4,
+                                            "main", plume::RenderShaderFormat::SPIRV);
+  }
   if (!passthrough_vs_ || !passthrough_ps_) {
     return false;
   }
@@ -2858,10 +2876,21 @@ plume::RenderPipeline* PlumeDrawContext::VideoPipelineFor(plume::RenderPrimitive
     if (!device_) {
       return nullptr;
     }
-    video_vs_ = device_->createShader(kVideoVsSpirv, kVideoVsSpirv_count * 4, "main",
-                                      plume::RenderShaderFormat::SPIRV);
-    video_ps_ = device_->createShader(kVideoPsSpirv, kVideoPsSpirv_count * 4, "main",
-                                      plume::RenderShaderFormat::SPIRV);
+#if defined(_WIN32)
+    // D3D12: video.hlsl, its planes the bindless ones the vertex names.
+    if (!PlumeUsesVulkan()) {
+      video_vs_ = device_->createShader(kVideoVsDxil, sizeof(kVideoVsDxil), "VSMain",
+                                        plume::RenderShaderFormat::DXIL);
+      video_ps_ = device_->createShader(kVideoPsDxil, sizeof(kVideoPsDxil), "PSMain",
+                                        plume::RenderShaderFormat::DXIL);
+    } else
+#endif
+    {
+      video_vs_ = device_->createShader(kVideoVsSpirv, kVideoVsSpirv_count * 4, "main",
+                                        plume::RenderShaderFormat::SPIRV);
+      video_ps_ = device_->createShader(kVideoPsSpirv, kVideoPsSpirv_count * 4, "main",
+                                        plume::RenderShaderFormat::SPIRV);
+    }
     REXLOG_INFO("plume: video shaders {}", video_vs_ && video_ps_ ? "created" : "FAILED");
   }
   return ScreenPipelineFor(video_vs_.get(), video_ps_.get(), video_pipelines_, "video", topology,
@@ -2891,11 +2920,6 @@ plume::RenderPipeline* PlumeDrawContext::ScreenPipelineFor(
     plume::RenderPrimitiveTopology topology, uint32_t blend_control, uint32_t color_mask,
     uint32_t depth_control) {
   if (!device_ || !vs || !ps) {
-    return nullptr;
-  }
-  // D3D12: these screen passes are SPIR-V only so far; asked for on every
-  // draw, they flooded the log with rejected shaders.
-  if (!PlumeUsesVulkan()) {
     return nullptr;
   }
   const uint8_t write_mask = WriteMaskForRt0(color_mask);
