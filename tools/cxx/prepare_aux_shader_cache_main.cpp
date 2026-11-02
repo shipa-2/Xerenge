@@ -16,6 +16,10 @@ const char* kSymbols[] = {
     "g_compressedSpirvCache",
     "g_spirvCacheCompressedSize",
     "g_spirvCacheDecompressedSize",
+    // The DXIL beside the SPIR-V (XenosRecomp on Windows): the D3D12 backend's.
+    "g_compressedDxilCache",
+    "g_dxilCacheCompressedSize",
+    "g_dxilCacheDecompressedSize",
 };
 
 std::string Transform(const std::string& src, const std::string& suffix) {
@@ -34,7 +38,7 @@ std::string Transform(const std::string& src, const std::string& suffix) {
     }
     for (const char* base :
          {"g_shaderCacheEntryCount", "g_shaderMicrocodeEntryCount", "g_spirvCacheCompressedSize",
-          "g_spirvCacheDecompressedSize"}) {
+          "g_spirvCacheDecompressedSize", "g_dxilCacheCompressedSize", "g_dxilCacheDecompressedSize"}) {
         const std::string name = std::string(base) + suffix;
         const std::string from = "const size_t " + name;
         const std::string to = "extern const size_t " + name;
@@ -44,9 +48,9 @@ std::string Transform(const std::string& src, const std::string& suffix) {
             pos += to.size();
         }
     }
-    {
-        const std::string array = "const uint8_t g_compressedSpirvCache" + suffix + "[]";
-        const std::string repl = "extern const uint8_t g_compressedSpirvCache" + suffix + "[]";
+    for (const char* base : {"g_compressedSpirvCache", "g_compressedDxilCache"}) {
+        const std::string array = "const uint8_t " + std::string(base) + suffix + "[]";
+        const std::string repl = "extern const uint8_t " + std::string(base) + suffix + "[]";
         size_t pos = 0;
         while ((pos = out.find(array, pos)) != std::string::npos) {
             out.replace(pos, array.size(), repl);

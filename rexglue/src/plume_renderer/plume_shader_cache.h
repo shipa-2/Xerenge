@@ -36,7 +36,10 @@ class PlumeShaderCache {
   // each candidate is a length some real shader has, so hashing that many
   // bytes never reads past a shader into guesswork.
   const std::vector<uint32_t>& MicrocodeSizes(uint32_t stage);
-  plume::RenderShader* GetOrCreateShader(uint64_t hash);
+  // D3D12: spec_constants and pixel_shader pick the linked variant of a shader
+  // with specialisation constants (plume_dxc_link.h); Vulkan ignores them.
+  plume::RenderShader* GetOrCreateShader(uint64_t hash, uint32_t spec_constants = 0,
+                                         bool pixel_shader = false);
   // The input locations (bit n = location n) a vertex shader declares, read
   // from its SPIR-V; 0 when the shader is unknown. See the vertex layout in
   // PlumeDrawContext::GetOrCreatePipeline.
@@ -60,11 +63,17 @@ class PlumeShaderCache {
   bool microcode_sizes_built_ = false;
   std::vector<uint8_t> extra_decompressed_spirv_;
   std::vector<uint8_t> bootstrap_decompressed_spirv_;
+  // D3D12: the DXIL blobs - primary, bootstrap, extra - decompressed on first use.
+  std::vector<uint8_t> dxil_blobs_[3];
+  bool dxil_tried_[3] = {};
+  const uint8_t* GetDxil(const ShaderCacheEntry& entry, size_t& size);
   bool decompressed_valid_ = false;
   bool extra_decompressed_valid_ = false;
   bool bootstrap_decompressed_valid_ = false;
   std::unordered_map<uint64_t, std::vector<uint32_t>> spirv_modules_;
   std::unordered_map<uint64_t, std::unique_ptr<plume::RenderShader>> shaders_;
+  // D3D12: the linked variants, by shader and specialisation constants.
+  std::unordered_map<uint64_t, std::unique_ptr<plume::RenderShader>> linked_shaders_;
   std::unordered_map<uint64_t, uint32_t> input_masks_;
 };
 

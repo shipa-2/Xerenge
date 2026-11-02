@@ -189,6 +189,7 @@ for arg in "$@"; do
         --trace) TRACE=1 ;;
         --movie) MOVIE=1 ;;
         --gdb)   MODE=gdb ;;
+        --cdb)   MODE=cdb ;;
         --capture) MODE=capture ;;
         --tint) TINT=1 ;;
         --reflect) REFLECT=1 ;;
@@ -356,6 +357,15 @@ EOF
     exec renderdoccmd capture --working-dir "$(pwd)" \
         --capture-file "$CAPDIR/frame" --wait-for-exit \
         "$(pwd)/$STUB" "$@" 2>&1 | tee "$CONSOLE"
+elif [ "$MODE" = cdb ]; then
+    # Windows: under cdb, which lets the first-chance access violations the
+    # runtime uses for guest memory through and, on a real crash (second
+    # chance), writes every thread's stack to logs/cdb<run>.log and quits.
+    CDB="${CDB:-/c/Program Files (x86)/Windows Kits/10/Debuggers/x64/cdb.exe}"
+    CDBLOG="$(pwd -W 2>/dev/null || pwd)/logs/cdb$N.log"
+    exec "$CDB" -g -G -o -lines \
+        -c "sxd av;sxd gp;g;.logopen $CDBLOG;.lastevent;r;kb 40;~*kb 20;.logclose;q" \
+        ./build/burnout$EXE "$@" 2>&1 | tee "$CONSOLE"
 elif [ "$MODE" = gdb ]; then
     exec gdb -q \
         -ex "set debuginfod enabled off" \

@@ -110,6 +110,7 @@ endif()
 set(REXGPU_PLUME_SOURCES
     src/plume_renderer/plume_graphics_system.cpp
     src/plume_renderer/plume_shader_cache.cpp
+    src/plume_renderer/plume_dxc_link.cpp
     src/plume_renderer/plume_swapchain.cpp
     src/plume_renderer/plume_postfx.cpp
     src/plume_renderer/plume_overlay.cpp
@@ -248,6 +249,9 @@ target_link_libraries(rexgpu-plume PRIVATE plume rex::runtime libzstd xxHash::xx
 if(WIN32)
     # plume's D3D12 backend (XERENGE_RENDER_API=d3d12), built beside Vulkan's.
     target_link_libraries(rexgpu-plume PRIVATE d3d12 dxgi dxguid)
+    # dxcapi.h for linking the shaders' DXIL (plume_dxc_link.cpp); dxcompiler.dll
+    # itself is loaded when first needed.
+    target_include_directories(rexgpu-plume PRIVATE "${CMAKE_CURRENT_SOURCE_DIR}/../rexglue-sdk/thirdparty/dxc/include")
 endif()
 if(APPLE)
     # The *Extra and *Bootstrap shader-cache tables are weak and only some

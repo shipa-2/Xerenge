@@ -35,6 +35,9 @@
 
 #include <plume_render_interface_builders.h>
 #include <plume_vulkan.h>
+#if defined(_WIN32)
+#include <plume_d3d12.h>
+#endif
 
 #include <rex/cvar.h>
 #include <rex/graphics/format/ucode.h>
@@ -819,9 +822,52 @@ GuestDepthState DepthStateFromGuest(uint32_t depth_control) {
 // returned object is taken as made.
 std::atomic<bool> g_uses_vulkan{true};
 
+// How an image goes into a staging buffer for copyTextureRegion. D3D12 wants
+// each row of blocks on 256 bytes (D3D12_TEXTURE_DATA_PITCH_ALIGNMENT); the
+// images are already put on 512. Vulkan takes them packed, as they come.
+struct StagedImage {
+  uint32_t row_bytes = 0;   // a row of blocks as the pixels hold it
+  uint32_t rows = 0;        // rows of blocks
+  uint32_t pitch = 0;       // a row as staged
+  uint32_t row_texels = 0;  // the footprint's row width
+  uint64_t size = 0;
+};
+
+StagedImage StagingFor(plume::RenderFormat format, uint32_t row_texels, uint32_t height) {
+  const uint32_t block = std::max(plume::RenderFormatBlockWidth(format), 1u);
+  const uint32_t block_bytes = std::max(plume::RenderFormatSize(format), 1u);
+  StagedImage s;
+  s.row_bytes = (row_texels + block - 1) / block * block_bytes;
+  s.rows = (height + block - 1) / block;
+  s.pitch = g_uses_vulkan.load(std::memory_order_relaxed) ? s.row_bytes : (s.row_bytes + 255u) & ~255u;
+  s.row_texels = s.pitch / block_bytes * block;
+  s.size = uint64_t(s.pitch) * s.rows;
+  return s;
+}
+
+// The packed pixels into the staging buffer at dst, row by row when padded.
+void StageRows(uint8_t* dst, const uint8_t* src, size_t src_size, const StagedImage& s) {
+  if (s.pitch == s.row_bytes) {
+    std::memcpy(dst, src, std::min<size_t>(src_size, size_t(s.size)));
+    return;
+  }
+  for (uint32_t row = 0; row < s.rows; ++row) {
+    const size_t from = size_t(row) * s.row_bytes;
+    if (from >= src_size) {
+      break;
+    }
+    std::memcpy(dst + size_t(row) * s.pitch, src + from, std::min<size_t>(s.row_bytes, src_size - from));
+  }
+}
+
 bool VulkanPipelineOk(const plume::RenderPipeline* pipeline) {
   if (!g_uses_vulkan.load(std::memory_order_relaxed)) {
+#if defined(_WIN32)
+    const auto* d3d_pipeline = static_cast<const plume::D3D12GraphicsPipeline*>(pipeline);
+    return d3d_pipeline && d3d_pipeline->d3d != nullptr;
+#else
     return pipeline != nullptr;
+#endif
   }
   const auto* vk_pipeline = static_cast<const plume::VulkanGraphicsPipeline*>(pipeline);
   return vk_pipeline && vk_pipeline->vk != VK_NULL_HANDLE;
@@ -829,7 +875,12 @@ bool VulkanPipelineOk(const plume::RenderPipeline* pipeline) {
 
 bool VulkanBufferOk(const plume::RenderBuffer* buffer) {
   if (!g_uses_vulkan.load(std::memory_order_relaxed)) {
+#if defined(_WIN32)
+    const auto* d3d_buffer = static_cast<const plume::D3D12Buffer*>(buffer);
+    return d3d_buffer && d3d_buffer->d3d != nullptr;
+#else
     return buffer != nullptr;
+#endif
   }
   const auto* vk_buffer = static_cast<const plume::VulkanBuffer*>(buffer);
   return vk_buffer && vk_buffer->vk != VK_NULL_HANDLE;
@@ -839,7 +890,12 @@ bool VulkanBufferOk(const plume::RenderBuffer* buffer) {
 // unsupported format, say): only its handle tells.
 bool VulkanTextureOk(const plume::RenderTexture* texture) {
   if (!g_uses_vulkan.load(std::memory_order_relaxed)) {
+#if defined(_WIN32)
+    const auto* d3d_texture = static_cast<const plume::D3D12Texture*>(texture);
+    return d3d_texture && d3d_texture->d3d != nullptr;
+#else
     return texture != nullptr;
+#endif
   }
   const auto* vk_texture = static_cast<const plume::VulkanTexture*>(texture);
   return vk_texture && vk_texture->vk != VK_NULL_HANDLE;
@@ -2501,7 +2557,38 @@ bool PlumeDrawContext::Initialize(plume::RenderDevice* device) {
   draw_set_builder_.addTexture(5, kDrawSlots);
   draw_set_builder_.addSampler(6, kDrawSlots);
   draw_set_builder_.end();
-  layout_builder.addDescriptorSet(draw_set_builder_);
+  if (PlumeUsesVulkan()) {
+    layout_builder.addDescriptorSet(draw_set_builder_);
+  } else {
+    // D3D12: the layout the shaders' D3D12 side declares, as in re:Blue -
+    // bindless 2D, layered and cube textures (t0, spaces 0-2), samplers (s0,
+    // space 3), the indices into them in the shared constants, and the vertex,
+    // pixel and shared constants as root CBVs (b0-b2, space 4) at their offsets.
+    plume::RenderDescriptorSetBuilder texture_builder;
+    texture_builder.begin();
+    texture_builder.addTexture(0, kBindlessTextureCount);
+    texture_builder.end(true, kBindlessTextureCount);
+    plume::RenderDescriptorSetBuilder sampler_builder;
+    sampler_builder.begin();
+    sampler_builder.addSampler(0, kBindlessSamplerCount);
+    sampler_builder.end(true, kBindlessSamplerCount);
+    BindlessTable* tables[4] = {texture_set_.get(), volume_set_.get(), cube_set_.get(),
+                                sampler_set_.get()};
+    for (uint32_t i = 0; i < 4; ++i) {
+      plume::RenderDescriptorSetBuilder& builder = i < 3 ? texture_builder : sampler_builder;
+      layout_builder.addDescriptorSet(builder);
+      d3d_sets_[i] = builder.create(device_);
+      if (!d3d_sets_[i]) {
+        REXLOG_ERROR("plume: D3D12 bindless set {} failed", i);
+        Shutdown();
+        return false;
+      }
+      tables[i]->setMirror(d3d_sets_[i].get());
+    }
+    for (uint32_t b = 0; b < 3; ++b) {
+      layout_builder.addRootDescriptor(b, 4, plume::RenderRootDescriptorType::CONSTANT_BUFFER);
+    }
+  }
   layout_builder.end();
   pipeline_layout_ = layout_builder.create(device_);
   if (!pipeline_layout_) {
@@ -2724,9 +2811,15 @@ bool PlumeDrawContext::Initialize(plume::RenderDevice* device) {
 
   ready_ = true;
   if (!CreatePassthroughPipeline()) {
-    REXLOG_ERROR("plume: passthrough pipeline failed");
-    Shutdown();
-    return false;
+    // D3D12: the passthrough and video shaders are SPIR-V only so far; their
+    // draws are left out until they have HLSL of their own.
+    if (!PlumeUsesVulkan()) {
+      REXLOG_WARN("plume: no passthrough pipeline on D3D12 yet - those draws are skipped");
+    } else {
+      REXLOG_ERROR("plume: passthrough pipeline failed");
+      Shutdown();
+      return false;
+    }
   }
   REXLOG_INFO("plume: draw context ready (bindless {} tex / {} samp, VB {} verts)",
               kBindlessTextureCount, kBindlessSamplerCount, kDummyVertexCount);
@@ -2798,6 +2891,11 @@ plume::RenderPipeline* PlumeDrawContext::ScreenPipelineFor(
     plume::RenderPrimitiveTopology topology, uint32_t blend_control, uint32_t color_mask,
     uint32_t depth_control) {
   if (!device_ || !vs || !ps) {
+    return nullptr;
+  }
+  // D3D12: these screen passes are SPIR-V only so far; asked for on every
+  // draw, they flooded the log with rejected shaders.
+  if (!PlumeUsesVulkan()) {
     return nullptr;
   }
   const uint8_t write_mask = WriteMaskForRt0(color_mask);
@@ -3172,8 +3270,13 @@ plume::RenderPipeline* PlumeDrawContext::GetOrCreatePipeline(
   }
 
   PlumeShaderCache& cache = PlumeShaderCache::Instance();
-  plume::RenderShader* vs = cache.GetOrCreateShader(vs_hash);
-  plume::RenderShader* ps = cache.GetOrCreateShader(ps_hash);
+  // The specialisation constants (see below), which D3D12 links into the
+  // shaders themselves (plume_dxc_link.h).
+  static const bool grey_sky_early = std::getenv("XERENGE_GREY_SKY") != nullptr;
+  const uint32_t spec_value =
+      (alpha_test ? (1u << 1) : 0u) | ((BloomOff() && !grey_sky_early) ? (1u << 6) : 0u);
+  plume::RenderShader* vs = cache.GetOrCreateShader(vs_hash, spec_value, false);
+  plume::RenderShader* ps = cache.GetOrCreateShader(ps_hash, spec_value, true);
   if (!vs || !ps) {
     static uint32_t miss_logs = 0;
     if (miss_logs < 8) {
@@ -3245,16 +3348,55 @@ plume::RenderPipeline* PlumeDrawContext::GetOrCreatePipeline(
   const uint32_t declared = PlumeShaderCache::Instance().InputLocationMask(vs_hash) & kFullLayoutMask;
   std::array<plume::RenderInputElement, kInputLocationCount> elements{};
   uint32_t element_count = 0;
+  // D3D12 matches by semantic: each location's own (POSITION0, TEXCOORD3, ...),
+  // from the shader's source, split into name and index.
+  const ShaderSourceInfo* source_info = PlumeUsesVulkan() ? nullptr : FindShaderSourceInfo(vs_hash);
+  std::array<std::string, kInputLocationCount> semantic_names;
   for (uint32_t loc = 0; loc < kInputLocationCount; ++loc) {
     if ((declared >> loc) & 1u) {
       elements[element_count] = plume::RenderInputElement(
           "TEXCOORD", element_count, element_count, plume::RenderFormat::R32G32B32A32_FLOAT, 0,
           (full_layout ? loc : element_count) * 16);
+      if (source_info && loc < source_info->location_semantics.size() &&
+          !source_info->location_semantics[loc].empty()) {
+        const std::string& semantic = source_info->location_semantics[loc];
+        const size_t digits = semantic.find_last_not_of("0123456789") + 1;
+        semantic_names[element_count] = semantic.substr(0, digits);
+        elements[element_count].semanticName = semantic_names[element_count].c_str();
+        elements[element_count].semanticIndex =
+            digits < semantic.size() ? uint32_t(std::strtoul(semantic.c_str() + digits, nullptr, 10)) : 0;
+      }
       ++element_count;
     }
   }
+  // D3D12 rejects a pipeline whose vertex shader reads an input the layout
+  // does not name. Inputs the shader declares outside the locations filled for
+  // it (the guest index, a second position) are named too, reading the
+  // vertex's start, so the pipeline is made.
+  std::array<plume::RenderInputElement, 32> extra_elements{};
+  std::array<std::string, 32> extra_names;
+  uint32_t extra_count = 0;
+  if (source_info) {
+    for (uint32_t loc = 0; loc < source_info->location_semantics.size() && extra_count < 32; ++loc) {
+      const std::string& semantic = source_info->location_semantics[loc];
+      if (semantic.empty() || (loc < kInputLocationCount && ((declared >> loc) & 1u))) {
+        continue;
+      }
+      const size_t digits = semantic.find_last_not_of("0123456789") + 1;
+      extra_names[extra_count] = semantic.substr(0, digits);
+      extra_elements[extra_count] = plume::RenderInputElement(
+          extra_names[extra_count].c_str(),
+          digits < semantic.size() ? uint32_t(std::strtoul(semantic.c_str() + digits, nullptr, 10)) : 0,
+          element_count + extra_count, plume::RenderFormat::R32G32B32A32_FLOAT, 0, 0);
+      ++extra_count;
+    }
+  }
+  const uint32_t packed_count = element_count;
+  for (uint32_t i = 0; i < extra_count && element_count < kInputLocationCount; ++i) {
+    elements[element_count++] = extra_elements[i];
+  }
   const plume::RenderInputSlot slot(
-      0, full_layout ? kVertexStrideBytes : std::max(element_count, 1u) * 16,
+      0, full_layout ? kVertexStrideBytes : std::max(packed_count, 1u) * 16,
       plume::RenderInputSlotClassification::PER_VERTEX_DATA);
   desc.inputSlots = &slot;
   desc.inputSlotsCount = 1;
@@ -5330,19 +5472,31 @@ void PlumeDrawContext::UploadLayeredTexture(plume::RenderCommandList* list, uint
     REXLOG_INFO("plume: layered texture {:08X} {}x{}x{} as 2D array (volume index {})",
                 info.memory.base_address, width, height, layers, tex.index);
   }
+  // Each layer staged as the backend takes it (StagingFor): packed on Vulkan,
+  // rows on 256 bytes and layers on 512 on D3D12.
+  const StagedImage layer_staging = StagingFor(host_format, row_texels, height);
+  const uint64_t layer_stride = rex::align<uint64_t>(layer_staging.size, g_uses_vulkan.load() ? 1u : 512u);
+  const uint64_t staged_size = layer_stride * layers;
   // This frame's staging buffer; the last frame's may still be copied from.
   const uint32_t half = uint32_t(frame_serial_ & 1);
   auto& staging = tex.staging[half];
-  if (!staging || tex.staging_size[half] < all.size()) {
-    staging = device_->createBuffer(plume::RenderBufferDesc::UploadBuffer(all.size()));
+  if (!staging || tex.staging_size[half] < staged_size) {
+    staging = device_->createBuffer(plume::RenderBufferDesc::UploadBuffer(staged_size));
     if (!staging) {
       tex.staging_size[half] = 0;
       return;
     }
-    tex.staging_size[half] = all.size();
+    tex.staging_size[half] = staged_size;
   }
-  if (void* mapped = staging->map()) {
-    std::memcpy(mapped, all.data(), all.size());
+  if (auto* mapped = static_cast<uint8_t*>(staging->map())) {
+    const size_t packed_layer = size_t(row_bytes) * height;
+    for (uint32_t layer = 0; layer < layers; ++layer) {
+      const size_t from = packed_layer * layer;
+      if (from < all.size()) {
+        StageRows(mapped + layer_stride * layer, all.data() + from,
+                  std::min(packed_layer, all.size() - from), layer_staging);
+      }
+    }
     staging->unmap();
   } else {
     return;
@@ -5540,7 +5694,8 @@ void PlumeDrawContext::UploadNullTexture(plume::RenderCommandList* list) {
                  plume::RenderTextureBarrier(null_texture_.get(),
                                              plume::RenderTextureLayout::COPY_DEST));
   const plume::RenderTextureCopyLocation src = plume::RenderTextureCopyLocation::PlacedFootprint(
-      null_texture_staging_.get(), plume::RenderFormat::R8G8B8A8_UNORM, 1, 1, 1, 1, 0);
+      null_texture_staging_.get(), plume::RenderFormat::R8G8B8A8_UNORM, 1, 1, 1,
+          g_uses_vulkan.load() ? 1u : 64u, 0);
   const plume::RenderTextureCopyLocation dst =
       plume::RenderTextureCopyLocation::Subresource(null_texture_.get(), 0, 0);
   list->copyTextureRegion(dst, src, 0, 0, 0, nullptr);
@@ -5554,7 +5709,8 @@ void PlumeDrawContext::UploadNullTexture(plume::RenderCommandList* list) {
     for (uint32_t face = 0; face < 6; ++face) {
       const plume::RenderTextureCopyLocation cube_src =
           plume::RenderTextureCopyLocation::PlacedFootprint(
-              null_texture_staging_.get(), plume::RenderFormat::R8G8B8A8_UNORM, 1, 1, 1, 1, 0);
+              null_texture_staging_.get(), plume::RenderFormat::R8G8B8A8_UNORM, 1, 1, 1,
+          g_uses_vulkan.load() ? 1u : 64u, 0);
       list->copyTextureRegion(
           plume::RenderTextureCopyLocation::Subresource(null_cube_.get(), 0, face), cube_src, 0,
           0, 0, nullptr);
@@ -5597,10 +5753,14 @@ bool PlumeDrawContext::UploadHostTexture(plume::RenderCommandList* list, uint64_
   // Every level goes through one staging buffer, each at an offset any copy
   // accepts (a multiple of the block size and of 512 for D3D12).
   std::vector<uint64_t> level_offsets(levels, 0);
-  uint64_t staging_needed = pixels.size();
+  std::vector<StagedImage> level_staging(levels);
+  level_staging[0] = StagingFor(host_format, row_texels, height);
+  uint64_t staging_needed = std::max<uint64_t>(level_staging[0].size, pixels.size());
   for (uint32_t level = 1; level < levels; ++level) {
+    const HostMipLevel& mip = (*mips)[level - 1];
+    level_staging[level] = StagingFor(host_format, mip.row_texels, mip.height);
     level_offsets[level] = rex::align<uint64_t>(staging_needed, 512);
-    staging_needed = level_offsets[level] + (*mips)[level - 1].pixels.size();
+    staging_needed = level_offsets[level] + std::max<uint64_t>(level_staging[level].size, mip.pixels.size());
   }
   GuestHostTexture* host = nullptr;
   std::unique_ptr<GuestHostTexture> created;
@@ -5653,10 +5813,10 @@ bool PlumeDrawContext::UploadHostTexture(plume::RenderCommandList* list, uint64_
     host->staging_size[half] = staging_needed;
   }
   if (auto* mapped = static_cast<uint8_t*>(staging->map())) {
-    std::memcpy(mapped, pixels.data(), pixels.size());
+    StageRows(mapped, pixels.data(), pixels.size(), level_staging[0]);
     for (uint32_t level = 1; level < levels; ++level) {
       const auto& mip = (*mips)[level - 1];
-      std::memcpy(mapped + level_offsets[level], mip.pixels.data(), mip.pixels.size());
+      StageRows(mapped + level_offsets[level], mip.pixels.data(), mip.pixels.size(), level_staging[level]);
     }
     staging->unmap();
   }
@@ -7688,6 +7848,11 @@ void PlumeDrawContext::EncodeDraws(plume::RenderCommandList* list,
   }
 
   list->setGraphicsPipelineLayout(pipeline_layout_.get());
+  if (!PlumeUsesVulkan()) {
+    for (uint32_t i = 0; i < 4; ++i) {
+      list->setGraphicsDescriptorSet(d3d_sets_[i].get(), i);
+    }
+  }
 
   uint32_t encoded = 0;
   const uint32_t slot_base = half * kSlotsPerFrame;
@@ -8303,9 +8468,27 @@ void PlumeDrawContext::EncodeDraws(plume::RenderCommandList* list,
         bindings.sampler[s] = words[48 + s];
       }
     }
+    if (!PlumeUsesVulkan()) {
+      // D3D12: the bindless sets are bound for the frame; the shaders find
+      // their textures through the indices in the shared constants, and the
+      // constants come through root CBVs at this draw's offsets.
+      if (std::memcmp(constant_offsets, bound_offsets, sizeof(bound_offsets)) != 0 ||
+          bound_draw_set == nullptr) {
+        list->setGraphicsRootDescriptor(
+            plume::RenderBufferReference(vs_constants_.get(), constant_offsets[0]), 0);
+        list->setGraphicsRootDescriptor(
+            plume::RenderBufferReference(ps_constants_.get(), constant_offsets[1]), 1);
+        list->setGraphicsRootDescriptor(
+            plume::RenderBufferReference(shared_constants_.get(), constant_offsets[2]), 2);
+        std::memcpy(bound_offsets, constant_offsets, sizeof(bound_offsets));
+        bound_draw_set = d3d_sets_[0].get();
+      }
+    }
     const uint64_t changes_now = tables_changes();
     plume::RenderDescriptorSet* draw_set = nullptr;
-    if (last_draw_set && changes_now == last_tables_changes &&
+    if (!PlumeUsesVulkan()) {
+      draw_set = d3d_sets_[0].get();
+    } else if (last_draw_set && changes_now == last_tables_changes &&
         std::memcmp(&bindings, &last_bindings, sizeof(bindings)) == 0) {
       draw_set = last_draw_set;
     } else {
@@ -8583,7 +8766,14 @@ void PlumeDrawContext::EncodeDraws(plume::RenderCommandList* list,
                                        uint64_t(first) * kVertexStrideBytes),
           (cached ? kCacheVertexCount : kDummyVertexCount) * kVertexStrideBytes -
               first * kVertexStrideBytes);
-      list->setVertexBuffers(0, &view, 1, &input_slots_[0]);
+      // The packed stride, as the pipeline declares it. Vulkan takes the
+      // stride from the pipeline and ignores this; D3D12 takes it from the
+      // binding, and with the full layout's every vertex after the first was
+      // read from the wrong place - meshes stretched to a corner.
+      const plume::RenderInputSlot packed_slot(
+          0, std::max(uint32_t(std::popcount(fill_layout_mask_)), 1u) * 16,
+          plume::RenderInputSlotClassification::PER_VERTEX_DATA);
+      list->setVertexBuffers(0, &view, 1, &packed_slot);
       bound_vertex_buffer = 0;
       static const bool pack_check = std::getenv("XERENGE_PACK_CHECK") != nullptr;
       if (pack_check && last_packed_dst_) {

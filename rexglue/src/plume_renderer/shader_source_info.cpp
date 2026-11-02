@@ -65,6 +65,35 @@ std::vector<uint16_t> ParseMatrixRegisters(const std::string& hlsl, bool instanc
 // The input locations a vertex shader reads, in the order its body first
 // reads them - the order of its vertex fetch instructions. Declaration order
 // is not it: the declarations follow the container's element array.
+// "[[vk::location(N)]] float4 iName : SEMANTIC;" - each location's semantic.
+std::vector<std::string> ParseLocationSemantics(std::string_view src) {
+  std::vector<std::string> out;
+  static constexpr std::string_view kTag = "[[vk::location(";
+  for (size_t at = src.find(kTag); at != std::string_view::npos; at = src.find(kTag, at + 1)) {
+    const size_t open = at + kTag.size();
+    const size_t close = src.find(')', open);
+    const size_t eol = src.find('\n', open);
+    if (close == std::string_view::npos || eol == std::string_view::npos || close > eol) {
+      continue;
+    }
+    const uint32_t location = uint32_t(std::strtoul(std::string(src.substr(open, close - open)).c_str(), nullptr, 10));
+    const size_t colon = src.find(':', close + 2);
+    const size_t semi = src.find(';', close);
+    if (colon == std::string_view::npos || semi == std::string_view::npos || colon > semi || semi > eol ||
+        location >= 32) {
+      continue;
+    }
+    std::string semantic(src.substr(colon + 1, semi - colon - 1));
+    semantic.erase(0, semantic.find_first_not_of(' '));
+    semantic.erase(semantic.find_last_not_of(' ') + 1);
+    if (out.size() <= location) {
+      out.resize(location + 1);
+    }
+    out[location] = semantic;
+  }
+  return out;
+}
+
 std::vector<uint32_t> ParseConsumedLocations(std::string_view src) {
   std::unordered_map<std::string_view, uint32_t> location_of;
   for (size_t at = src.find("[[vk::location("); at != std::string_view::npos;
@@ -148,6 +177,7 @@ ShaderSourceInfo ParseShaderSource(std::string_view src) {
   info.consumed_locations = ParseConsumedLocations(src);
   info.matrix_registers = ParseMatrixRegisters(std::string(src));
   info.instance_registers = ParseMatrixRegisters(std::string(src), true);
+  info.location_semantics = ParseLocationSemantics(src);
   return info;
 }
 

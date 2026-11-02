@@ -12,6 +12,7 @@
 #include <cstdint>
 #include <string_view>
 #include <unordered_map>
+#include <string>
 #include <vector>
 
 namespace rex::plume_renderer {
@@ -35,6 +36,10 @@ struct ShaderSourceInfo {
   // title gives the slots to other objects from frame to frame (trees, drawn
   // many to a draw) - generated frames take them as they are (GitHub #79).
   std::vector<uint16_t> instance_registers;
+  // Each vertex input location's semantic, "POSITION0", "TEXCOORD3" (empty where
+  // none): D3D12 matches a draw's vertex layout to the shader by these, not
+  // by location.
+  std::vector<std::string> location_semantics;
 };
 
 ShaderSourceInfo ParseShaderSource(std::string_view hlsl);

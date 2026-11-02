@@ -28,5 +28,9 @@ extern const size_t g_shaderCacheEntryCount;
 extern const uint8_t g_compressedSpirvCache[];
 extern const size_t g_spirvCacheCompressedSize;
 extern const size_t g_spirvCacheDecompressedSize;
+// The DXIL beside it, when XenosRecomp made some (on Windows): the D3D12 backend's.
+extern const uint8_t g_compressedDxilCache[];
+extern const size_t g_dxilCacheCompressedSize;
+extern const size_t g_dxilCacheDecompressedSize;
 extern ShaderMicrocodeEntry g_shaderMicrocodeEntries[];
 extern const size_t g_shaderMicrocodeEntryCount;

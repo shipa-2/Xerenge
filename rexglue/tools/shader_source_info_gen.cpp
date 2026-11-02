@@ -39,6 +39,14 @@ std::string List(const std::vector<T>& values) {
   return out + "}";
 }
 
+std::string Strings(const std::vector<std::string>& values) {
+  std::string out = "{";
+  for (size_t i = 0; i < values.size(); ++i) {
+    out += (i ? ", \"" : "\"") + values[i] + "\"";
+  }
+  return out + "}";
+}
+
 }  // namespace
 
 int main(int argc, char** argv) {
@@ -83,7 +91,8 @@ int main(int argc, char** argv) {
         << (info.position_scaling ? "true" : "false") << ", "
         << (info.writes_oc1 ? "true" : "false") << ", " << info.sampler_slots << "u, "
         << List(info.consumed_locations) << ", " << List(info.matrix_registers) << ", "
-        << List(info.instance_registers) << "});\n";
+        << List(info.instance_registers) << ", " << Strings(info.location_semantics)
+        << "});\n";
   }
   out << "}\n\n}  // namespace rex::plume_renderer\n";
 

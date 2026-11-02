@@ -406,6 +406,9 @@ class BindlessTable {
       e.layout = layout;
       e.view = view;
       e.version = ++next_version_;
+      if (mirror_) {
+        mirror_->setTexture(index, texture, layout, view);
+      }
     }
   }
   void setSampler(uint32_t index, const plume::RenderSampler* sampler) {
@@ -415,14 +418,21 @@ class BindlessTable {
       }
       entries_[index].sampler = sampler;
       entries_[index].version = ++next_version_;
+      if (mirror_) {
+        mirror_->setSampler(index, sampler);
+      }
     }
   }
   const Entry& at(uint32_t index) const { return entries_[index < entries_.size() ? index : 0]; }
+  // D3D12: the real bindless set, kept in step with every change (on Vulkan
+  // the draws take small sets of their own instead, see DrawSetFor).
+  void setMirror(plume::RenderDescriptorSet* mirror) { mirror_ = mirror; }
   // Grows with every change of an entry: equal means nothing changed since.
   uint32_t changes() const { return next_version_; }
 
  private:
   std::vector<Entry> entries_;
+  plume::RenderDescriptorSet* mirror_ = nullptr;
   uint32_t next_version_ = 0;
 };
 
@@ -675,6 +685,9 @@ class PlumeDrawContext {
   float last_fill_x_[2] = {0.0f, 0.0f};
 
   std::unique_ptr<plume::RenderPipelineLayout> pipeline_layout_;
+  // D3D12 (XERENGE_RENDER_API=d3d12): the bindless sets behind the tables -
+  // 2D, layered, cube, samplers - bound once a frame, as re:Blue binds them.
+  std::unique_ptr<plume::RenderDescriptorSet> d3d_sets_[4];
   std::unique_ptr<BindlessTable> texture_set_;
   std::unique_ptr<BindlessTable> sampler_set_;
   std::unique_ptr<plume::RenderSampler> sampler_;

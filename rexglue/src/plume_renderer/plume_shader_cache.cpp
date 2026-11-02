@@ -3,8 +3,11 @@
  * @brief       XenosRecomp offline SPIR-V cache → plume::RenderShader (phase 2).
  */
 #include "plume_renderer/plume_shader_cache.h"
+#include "plume_renderer/plume_draw.h"
+#include "plume_renderer/plume_dxc_link.h"
 
 #include <algorithm>
+#include <atomic>
 #include <cstdlib>
 #include <iterator>
 #include <unordered_map>
@@ -50,6 +53,18 @@ extern const size_t g_spirvCacheCompressedSizeBootstrap XERENGE_WEAK;
 extern const size_t g_spirvCacheDecompressedSizeBootstrap XERENGE_WEAK;
 extern ShaderMicrocodeEntry g_shaderMicrocodeEntriesBootstrap[] XERENGE_WEAK;
 extern const size_t g_shaderMicrocodeEntryCountBootstrap XERENGE_WEAK;
+
+// DXIL, for the D3D12 backend (XERENGE_RENDER_API=d3d12): made beside the
+// SPIR-V where XenosRecomp ran on Windows, absent elsewhere.
+extern const uint8_t g_compressedDxilCache[] XERENGE_WEAK;
+extern const size_t g_dxilCacheCompressedSize XERENGE_WEAK;
+extern const size_t g_dxilCacheDecompressedSize XERENGE_WEAK;
+extern const uint8_t g_compressedDxilCacheBootstrap[] XERENGE_WEAK;
+extern const size_t g_dxilCacheCompressedSizeBootstrap XERENGE_WEAK;
+extern const size_t g_dxilCacheDecompressedSizeBootstrap XERENGE_WEAK;
+extern const uint8_t g_compressedDxilCacheExtra[] XERENGE_WEAK;
+extern const size_t g_dxilCacheCompressedSizeExtra XERENGE_WEAK;
+extern const size_t g_dxilCacheDecompressedSizeExtra XERENGE_WEAK;
 
 namespace rex::plume_renderer {
 
@@ -556,10 +571,89 @@ static bool SimpleVertexShader(uint64_t hash) {
   return Listed(listed, hash);
 }
 
-plume::RenderShader* PlumeShaderCache::GetOrCreateShader(uint64_t hash) {
+const uint8_t* PlumeShaderCache::GetDxil(const ShaderCacheEntry& entry, size_t& size) {
+  size = 0;
+  const bool extra = IsExtraEntry(entry);
+  const bool bootstrap = !extra && IsBootstrapEntry(entry);
+  const int which = extra ? 2 : bootstrap ? 1 : 0;
+  std::vector<uint8_t>& blob = dxil_blobs_[which];
+  if (!dxil_tried_[which]) {
+    dxil_tried_[which] = true;
+    const uint8_t* compressed = nullptr;
+    const size_t* compressed_size = nullptr;
+    const size_t* decompressed_size = nullptr;
+    if (which == 0) {
+      compressed = g_compressedDxilCache;
+      compressed_size = &g_dxilCacheCompressedSize;
+      decompressed_size = &g_dxilCacheDecompressedSize;
+    } else if (which == 1) {
+      compressed = g_compressedDxilCacheBootstrap;
+      compressed_size = &g_dxilCacheCompressedSizeBootstrap;
+      decompressed_size = &g_dxilCacheDecompressedSizeBootstrap;
+    } else {
+      compressed = g_compressedDxilCacheExtra;
+      compressed_size = &g_dxilCacheCompressedSizeExtra;
+      decompressed_size = &g_dxilCacheDecompressedSizeExtra;
+    }
+    if (compressed && compressed_size && decompressed_size && *compressed_size != 0 &&
+        *decompressed_size != 0) {
+      blob.resize(*decompressed_size);
+      const size_t result = ZSTD_decompress(blob.data(), blob.size(), compressed, *compressed_size);
+      if (ZSTD_isError(result) || result != blob.size()) {
+        REXLOG_ERROR("plume: DXIL cache {} ZSTD decompress failed", which);
+        blob.clear();
+      }
+    }
+    REXLOG_INFO("plume: DXIL cache {}: {} KiB", which == 0 ? "primary" : which == 1 ? "bootstrap" : "extra",
+                blob.size() / 1024);
+  }
+  if (entry.dxilSize == 0 || entry.dxilOffset > blob.size() ||
+      entry.dxilSize > blob.size() - entry.dxilOffset) {
+    return nullptr;
+  }
+  size = entry.dxilSize;
+  return blob.data() + entry.dxilOffset;
+}
+
+plume::RenderShader* PlumeShaderCache::GetOrCreateShader(uint64_t hash, uint32_t spec_constants,
+                                                       bool pixel_shader) {
   std::lock_guard lock(mutex_);
   if (!device_) {
     return nullptr;
+  }
+
+  // D3D12: a shader with specialisation constants is a DXIL library calling
+  // g_SpecConstants(); each value it is used with is linked into a shader of
+  // its own.
+  const ShaderCacheEntry* linked_entry = nullptr;
+  uint32_t spec = 0;
+  if (!PlumeUsesVulkan()) {
+    linked_entry = Find(hash);
+    if (linked_entry && linked_entry->specConstantsMask != 0) {
+      spec = spec_constants & linked_entry->specConstantsMask;
+      const uint64_t key = hash ^ (uint64_t(spec) << 32) ^ (pixel_shader ? 1ull : 0ull);
+      if (auto it = linked_shaders_.find(key); it != linked_shaders_.end()) {
+        return it->second.get();
+      }
+      size_t size = 0;
+      const uint8_t* library = GetDxil(*linked_entry, size);
+      std::vector<uint8_t> linked = library ? LinkSpecConstants(library, size, pixel_shader, spec)
+                                            : std::vector<uint8_t>{};
+      std::unique_ptr<plume::RenderShader> shader;
+      if (!linked.empty()) {
+        shader = device_->createShader(linked.data(), linked.size(), "shaderMain",
+                                       plume::RenderShaderFormat::DXIL);
+      } else {
+        static std::atomic<uint32_t> failed{0};
+        if (failed.fetch_add(1, std::memory_order_relaxed) < 8) {
+          REXLOG_ERROR("plume: DXIL link failed for shader {:016X} (spec {:X}{})", hash, spec,
+                       library ? "" : ", no DXIL");
+        }
+      }
+      plume::RenderShader* raw = shader.get();
+      linked_shaders_.emplace(key, std::move(shader));
+      return raw;
+    }
   }
 
   if (auto it = shaders_.find(hash); it != shaders_.end()) {
@@ -569,6 +663,28 @@ plume::RenderShader* PlumeShaderCache::GetOrCreateShader(uint64_t hash) {
   const ShaderCacheEntry* entry = Find(hash);
   if (!entry) {
     return nullptr;
+  }
+
+  // D3D12: the DXIL XenosRecomp made beside the SPIR-V, as it is.
+  if (!PlumeUsesVulkan()) {
+    size_t size = 0;
+    const uint8_t* dxil = GetDxil(*entry, size);
+    if (!dxil) {
+      static std::atomic<uint32_t> missing{0};
+      if (missing.fetch_add(1, std::memory_order_relaxed) < 8) {
+        REXLOG_ERROR("plume: no DXIL for shader {:016X}", hash);
+      }
+      return nullptr;
+    }
+    std::unique_ptr<plume::RenderShader> shader =
+        device_->createShader(dxil, size, "shaderMain", plume::RenderShaderFormat::DXIL);
+    if (!shader) {
+      REXLOG_ERROR("plume: createShader (DXIL) failed for cache entry {:016X}", hash);
+      return nullptr;
+    }
+    plume::RenderShader* raw = shader.get();
+    shaders_.emplace(hash, std::move(shader));
+    return raw;
   }
 
   size_t word_count = 0;
@@ -697,6 +813,10 @@ void PlumeShaderCache::WarmAll() {
   size_t fail = 0;
   auto warm = [&](const ShaderCacheEntry* entries, size_t count) {
     for (size_t i = 0; i < count; ++i) {
+      // D3D12: shaders with specialisation constants are linked per pipeline.
+      if (!PlumeUsesVulkan() && entries[i].specConstantsMask != 0) {
+        continue;
+      }
       if (GetOrCreateShader(entries[i].hash)) {
         ++ok;
       } else {
