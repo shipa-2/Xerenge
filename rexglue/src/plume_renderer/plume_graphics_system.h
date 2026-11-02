@@ -32,7 +32,8 @@
 
 namespace plume {
 class RenderDevice;
-class VulkanInterface;
+struct RenderInterface;
+struct VulkanInterface;
 }  // namespace plume
 
 namespace rex::plume_renderer {
@@ -153,7 +154,10 @@ class PlumeGraphicsSystem final : public system::IGraphicsSystem {
   runtime::FunctionDispatcher* function_dispatcher_ = nullptr;
   system::KernelState* kernel_state_ = nullptr;
 
-  std::unique_ptr<plume::VulkanInterface> render_interface_;
+  std::unique_ptr<plume::RenderInterface> render_interface_;
+  // The same interface when it is Vulkan's (RenderDoc's capture names its
+  // instance), null when it is D3D12's.
+  plume::VulkanInterface* vulkan_interface_ = nullptr;
   std::unique_ptr<plume::RenderDevice> render_device_;
   // The driver's compiled pipelines between runs (plume_vulkan_cache.bin beside
   // the shader cache): loaded with the shader storage, saved once a minute when

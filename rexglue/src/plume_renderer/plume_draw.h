@@ -193,6 +193,10 @@ struct RenderPassBreak {
 // which Burnout's scene shaders write their motion vectors into. Every
 // pipeline drawn in such a pass has to declare both.
 bool PlumeSecondTargetEnabled();
+// Whether the device is Vulkan's (the default) or D3D12's (XERENGE_RENDER_API=d3d12,
+// Windows): the few places that reach into the backend's own objects check.
+bool PlumeUsesVulkan();
+void SetPlumeUsesVulkan(bool vulkan);
 
 // The frame's opening clear (RenderPassBreak::clear_first), when there is one to
 // make, with the first pass told what it need not load or store.

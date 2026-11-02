@@ -24,6 +24,10 @@
 #endif
 
 #include <plume_vulkan.h>
+#if defined(_WIN32)
+#include <plume_d3d12.h>
+#endif
+#include <cstring>
 
 #include <algorithm>
 
@@ -295,11 +299,31 @@ bool PlumeGraphicsSystem::InitializePlumeDevice() {
 #if defined(__ANDROID__)
   UseAndroidCustomVulkanDriver();
 #endif
-  render_interface_ = std::make_unique<plume::VulkanInterface>();
-  if (!render_interface_ || !render_interface_->isValid()) {
-    REXLOG_ERROR("plume: Vulkan interface failed to initialize");
-    render_interface_.reset();
-    return false;
+  // XERENGE_RENDER_API=d3d12 (Windows): plume's D3D12 backend instead of
+  // Vulkan - the way to the Xbox, which has no Vulkan, and a way round a
+  // Vulkan driver that will not start (GitHub #78). Work in progress.
+#if defined(_WIN32)
+  const char* api = std::getenv("XERENGE_RENDER_API");
+  if (api && std::strcmp(api, "d3d12") == 0) {
+    auto d3d12 = std::make_unique<plume::D3D12Interface>();
+    if (d3d12 && d3d12->isValid()) {
+      render_interface_ = std::move(d3d12);
+      SetPlumeUsesVulkan(false);
+      REXLOG_INFO("plume: D3D12 interface (XERENGE_RENDER_API=d3d12)");
+    } else {
+      REXLOG_ERROR("plume: D3D12 interface failed to initialize; trying Vulkan");
+    }
+  }
+#endif
+  if (!render_interface_) {
+    auto vulkan = std::make_unique<plume::VulkanInterface>();
+    if (!vulkan || !vulkan->isValid()) {
+      REXLOG_ERROR("plume: Vulkan interface failed to initialize");
+      return false;
+    }
+    vulkan_interface_ = vulkan.get();
+    render_interface_ = std::move(vulkan);
+    SetPlumeUsesVulkan(true);
   }
 
   device_names_ = render_interface_->getDeviceNames();
@@ -312,6 +336,7 @@ bool PlumeGraphicsSystem::InitializePlumeDevice() {
   if (!render_device_) {
     REXLOG_ERROR("plume: failed to create render device");
     render_interface_.reset();
+    vulkan_interface_ = nullptr;
     return false;
   }
 
@@ -2399,8 +2424,8 @@ void PlumeGraphicsSystem::PresentClearColorOnUiThread(uint32_t guest_width,
   // on-screen pad), and nothing was ever captured.
   void* capture_device = nullptr;
   if (g_capture_next_frame.exchange(false) && renderdoc_api_ && renderdoc_api_->api_1_0_0() &&
-      render_interface_ && render_interface_->instance) {
-    capture_device = *reinterpret_cast<void**>(render_interface_->instance);
+      vulkan_interface_ && vulkan_interface_->instance) {
+    capture_device = *reinterpret_cast<void**>(vulkan_interface_->instance);
     renderdoc_api_->api_1_0_0()->StartFrameCapture(capture_device, nullptr);
   }
 #endif
@@ -2484,7 +2509,7 @@ void PlumeGraphicsSystem::EnableReadPointerWriteBack(uint32_t ptr, uint32_t bloc
 }
 
 void PlumeGraphicsSystem::LoadPipelineCache(const std::filesystem::path& cache_root) {
-  auto* device = static_cast<plume::VulkanDevice*>(render_device_.get());
+  auto* device = PlumeUsesVulkan() ? static_cast<plume::VulkanDevice*>(render_device_.get()) : nullptr;
   if (!device || cache_root.empty() || !pipeline_cache_path_.empty()) {
     return;
   }
@@ -2511,7 +2536,7 @@ void PlumeGraphicsSystem::LoadPipelineCache(const std::filesystem::path& cache_r
 }
 
 void PlumeGraphicsSystem::SavePipelineCache(bool now) {
-  auto* device = static_cast<plume::VulkanDevice*>(render_device_.get());
+  auto* device = PlumeUsesVulkan() ? static_cast<plume::VulkanDevice*>(render_device_.get()) : nullptr;
   if (!device || pipeline_cache_path_.empty()) {
     return;
   }
@@ -4397,6 +4422,7 @@ void PlumeGraphicsSystem::Shutdown() {
 
   SavePipelineCache(true);
   render_device_.reset();
+  vulkan_interface_ = nullptr;
   render_interface_.reset();
   device_names_.clear();
   window_ = nullptr;

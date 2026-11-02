@@ -815,12 +815,22 @@ GuestDepthState DepthStateFromGuest(uint32_t depth_control) {
   return state;
 }
 
+// The backend's own objects are looked into only on Vulkan; on D3D12 a
+// returned object is taken as made.
+std::atomic<bool> g_uses_vulkan{true};
+
 bool VulkanPipelineOk(const plume::RenderPipeline* pipeline) {
+  if (!g_uses_vulkan.load(std::memory_order_relaxed)) {
+    return pipeline != nullptr;
+  }
   const auto* vk_pipeline = static_cast<const plume::VulkanGraphicsPipeline*>(pipeline);
   return vk_pipeline && vk_pipeline->vk != VK_NULL_HANDLE;
 }
 
 bool VulkanBufferOk(const plume::RenderBuffer* buffer) {
+  if (!g_uses_vulkan.load(std::memory_order_relaxed)) {
+    return buffer != nullptr;
+  }
   const auto* vk_buffer = static_cast<const plume::VulkanBuffer*>(buffer);
   return vk_buffer && vk_buffer->vk != VK_NULL_HANDLE;
 }
@@ -828,6 +838,9 @@ bool VulkanBufferOk(const plume::RenderBuffer* buffer) {
 // plume hands back a texture object even when the image could not be made (an
 // unsupported format, say): only its handle tells.
 bool VulkanTextureOk(const plume::RenderTexture* texture) {
+  if (!g_uses_vulkan.load(std::memory_order_relaxed)) {
+    return texture != nullptr;
+  }
   const auto* vk_texture = static_cast<const plume::VulkanTexture*>(texture);
   return vk_texture && vk_texture->vk != VK_NULL_HANDLE;
 }
@@ -5208,6 +5221,14 @@ void ClearFirstPass(plume::RenderCommandList* list, const RenderPassBreak* pass,
     // Far plane, matching the guest's own convention of clearing depth to 1.
     list->clearDepth(true, 1.0f);
   }
+}
+
+bool PlumeUsesVulkan() {
+  return g_uses_vulkan.load(std::memory_order_relaxed);
+}
+
+void SetPlumeUsesVulkan(bool vulkan) {
+  g_uses_vulkan.store(vulkan, std::memory_order_relaxed);
 }
 
 bool PlumeSecondTargetEnabled() {

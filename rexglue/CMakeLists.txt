@@ -245,6 +245,10 @@ if(NOT TARGET libzstd)
     add_subdirectory("${XENON_RECOMP_ROOT}/thirdparty/zstd/build/cmake" xenos-zstd)
 endif()
 target_link_libraries(rexgpu-plume PRIVATE plume rex::runtime libzstd xxHash::xxhash)
+if(WIN32)
+    # plume's D3D12 backend (XERENGE_RENDER_API=d3d12), built beside Vulkan's.
+    target_link_libraries(rexgpu-plume PRIVATE d3d12 dxgi dxguid)
+endif()
 if(APPLE)
     # The *Extra and *Bootstrap shader-cache tables are weak and only some
     # builds have them. ld64 wants every undefined symbol resolved at link time;

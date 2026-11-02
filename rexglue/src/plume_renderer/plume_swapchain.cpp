@@ -1185,7 +1185,7 @@ void PlumeSwapchain::ClearAndPresent(float r, float g, float b, float a, DrawEnc
   // Debug mode: how many render passes the frame took, and how many of them
   // only because a barrier or a copy inside a pass ended it.
   static uint64_t pass_begins = 0, pass_breaks = 0;
-  if (pass_timing_) {
+  if (pass_timing_ && PlumeUsesVulkan()) {
     auto* vk_list = static_cast<plume::VulkanCommandList*>(command_list_.get());
     pass_begins += vk_list->renderPassBegins;
     pass_breaks += vk_list->implicitPassEnds;
