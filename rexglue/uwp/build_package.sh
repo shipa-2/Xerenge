@@ -62,7 +62,7 @@ map=$STAGE/files.map
         echo "\"$(win "$f")\" \"Assets\\$(basename "$f")\""
     done
     if [ -n "$GAME" ]; then
-        (cd "$GAME" && find . -type f) | sed 's|^\./||' | while read -r rel; do
+        (cd "$GAME" && find . -type f -not -path "./\$systemupdate/*") | sed 's|^\./||' | while read -r rel; do
             echo "\"$(cygpath -w "$(realpath "$GAME")")\\${rel//\//\\}\" \"game\\${rel//\//\\}\""
         done
     fi
@@ -71,7 +71,7 @@ echo "packing $(($(wc -l < "$map") - 1)) files, version $version"
 
 # The game is mostly compressed already; packing it again takes long for little.
 nc=
-[ -n "$GAME" ] && nc=/nc
+[ -n "$GAME" ] && nc=//nc
 "$MAKEAPPX" pack //o $nc //f "$(win "$map")" //p "$(cygpath -w "$(realpath -m "$OUT")")" > "$STAGE/makeappx.log" ||
     { tail -20 "$STAGE/makeappx.log"; exit 1; }
 
