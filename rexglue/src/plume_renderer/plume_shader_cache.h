@@ -21,6 +21,10 @@ class RenderShader;
 
 namespace rex::plume_renderer {
 
+// D3D12 from fxc's DXBC instead of DXIL (XERENGE_D3D12_SHADERS=dxbc, and a DXBC
+// cache linked), as the Xbox One needs: its D3D12 stops at shader model 5.1.
+bool PlumeUsesDxbc();
+
 class PlumeShaderCache {
  public:
   static PlumeShaderCache& Instance();

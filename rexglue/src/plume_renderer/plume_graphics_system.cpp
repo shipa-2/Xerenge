@@ -357,7 +357,15 @@ void PlumeGraphicsSystem::AttachPresentationWindow(ui::Window* window) {
 
   window_ = window;
 
+#if REX_PLATFORM_UWP
+  // No SDL: the CoreWindow is the window; its handle stands in for the SDL one
+  // the swap chain only checks for.
+  auto* sdl_window = static_cast<SDL_Window*>(window_->GetNativeWindowHandle());
+  SetUWPWindowPixelSize(std::max(window_->GetActualPhysicalWidth(), 1u),
+                        std::max(window_->GetActualPhysicalHeight(), 1u));
+#else
   auto* sdl_window = static_cast<SDL_Window*>(window_->GetSDLWindowForVulkan());
+#endif
   if (!sdl_window) {
     REXLOG_ERROR("plume: host window has no SDL surface for Vulkan");
     return;

@@ -64,7 +64,15 @@ else()
     set(PLUME_SDL_VULKAN_ENABLED ON CACHE BOOL "" FORCE)
 endif()
 set(PLUME_BUILD_EXAMPLES OFF CACHE BOOL "" FORCE)
+if(REX_UWP)
+    # The Xbox One in Dev Mode (rexglue-sdk REX_UWP): plume makes its swap chain
+    # on the CoreWindow.
+    add_compile_definitions(REX_PLATFORM_UWP=1)
+endif()
 add_subdirectory("${PLUME_ROOT}" plume)
+if(REX_UWP)
+    target_compile_definitions(plume PUBLIC PLUME_UWP)
+endif()
 # Static plume linked into a shared plugin must be PIC, and must not inherit
 # the host's -mcmodel=large (TLS local-exec breaks in .so files).
 set_target_properties(plume PROPERTIES POSITION_INDEPENDENT_CODE ON)

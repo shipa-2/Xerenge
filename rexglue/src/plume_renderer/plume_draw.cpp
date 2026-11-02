@@ -58,6 +58,11 @@
 #include "plume_renderer/plume_passthrough_ps_dxil.h"
 #include "plume_renderer/plume_video_vs_dxil.h"
 #include "plume_renderer/plume_video_ps_dxil.h"
+// The same, through fxc at shader model 5.1, for D3D12 without DXIL (the Xbox One).
+#include "plume_renderer/plume_passthrough_vs_dxbc.h"
+#include "plume_renderer/plume_passthrough_ps_dxbc.h"
+#include "plume_renderer/plume_video_vs_dxbc.h"
+#include "plume_renderer/plume_video_ps_dxbc.h"
 #endif
 #include "plume_renderer/plume_colour_table.h"
 #include "plume_renderer/plume_settings.h"
@@ -2837,10 +2842,15 @@ bool PlumeDrawContext::CreatePassthroughPipeline() {
 #if defined(_WIN32)
   // D3D12: passthrough.hlsl, its texture the bindless one the vertex names.
   if (!PlumeUsesVulkan()) {
-    passthrough_vs_ = device_->createShader(kPassthroughVsDxil, sizeof(kPassthroughVsDxil), "VSMain",
-                                            plume::RenderShaderFormat::DXIL);
-    passthrough_ps_ = device_->createShader(kPassthroughPsDxil, sizeof(kPassthroughPsDxil), "PSMain",
-                                            plume::RenderShaderFormat::DXIL);
+    const bool dxbc = PlumeUsesDxbc();
+    passthrough_vs_ = device_->createShader(
+        dxbc ? kPassthroughVsDxbc : kPassthroughVsDxil,
+        dxbc ? sizeof(kPassthroughVsDxbc) : sizeof(kPassthroughVsDxil), "VSMain",
+        plume::RenderShaderFormat::DXIL);
+    passthrough_ps_ = device_->createShader(
+        dxbc ? kPassthroughPsDxbc : kPassthroughPsDxil,
+        dxbc ? sizeof(kPassthroughPsDxbc) : sizeof(kPassthroughPsDxil), "PSMain",
+        plume::RenderShaderFormat::DXIL);
   } else
 #endif
   {
@@ -2879,10 +2889,13 @@ plume::RenderPipeline* PlumeDrawContext::VideoPipelineFor(plume::RenderPrimitive
 #if defined(_WIN32)
     // D3D12: video.hlsl, its planes the bindless ones the vertex names.
     if (!PlumeUsesVulkan()) {
-      video_vs_ = device_->createShader(kVideoVsDxil, sizeof(kVideoVsDxil), "VSMain",
-                                        plume::RenderShaderFormat::DXIL);
-      video_ps_ = device_->createShader(kVideoPsDxil, sizeof(kVideoPsDxil), "PSMain",
-                                        plume::RenderShaderFormat::DXIL);
+      const bool dxbc = PlumeUsesDxbc();
+      video_vs_ = device_->createShader(dxbc ? kVideoVsDxbc : kVideoVsDxil,
+                                        dxbc ? sizeof(kVideoVsDxbc) : sizeof(kVideoVsDxil),
+                                        "VSMain", plume::RenderShaderFormat::DXIL);
+      video_ps_ = device_->createShader(dxbc ? kVideoPsDxbc : kVideoPsDxil,
+                                        dxbc ? sizeof(kVideoPsDxbc) : sizeof(kVideoPsDxil),
+                                        "PSMain", plume::RenderShaderFormat::DXIL);
     } else
 #endif
     {

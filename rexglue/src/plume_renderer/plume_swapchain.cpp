@@ -20,6 +20,9 @@
 
 #include <plume_render_interface.h>
 #include <plume_vulkan.h>
+#if REX_PLATFORM_UWP
+#include <plume_d3d12.h>
+#endif
 
 #include <rex/logging.h>
 
@@ -250,6 +253,7 @@ uint32_t CountFps() {
 // copy made - the swap chain then had no window at all.
 plume::RenderWindow NativeRenderWindow(SDL_Window* window, void* native_window) {
 #ifdef _WIN32
+  // (On UWP the CoreWindow's IUnknown, carried where plume keeps an HWND.)
   (void)window;
   return static_cast<HWND>(native_window);
 #elif defined(__ANDROID__)
@@ -289,6 +293,19 @@ void AskForFrameRate(void* window) {
 }
 
 }  // namespace
+
+#if REX_PLATFORM_UWP
+namespace {
+uint32_t g_uwp_window_width = 1920;
+uint32_t g_uwp_window_height = 1080;
+}  // namespace
+
+void SetUWPWindowPixelSize(uint32_t width, uint32_t height) {
+  g_uwp_window_width = width;
+  g_uwp_window_height = height;
+  plume::D3D12SetCoreWindowSize(width, height);
+}
+#endif
 
 PlumeSwapchain::~PlumeSwapchain() {
   Shutdown();
@@ -732,7 +749,10 @@ void PlumeSwapchain::CreateFramebuffers() {
 }
 
 void PlumeSwapchain::WindowPixelSize(uint32_t* width, uint32_t* height) const {
-#ifdef _WIN32
+#if REX_PLATFORM_UWP
+  *width = g_uwp_window_width;
+  *height = g_uwp_window_height;
+#elif defined(_WIN32)
   RECT rect{};
   GetClientRect(static_cast<HWND>(native_window_), &rect);
   *width = uint32_t(std::max<LONG>(rect.right - rect.left, 0));
@@ -1353,12 +1373,16 @@ void PlumeSwapchain::ClearAndPresent(float r, float g, float b, float a, DrawEnc
 namespace rex::plume_renderer {
 
 float PlumeSwapchain::DisplayRefreshHz() const {
+#if REX_PLATFORM_UWP
+  return 60.0f;
+#else
   if (!window_) {
     return 0.0f;
   }
   const SDL_DisplayID display = SDL_GetDisplayForWindow(window_);
   const SDL_DisplayMode* mode = display ? SDL_GetCurrentDisplayMode(display) : nullptr;
   return mode ? mode->refresh_rate : 0.0f;
+#endif
 }
 
 }  // namespace rex::plume_renderer

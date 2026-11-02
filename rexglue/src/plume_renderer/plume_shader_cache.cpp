@@ -74,17 +74,15 @@ const size_t g_dxbcCacheEntryCount = 0;
 
 namespace rex::plume_renderer {
 
-namespace {
-
-// D3D12 from fxc's DXBC instead of DXIL (XERENGE_D3D12_SHADERS=dxbc), as the
-// Xbox One needs: its D3D12 stops at shader model 5.1.
-bool UseDxbc() {
+bool PlumeUsesDxbc() {
   static const bool use = [] {
     const char* v = std::getenv("XERENGE_D3D12_SHADERS");
     return g_dxbcCacheEntryCount > 0 && v && std::string_view(v) == "dxbc";
   }();
   return use;
 }
+
+namespace {
 
 const DxbcCacheEntry* FindDxbc(uint64_t hash, uint32_t spec) {
   for (size_t i = 0; i < g_dxbcCacheEntryCount; ++i) {
@@ -648,7 +646,7 @@ plume::RenderShader* PlumeShaderCache::GetOrCreateShader(uint64_t hash, uint32_t
     return nullptr;
   }
 
-  if (!PlumeUsesVulkan() && UseDxbc()) {
+  if (!PlumeUsesVulkan() && PlumeUsesDxbc()) {
     const DxbcCacheEntry* e = FindDxbc(hash, spec_constants);
     const uint64_t key = hash ^ (uint64_t(e ? e->specConstants : spec_constants) << 32);
     if (auto it = linked_shaders_.find(key); it != linked_shaders_.end()) {

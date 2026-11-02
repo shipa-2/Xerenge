@@ -5,6 +5,11 @@
 //
 //   dxc -T vs_6_0 -E VSMain -Fh plume_video_vs_dxil.h -Vn kVideoVsDxil video.hlsl
 //   dxc -T ps_6_0 -E PSMain -Fh plume_video_ps_dxil.h -Vn kVideoPsDxil video.hlsl
+//
+// and for D3D12 without DXIL (the Xbox One), shader model 5.1:
+//
+//   fxc /T vs_5_1 /E VSMain /O3 /enable_unbounded_descriptor_tables /Fh plume_video_vs_dxbc.h /Vn kVideoVsDxbc video.hlsl
+//   fxc /T ps_5_1 /E PSMain /O3 /enable_unbounded_descriptor_tables /Fh plume_video_ps_dxbc.h /Vn kVideoPsDxbc video.hlsl
 
 Texture2D<float4> g_Texture2D[] : register(t0, space0);
 SamplerState g_Samplers[] : register(s0, space3);

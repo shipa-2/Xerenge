@@ -43,6 +43,11 @@ inline constexpr plume::RenderFormat kColorTargetFormat = plume::RenderFormat::R
 inline constexpr plume::RenderFormat kColorTargetFormat = plume::RenderFormat::B8G8R8A8_UNORM;
 #endif
 
+#if REX_PLATFORM_UWP
+// The CoreWindow's size in physical pixels (UWP), for the swap chain.
+void SetUWPWindowPixelSize(uint32_t width, uint32_t height);
+#endif
+
 class PlumeSwapchain {
  public:
   PlumeSwapchain() = default;
