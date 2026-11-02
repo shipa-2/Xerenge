@@ -121,7 +121,9 @@ title screen, loads a save, runs through car select, and races render at
 60 fps. The audio is complete - engine sounds, crashes, the interface and the
 licensed soundtrack - and the intro videos play. The frontend, the videos and
 the 3D world are colour-correct. It runs on Linux, Windows, Android (phones
-with a Vulkan 1.0+ GPU) and macOS (Apple silicon).
+with a Vulkan 1.0+ GPU) and macOS (Apple silicon). There is also a PS5 port
+by bystritskiy, [xerenge-ps5](https://github.com/bystritskiy/xerenge-ps5) - it
+may lag a little behind this repository.
 
 All of it besides the disc image and the install path is a setting, not a
 patch: the installer and `xerenge.conf` cover them, and most are reachable
