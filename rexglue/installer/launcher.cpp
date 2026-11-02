@@ -334,9 +334,33 @@ int WINAPI wWinMain(HINSTANCE, HINSTANCE, PWSTR, int) {
   const std::wstring game = Widen(args[0]);
   STARTUPINFOW startup{};
   startup.cb = sizeof(startup);
+  // What the game prints to stderr - the renderer's reason when its Vulkan
+  // instance fails, before the game's own log has anything to say (GitHub
+  // #78) - goes to launcher.log beside burnout.log, as on Linux. Without it a
+  // black screen on Windows left nothing but "failed to initialize".
+  std::filesystem::path log = dir / "launcher.log";
+  for (size_t i = 0; i + 1 < args.size(); ++i) {
+    if (args[i] == "--log_file") {
+      log = std::filesystem::path(Widen(args[i + 1])).parent_path() / "launcher.log";
+    }
+  }
+  SECURITY_ATTRIBUTES inherit{sizeof(inherit), nullptr, TRUE};
+  HANDLE output = CreateFileW(log.c_str(), GENERIC_WRITE, FILE_SHARE_READ, &inherit, CREATE_ALWAYS,
+                              FILE_ATTRIBUTE_NORMAL, nullptr);
+  if (output != INVALID_HANDLE_VALUE) {
+    startup.dwFlags |= STARTF_USESTDHANDLES;
+    startup.hStdInput = GetStdHandle(STD_INPUT_HANDLE);
+    startup.hStdOutput = output;
+    startup.hStdError = output;
+  }
   PROCESS_INFORMATION process{};
-  if (!CreateProcessW(game.c_str(), line.data(), nullptr, nullptr, FALSE, 0, nullptr, dir.wstring().c_str(),
-                      &startup, &process)) {
+  const BOOL started =
+      CreateProcessW(game.c_str(), line.data(), nullptr, nullptr, output != INVALID_HANDLE_VALUE, 0, nullptr,
+                     dir.wstring().c_str(), &startup, &process);
+  if (output != INVALID_HANDLE_VALUE) {
+    CloseHandle(output);
+  }
+  if (!started) {
     const std::wstring text = L"Cannot start " + game + L" (error " + std::to_wstring(GetLastError()) +
                               L"). Run the installer again to repair the installation.";
     MessageBoxW(nullptr, text.c_str(), L"Burnout Revenge", MB_OK | MB_ICONERROR);
