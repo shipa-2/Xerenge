@@ -107,6 +107,13 @@ if(NOT XERENGE_SHADER_CACHE_BOOTSTRAP_CPP)
     endforeach()
 endif()
 
+# fxc's DXBC (tools/build_dxbc_cache.sh, on Windows): D3D12 without DXIL, the Xbox One.
+set(XERENGE_SHADER_CACHE_DXBC_CPP "" CACHE FILEPATH
+    "DXBC shader cache (generated/shader_cache_dxbc.cpp)")
+if(NOT XERENGE_SHADER_CACHE_DXBC_CPP AND EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/generated/shader_cache_dxbc.cpp")
+    set(XERENGE_SHADER_CACHE_DXBC_CPP "${CMAKE_CURRENT_SOURCE_DIR}/generated/shader_cache_dxbc.cpp")
+endif()
+
 set(REXGPU_PLUME_SOURCES
     src/plume_renderer/plume_graphics_system.cpp
     src/plume_renderer/plume_shader_cache.cpp
@@ -194,7 +201,15 @@ if(XERENGE_SHADER_CACHE_BOOTSTRAP_CPP)
     message(STATUS "rexgpu-plume: linking bootstrap shader cache ${XERENGE_SHADER_CACHE_BOOTSTRAP_CPP}")
 endif()
 
+if(XERENGE_SHADER_CACHE_DXBC_CPP)
+    list(APPEND REXGPU_PLUME_SOURCES "${XERENGE_SHADER_CACHE_DXBC_CPP}")
+    message(STATUS "rexgpu-plume: linking DXBC shader cache ${XERENGE_SHADER_CACHE_DXBC_CPP}")
+endif()
+
 add_library(rexgpu-plume SHARED ${REXGPU_PLUME_SOURCES})
+if(XERENGE_SHADER_CACHE_DXBC_CPP)
+    target_compile_definitions(rexgpu-plume PRIVATE XERENGE_HAS_DXBC_CACHE)
+endif()
 set_target_properties(rexgpu-plume PROPERTIES
     CXX_VISIBILITY_PRESET hidden
     VISIBILITY_INLINES_HIDDEN ON

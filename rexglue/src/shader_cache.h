@@ -23,6 +23,18 @@ struct ShaderMicrocodeEntry {
   uint32_t stage;
 };
 
+// fxc's DXBC, shader model 5.1 (tools/build_dxbc_cache.sh): D3D12 without DXIL, the
+// Xbox One. One entry per shader and specialisation value it is compiled with.
+struct DxbcCacheEntry {
+  uint64_t hash;
+  uint32_t specConstants;
+  uint32_t specConstantsMask;
+  const uint8_t* data;
+  size_t size;
+};
+extern const DxbcCacheEntry g_dxbcCacheEntries[];
+extern const size_t g_dxbcCacheEntryCount;
+
 extern ShaderCacheEntry g_shaderCacheEntries[];
 extern const size_t g_shaderCacheEntryCount;
 extern const uint8_t g_compressedSpirvCache[];

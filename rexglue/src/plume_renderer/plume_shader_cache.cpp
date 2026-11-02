@@ -10,6 +10,7 @@
 #include <atomic>
 #include <cstdlib>
 #include <iterator>
+#include <string_view>
 #include <unordered_map>
 #include <unordered_set>
 #include <vector>
@@ -66,9 +67,34 @@ extern const uint8_t g_compressedDxilCacheExtra[] XERENGE_WEAK;
 extern const size_t g_dxilCacheCompressedSizeExtra XERENGE_WEAK;
 extern const size_t g_dxilCacheDecompressedSizeExtra XERENGE_WEAK;
 
+#ifndef XERENGE_HAS_DXBC_CACHE
+const DxbcCacheEntry g_dxbcCacheEntries[1]{};
+const size_t g_dxbcCacheEntryCount = 0;
+#endif
+
 namespace rex::plume_renderer {
 
 namespace {
+
+// D3D12 from fxc's DXBC instead of DXIL (XERENGE_D3D12_SHADERS=dxbc), as the
+// Xbox One needs: its D3D12 stops at shader model 5.1.
+bool UseDxbc() {
+  static const bool use = [] {
+    const char* v = std::getenv("XERENGE_D3D12_SHADERS");
+    return g_dxbcCacheEntryCount > 0 && v && std::string_view(v) == "dxbc";
+  }();
+  return use;
+}
+
+const DxbcCacheEntry* FindDxbc(uint64_t hash, uint32_t spec) {
+  for (size_t i = 0; i < g_dxbcCacheEntryCount; ++i) {
+    const DxbcCacheEntry& e = g_dxbcCacheEntries[i];
+    if (e.hash == hash && e.specConstants == (spec & e.specConstantsMask)) {
+      return &e;
+    }
+  }
+  return nullptr;
+}
 
 struct ShaderContainerHeader {
   uint32_t flags;
@@ -620,6 +646,28 @@ plume::RenderShader* PlumeShaderCache::GetOrCreateShader(uint64_t hash, uint32_t
   std::lock_guard lock(mutex_);
   if (!device_) {
     return nullptr;
+  }
+
+  if (!PlumeUsesVulkan() && UseDxbc()) {
+    const DxbcCacheEntry* e = FindDxbc(hash, spec_constants);
+    const uint64_t key = hash ^ (uint64_t(e ? e->specConstants : spec_constants) << 32);
+    if (auto it = linked_shaders_.find(key); it != linked_shaders_.end()) {
+      return it->second.get();
+    }
+    std::unique_ptr<plume::RenderShader> shader;
+    if (e) {
+      // plume hands D3D12 the bytes as they are; DXBC goes where DXIL would.
+      shader = device_->createShader(e->data, e->size, "shaderMain",
+                                     plume::RenderShaderFormat::DXIL);
+    } else {
+      static std::atomic<uint32_t> missing{0};
+      if (missing.fetch_add(1, std::memory_order_relaxed) < 8) {
+        REXLOG_ERROR("plume: no DXBC for shader {:016X} (spec {:X})", hash, spec_constants);
+      }
+    }
+    plume::RenderShader* raw = shader.get();
+    linked_shaders_.emplace(key, std::move(shader));
+    return raw;
   }
 
   // D3D12: a shader with specialisation constants is a DXIL library calling
