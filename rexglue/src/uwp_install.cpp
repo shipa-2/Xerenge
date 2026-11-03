@@ -26,6 +26,7 @@
 #include <winrt/Windows.Foundation.h>
 #include <winrt/Windows.Foundation.Collections.h>
 #include <winrt/Windows.Storage.h>
+#include <winrt/Windows.Storage.FileProperties.h>
 #include <winrt/Windows.Storage.Pickers.h>
 #include <winrt/Windows.UI.Core.h>
 #include <winrt/Windows.UI.Popups.h>
@@ -87,8 +88,11 @@ class ProgressBar {
     }
     device_ = device;
     context_ = context.as<ID3D11DeviceContext1>();
+    // The swap chain must come from the factory that made the device's adapter.
+    winrt::com_ptr<IDXGIAdapter> adapter;
     winrt::com_ptr<IDXGIFactory2> factory;
-    if (FAILED(CreateDXGIFactory1(IID_PPV_ARGS(factory.put())))) {
+    if (FAILED(device_.as<IDXGIDevice>()->GetAdapter(adapter.put())) ||
+        FAILED(adapter->GetParent(IID_PPV_ARGS(factory.put())))) {
       return;
     }
     DXGI_SWAP_CHAIN_DESC1 desc = {};
@@ -152,24 +156,26 @@ class ProgressBar {
 // Returns the error, or empty.
 std::string Extract(HANDLE handle, const std::filesystem::path& destination) {
   std::string error;
-  std::atomic<int> files_done{0};
-  std::atomic<int> files_total{0};
+  std::atomic<uint64_t> bytes_done{0};
+  std::atomic<uint64_t> bytes_total{0};
   std::atomic<bool> finished{false};
   std::thread worker([&] {
     try {
       XdvdfsImage image(handle);
       uint32_t root_sector = 0, root_size = 0;
       image.Root(&root_sector, &root_size);
-      int total = 0;
+      uint64_t total = 0;
       XdvdfsExtract(image, root_sector, root_size, destination.string(), true,
-                    [&](const std::string& path, uint64_t) {
-                      if (!path.empty() && path.back() != '/') ++total;
-                    });
-      files_total = total;
+                    [&](const std::string&, uint64_t length) { total += length; });
+      bytes_total = total;
+      // Told of each file as it begins: the bar stands at the files before it.
+      uint64_t started = 0;
       XdvdfsExtract(image, root_sector, root_size, destination.string(), false,
-                    [&](const std::string& path, uint64_t) {
-                      if (!path.empty() && path.back() != '/') ++files_done;
+                    [&](const std::string&, uint64_t length) {
+                      bytes_done = started;
+                      started += length;
                     });
+      bytes_done = started;
     } catch (const std::exception& e) {
       error = e.what();
     }
@@ -180,8 +186,8 @@ std::string Extract(HANDLE handle, const std::filesystem::path& destination) {
     auto dispatcher = CoreWindow::GetForCurrentThread().Dispatcher();
     while (!finished) {
       dispatcher.ProcessEvents(CoreProcessEventsOption::ProcessAllIfPresent);
-      const int total = files_total;
-      bar.Draw(total ? double(files_done) / total : 0.0);
+      const uint64_t total = bytes_total;
+      bar.Draw(total ? double(bytes_done) / double(total) : 0.0);
       std::this_thread::sleep_for(50ms);
     }
   }
@@ -207,6 +213,22 @@ bool InstallGame(const std::filesystem::path& game_dir) {
     picker.FileTypeFilter().Append(L".iso");
     winrt::Windows::Storage::StorageFile file = Wait(picker.PickSingleFileAsync());
     if (!file) {
+      continue;
+    }
+
+    // Room for the game first: Dev Mode gives its apps a few GB unless Dev Home
+    // is told otherwise (Manage developer storage), and the image says how much.
+    const uint64_t needed = uint64_t(Wait(file.GetBasicPropertiesAsync()).Size()) + (256ull << 20);
+    ULARGE_INTEGER free_bytes{};
+    if (GetDiskFreeSpaceExW(game_dir.parent_path().c_str(), &free_bytes, nullptr, nullptr) &&
+        free_bytes.QuadPart < needed) {
+      const auto gb = [](uint64_t bytes) { return std::to_wstring((bytes * 10 >> 30) / 10) + L"." +
+                                                  std::to_wstring((bytes * 10 >> 30) % 10); };
+      Ask((L"There is not room for the game: it needs " + gb(needed) + L" GB, and " +
+           gb(free_bytes.QuadPart) + L" GB is free. On the console, open Dev Home and give "
+           L"developer storage more space (Manage developer storage), then choose the image "
+           L"again.").c_str(),
+          L"Back", nullptr);
       continue;
     }
 
