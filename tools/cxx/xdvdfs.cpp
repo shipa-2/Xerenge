@@ -10,6 +10,15 @@
 #ifndef _WIN32
 #include <sys/stat.h>
 #include <unistd.h>
+#else
+#ifndef WIN32_LEAN_AND_MEAN
+#define WIN32_LEAN_AND_MEAN
+#endif
+#ifndef NOMINMAX
+#define NOMINMAX
+#endif
+#include <windows.h>
+#undef CopyFile
 #endif
 
 namespace {
@@ -157,6 +166,59 @@ private:
 }  // namespace
 
 XdvdfsImage::XdvdfsImage(int fd) : fd_buffer(std::make_unique<FdStreamBuf>(fd)) {
+    in.rdbuf(fd_buffer.get());
+    FindVolume();
+}
+#else
+namespace {
+
+// Reads a handle at explicit offsets, through a buffer; seeking only moves the offset.
+class HandleStreamBuf : public std::streambuf {
+public:
+    explicit HandleStreamBuf(HANDLE handle) : handle_(handle), buffer_(size_t(1) << 20) {}
+
+protected:
+    int_type underflow() override {
+        OVERLAPPED at{};
+        at.Offset = DWORD(next_);
+        at.OffsetHigh = DWORD(next_ >> 32);
+        DWORD got = 0;
+        if (!ReadFile(handle_, buffer_.data(), DWORD(buffer_.size()), &got, &at) || got == 0) {
+            return traits_type::eof();
+        }
+        setg(buffer_.data(), buffer_.data(), buffer_.data() + got);
+        next_ += got;
+        return traits_type::to_int_type(buffer_[0]);
+    }
+    pos_type seekoff(off_type offset, std::ios_base::seekdir from, std::ios_base::openmode) override {
+        off_type target = offset;
+        if (from == std::ios_base::cur) {
+            target += off_type(next_) - (egptr() - gptr());
+        } else if (from == std::ios_base::end) {
+            LARGE_INTEGER size{};
+            if (!GetFileSizeEx(handle_, &size)) {
+                return pos_type(off_type(-1));
+            }
+            target += size.QuadPart;
+        }
+        return seekpos(pos_type(target), std::ios_base::in);
+    }
+    pos_type seekpos(pos_type position, std::ios_base::openmode) override {
+        next_ = uint64_t(off_type(position));
+        setg(nullptr, nullptr, nullptr);
+        return position;
+    }
+
+private:
+    HANDLE handle_;
+    uint64_t next_ = 0;
+    std::vector<char> buffer_;
+};
+
+}  // namespace
+
+XdvdfsImage::XdvdfsImage(void* handle)
+    : fd_buffer(std::make_unique<HandleStreamBuf>(static_cast<HANDLE>(handle))) {
     in.rdbuf(fd_buffer.get());
     FindVolume();
 }

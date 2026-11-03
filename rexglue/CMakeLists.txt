@@ -69,6 +69,16 @@ if(REX_UWP)
     # on the CoreWindow.
     add_compile_definitions(REX_PLATFORM_UWP=1)
 endif()
+if(REX_UWP)
+    # The first run asks for the disc image and extracts it (uwp_install.cpp),
+    # with the desktop installer's XDVDFS reader.
+    target_sources(burnout PRIVATE src/uwp_install.cpp
+        ${CMAKE_CURRENT_SOURCE_DIR}/../tools/cxx/xdvdfs.cpp
+        ${CMAKE_CURRENT_SOURCE_DIR}/../tools/cxx/sha256.cpp
+        ${CMAKE_CURRENT_SOURCE_DIR}/../tools/cxx/crypto.cpp)
+    target_include_directories(burnout PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/../tools/cxx)
+    target_link_libraries(burnout PRIVATE d3d11 dxgi)
+endif()
 add_subdirectory("${PLUME_ROOT}" plume)
 if(REX_UWP)
     target_compile_definitions(plume PUBLIC PLUME_UWP)

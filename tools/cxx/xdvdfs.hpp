@@ -20,6 +20,10 @@ struct XdvdfsImage {
     // An open descriptor, read where it stands rather than reopened by path:
     // on Android a file from the system picker is reachable only that way.
     explicit XdvdfsImage(int fd);
+#else
+    // An open file handle, likewise: on UWP (the Xbox) a file from the picker
+    // is a brokered handle, not a path the app may open.
+    explicit XdvdfsImage(void* handle);
 #endif
     std::vector<uint8_t> Sector(uint32_t number, uint32_t count = 1);
     void Root(uint32_t* sector, uint32_t* size);

@@ -3,11 +3,10 @@
 # .msix for the Xbox One in Dev Mode. Runs on Windows (Git bash), with the
 # Windows SDK's makeappx and signtool.
 #
-#   uwp/build_package.sh [--game <extracted game folder>] [--out <file.msix>]
+#   uwp/build_package.sh [--out <file.msix>]
 #
-# --game puts the game into the package (its `game` folder, where the app
-# looks first); without it the app reads LocalState\game, copied there through
-# Device Portal. The game's files never leave the machine but in the package.
+# The game is not in it: the first run asks for the disc image and extracts it
+# into LocalState\game (src/uwp_install.cpp).
 # Install it through Device Portal (Home > Add), then set the app's type to
 # Game in Dev Home: as an App it gets 1 GB and no D3D12.
 set -e
@@ -15,10 +14,8 @@ cd "$(dirname "$0")/.."
 
 BUILD=${BUILD:-build-uwp}
 OUT=$BUILD/Xerenge.msix
-GAME=
 while [ $# -gt 0 ]; do
     case $1 in
-        --game) GAME=$2; shift ;;
         --out) OUT=$2; shift ;;
         *) echo "unknown argument $1" >&2; exit 1 ;;
     esac
@@ -36,10 +33,6 @@ CRT=${CRT:-$(ls -d "/c/Program Files"*"/Microsoft Visual Studio/"*/*/VC/Redist/M
 for f in burnout.exe rexruntime.dll rexgpu-plume.dll; do
     [ -f "$BUILD/$f" ] || { echo "$BUILD/$f missing: build $BUILD first" >&2; exit 1; }
 done
-if [ -n "$GAME" ] && [ ! -f "$GAME/default.xex" ]; then
-    echo "$GAME has no default.xex" >&2
-    exit 1
-fi
 
 STAGE=$BUILD/package
 rm -rf "$STAGE"
@@ -61,18 +54,10 @@ map=$STAGE/files.map
     for f in uwp/Assets/*.png; do
         echo "\"$(win "$f")\" \"Assets\\$(basename "$f")\""
     done
-    if [ -n "$GAME" ]; then
-        (cd "$GAME" && find . -type f -not -path "./\$systemupdate/*") | sed 's|^\./||' | while read -r rel; do
-            echo "\"$(cygpath -w "$(realpath "$GAME")")\\${rel//\//\\}\" \"game\\${rel//\//\\}\""
-        done
-    fi
 } > "$map"
 echo "packing $(($(wc -l < "$map") - 1)) files, version $version"
 
-# The game is mostly compressed already; packing it again takes long for little.
-nc=
-[ -n "$GAME" ] && nc=//nc
-"$MAKEAPPX" pack //o $nc //f "$(win "$map")" //p "$(cygpath -w "$(realpath -m "$OUT")")" > "$STAGE/makeappx.log" ||
+"$MAKEAPPX" pack //o //f "$(win "$map")" //p "$(cygpath -w "$(realpath -m "$OUT")")" > "$STAGE/makeappx.log" ||
     { tail -20 "$STAGE/makeappx.log"; exit 1; }
 
 # A self-signed certificate for CN=Xerenge, made once and kept outside the tree.
