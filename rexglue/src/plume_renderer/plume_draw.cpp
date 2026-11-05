@@ -1813,7 +1813,21 @@ bool UntileGuestTexture(const rex::graphics::TextureInfo& info, const uint8_t* s
   } else {
     const uint32_t pitch_blocks = std::max(1u, info.pitch / fi->block_width);
     const uint32_t src_row = rex::align(pitch_blocks * bpb, 256u);
-    for (uint32_t by = 0; by < block_h; ++by) {
+    // A whole row at once where swapping it is the same as swapping each block
+    // (as for the tiled runs above). Block by block, a 1280x720 video frame's
+    // planes - one byte a block - were 1.4 million copy calls: 22 ms a frame on
+    // the Xbox One, which held the menu's video back.
+    using rex::graphics::xenos::Endian;
+    const uint32_t swap_unit = info.endianness == Endian::k8in16 ? 2u
+                               : info.endianness == Endian::kNone ? 1u
+                                                                   : 4u;
+    const bool whole_rows = bpb >= swap_unit;
+    for (uint32_t by = 0; by < block_h && whole_rows; ++by) {
+      rex::graphics::texture_conversion::CopySwapBlock(
+          info.endianness, blocks.data() + size_t(by) * row_bytes, src + size_t(by) * src_row,
+          size_t(block_w) * bpb);
+    }
+    for (uint32_t by = 0; by < block_h && !whole_rows; ++by) {
       for (uint32_t bx = 0; bx < block_w; ++bx) {
         const uint32_t so = by * src_row + bx * bpb;
         rex::graphics::texture_conversion::CopySwapBlock(
