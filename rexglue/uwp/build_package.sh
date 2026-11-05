@@ -6,7 +6,8 @@
 #   uwp/build_package.sh [--out <file.msix>]
 #
 # The game is not in it: the first run asks for the disc image and extracts it
-# into LocalState\game (src/uwp_install.cpp).
+# into D:\DevelopmentFiles\Xerenge\game - the space Dev Home assigns -
+# or LocalState\game if that drive cannot be written (src/uwp_install.cpp).
 # Install it through Device Portal (Home > Add), then set the app's type to
 # Game in Dev Home: as an App it gets 1 GB and no D3D12.
 set -e
@@ -37,7 +38,9 @@ done
 STAGE=$BUILD/package
 rm -rf "$STAGE"
 mkdir -p "$STAGE"
-version=$(tr -d '[:space:]' < ../VERSION).0
+# The fourth part counts up with the time of day, so a new build installs over
+# the last one without uninstalling it (which would clear LocalState).
+version=$(tr -d "[:space:]" < ../VERSION).$(date +%H%M | sed "s/^0*//")
 sed "s/@VERSION@/$version/" uwp/AppxManifest.xml.in > "$STAGE/AppxManifest.xml"
 
 win() { cygpath -w "$(realpath "$1")"; }

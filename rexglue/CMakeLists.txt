@@ -77,7 +77,7 @@ if(REX_UWP)
         ${CMAKE_CURRENT_SOURCE_DIR}/../tools/cxx/sha256.cpp
         ${CMAKE_CURRENT_SOURCE_DIR}/../tools/cxx/crypto.cpp)
     target_include_directories(burnout PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/../tools/cxx)
-    target_link_libraries(burnout PRIVATE d3d11 dxgi)
+    target_link_libraries(burnout PRIVATE d2d1 d3d11 d3d12 dwrite dxgi)
 endif()
 add_subdirectory("${PLUME_ROOT}" plume)
 if(REX_UWP)

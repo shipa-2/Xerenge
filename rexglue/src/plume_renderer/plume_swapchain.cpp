@@ -22,6 +22,8 @@
 #include <plume_vulkan.h>
 #if REX_PLATFORM_UWP
 #include <plume_d3d12.h>
+#include "plume_renderer/plume_copy_vs_dxbc.h"
+#include "plume_renderer/plume_copy_ps_dxbc.h"
 #endif
 
 #include <rex/logging.h>
@@ -341,6 +343,9 @@ bool PlumeSwapchain::Initialize(plume::RenderDevice* device, SDL_Window* window,
     Shutdown();
     return false;
   }
+#if REX_PLATFORM_UWP
+  plume::D3D12SetPresentShaders(kCopyVsDxbc, sizeof(kCopyVsDxbc), kCopyPsDxbc, sizeof(kCopyPsDxbc));
+#endif
 #ifdef __ANDROID__
   android_window_ = render_window;
   AskForFrameRate(render_window);
@@ -1250,6 +1255,14 @@ void PlumeSwapchain::ClearAndPresent(float r, float g, float b, float a, DrawEnc
         snapshot_pending_ = snapshot_seconds;
       }
     }
+    // The Xbox One takes neither a copy onto the swap chain's image nor plume's
+    // draws there: Present draws the frame onto it itself (plume's
+    // D3D12SetPresentSource), from the frame left readable here.
+#if REX_PLATFORM_UWP
+    out->barriers(plume::RenderBarrierStage::GRAPHICS,
+                  plume::RenderTextureBarrier(shown, plume::RenderTextureLayout::SHADER_READ));
+    plume::D3D12SetPresentSource(swap_chain_.get(), shown);
+#else
     // At another size (XERENGE_RENDER_RESOLUTION) the frame is scaled onto
     // the window, filtered; at the window's own size it is a straight copy.
     if (width != window_width || height != window_height) {
@@ -1265,11 +1278,18 @@ void PlumeSwapchain::ClearAndPresent(float r, float g, float b, float a, DrawEnc
     } else {
       out->copyTexture(swapchain_texture, shown);
     }
+#endif
     // On the image shown, after the copy: drawn into the target, the counter
     // would go wherever the title copies that target to. The game's notice
     // likewise, its picture uploaded before the pass.
+#if REX_PLATFORM_UWP
+    // Not drawn onto the swap chain's image there (see above) - to come.
+    const bool overlay = false;
+    if (false) {
+#else
     const bool overlay = overlay_ && overlay_->Prepare(out, kSwapchainFormat);
     if (FpsShown() || overlay) {
+#endif
       out->barriers(plume::RenderBarrierStage::GRAPHICS,
                     plume::RenderTextureBarrier(swapchain_texture,
                                                 plume::RenderTextureLayout::COLOR_WRITE));
@@ -1303,7 +1323,20 @@ void PlumeSwapchain::ClearAndPresent(float r, float g, float b, float a, DrawEnc
   command_queue_->executeCommandLists(&cmd_list, 1, &wait_semaphore, 1, &release_semaphore, 1,
                                       submit_fence_.get());
   const auto submit_started = std::chrono::steady_clock::now();
+#if REX_PLATFORM_UWP
+  if (run_on_ui_) {
+    static bool logged_present = false;
+    if (!logged_present) {
+      logged_present = true;
+      REXLOG_INFO("plume: DXGI Present on UI thread");
+    }
+    run_on_ui_([&] { swap_chain_->present(image_index, &release_semaphore, 1); });
+  } else {
+    swap_chain_->present(image_index, &release_semaphore, 1);
+  }
+#else
   swap_chain_->present(image_index, &release_semaphore, 1);
+#endif
   const auto present_done = std::chrono::steady_clock::now();
   submit_pending_ = true;
   // Waiting here, for the frame just submitted, is the default. Leaving the

@@ -81,6 +81,13 @@ class PlumeSwapchain {
   bool CanHoldFrames() const { return scene_texture_ != nullptr; }
   // The refresh rate of the display the window is on, in Hz; 0 when unknown.
   float DisplayRefreshHz() const;
+#if REX_PLATFORM_UWP
+  // DXGI Present for a CoreWindow swapchain must run on the UI thread;
+  // the rest of the frame (record/execute/GPU wait) stays off it.
+  void SetRunOnUIThread(std::function<void(std::function<void()>)> fn) {
+    run_on_ui_ = std::move(fn);
+  }
+#endif
 
  private:
   void CreateFramebuffers();
@@ -91,6 +98,9 @@ class PlumeSwapchain {
   // The drawable size in pixels.
   void WindowPixelSize(uint32_t* width, uint32_t* height) const;
 
+#if REX_PLATFORM_UWP
+  std::function<void(std::function<void()>)> run_on_ui_;
+#endif
   plume::RenderDevice* device_ = nullptr;
   SDL_Window* window_ = nullptr;
   void* native_window_ = nullptr;

@@ -35,6 +35,9 @@
 #include <rex/graphics/xenos.h>
 #include <rex/kernel/xboxkrnl/video.h>
 #include <rex/logging.h>
+#if REX_PLATFORM_UWP
+#include <rex/ui/windowed_app_context_uwp.h>
+#endif
 #include <rex/memory/utils.h>
 #include <rex/runtime.h>
 #include <rex/system/kernel_state.h>
@@ -383,14 +386,26 @@ void PlumeGraphicsSystem::AttachPresentationWindow(ui::Window* window) {
     return;
   }
 
+#if REX_PLATFORM_UWP
+  swapchain_->SetRunOnUIThread([this](std::function<void()> fn) {
+    if (!app_context_ || app_context_->IsInUIThread() ||
+        !rex::ui::UWPWindowedAppContext::UILoopRunning()) {
+      fn();
+      return;
+    }
+    app_context_->CallInUIThreadSynchronous(std::move(fn));
+  });
+#endif
   draw_context_ = std::make_unique<PlumeDrawContext>();
   if (!draw_context_->Initialize(render_device_.get())) {
     REXLOG_ERROR("plume: draw context initialization failed");
     draw_context_.reset();
   }
 
+#if !REX_PLATFORM_UWP
   // Smoke present so --plume shows a visible clear color before the first VdSwap.
   app_context_->CallInUIThreadSynchronous([this]() { PresentClearColorOnUiThread(0, 0); });
+#endif
 }
 
 X_STATUS PlumeGraphicsSystem::SetupGuestGpu(runtime::FunctionDispatcher* function_dispatcher,
