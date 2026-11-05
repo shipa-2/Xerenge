@@ -1222,7 +1222,13 @@ void PlumeSwapchain::ClearAndPresent(float r, float g, float b, float a, DrawEnc
     const plume::RenderTextureBarrier to_copy[2] = {
         plume::RenderTextureBarrier(shown, plume::RenderTextureLayout::COPY_SOURCE),
         plume::RenderTextureBarrier(swapchain_texture, plume::RenderTextureLayout::COPY_DEST)};
+#if REX_PLATFORM_UWP
+    // Nothing is copied onto the swap chain's image on the Xbox One (Present
+    // draws the frame there, below), so it is not made a copy destination.
+    out->barriers(plume::RenderBarrierStage::COPY, nullptr, 0, to_copy, 1);
+#else
     out->barriers(plume::RenderBarrierStage::COPY, nullptr, 0, to_copy, 2);
+#endif
     if (probe_mapped_ && width >= 64 && height >= 64) {
       const plume::RenderBox box(int32_t(width / 2 - 32), int32_t(height / 2 - 32),
                                  int32_t(width / 2 + 32), int32_t(height / 2 + 32));

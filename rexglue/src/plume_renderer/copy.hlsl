@@ -21,5 +21,7 @@ VSOut VSMain(uint id : SV_VertexID) {
 }
 
 float4 PSMain(VSOut i) : SV_Target0 {
-    return g_Texture.Sample(g_Sampler, i.uv);
+    // Opaque: the frame's alpha is whatever the title left in its target (often
+    // 0), and the Xbox One composites the window's image by it - black.
+    return float4(g_Texture.Sample(g_Sampler, i.uv).rgb, 1.0);
 }

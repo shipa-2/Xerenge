@@ -3,6 +3,7 @@
  * @brief       Anti-aliasing (FXAA, SMAA) and sharpening (CAS) of the finished frame.
  */
 #include "plume_renderer/plume_postfx.h"
+#include "plume_renderer/plume_draw.h"
 
 #include "frame_clock_provider.h"
 
@@ -159,6 +160,14 @@ bool PlumePostFx::EnsurePipelines() {
   if (pipelines_failed_ || !device_) {
     return false;
   }
+  // The passes exist as SPIR-V only so far: on D3D12 their pipelines are empty
+  // shells, and drawn through them the frame came out black (the Xbox, aa =
+  // fxaa). Off there until they are written for it.
+  if (!PlumeUsesVulkan()) {
+    pipelines_failed_ = true;
+    REXLOG_WARN("plume: anti-aliasing and sharpening are Vulkan-only for now; off on D3D12");
+    return false;
+  }
   // Tried once: a driver that cannot make them would otherwise be asked every
   // frame, and the frame goes on without.
   pipelines_failed_ = true;
@@ -215,6 +224,10 @@ bool PlumePostFx::EnsureSmaaPipelines() {
     return true;
   }
   if (smaa_failed_) {
+    return false;
+  }
+  if (!PlumeUsesVulkan()) {
+    smaa_failed_ = true;
     return false;
   }
   // Tried once, as above; without them the frame is not anti-aliased, and

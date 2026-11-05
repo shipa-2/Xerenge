@@ -77,7 +77,10 @@ namespace rex::plume_renderer {
 bool PlumeUsesDxbc() {
   static const bool use = [] {
     const char* v = std::getenv("XERENGE_D3D12_SHADERS");
-    return g_dxbcCacheEntryCount > 0 && v && std::string_view(v) == "dxbc";
+    const bool dxbc = g_dxbcCacheEntryCount > 0 && v && std::string_view(v) == "dxbc";
+    REXLOG_INFO("plume: D3D12 shaders from {} ({} DXBC variants linked)", dxbc ? "DXBC" : "DXIL",
+                g_dxbcCacheEntryCount);
+    return dxbc;
   }();
   return use;
 }

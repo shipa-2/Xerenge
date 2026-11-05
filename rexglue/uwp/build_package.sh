@@ -38,9 +38,13 @@ done
 STAGE=$BUILD/package
 rm -rf "$STAGE"
 mkdir -p "$STAGE"
-# The fourth part counts up with the time of day, so a new build installs over
-# the last one without uninstalling it (which would clear LocalState).
-version=$(tr -d "[:space:]" < ../VERSION).$(date +%H%M | sed "s/^0*//")
+# A version that only ever grows, so a new build installs over the last one
+# without uninstalling it (which would clear LocalState): the release's major
+# and minor, then its patch times 1000 plus the days since 2026-11-01, then the
+# time of day (HHMM) - each part below 65536.
+IFS=. read -r major minor patch <<< "$(tr -d "[:space:]" < ../VERSION)"
+days=$(( ($(date +%s) - $(date -d 2026-11-01 +%s)) / 86400 ))
+version=$major.$minor.$((patch * 1000 + days)).$((10#$(date +%H%M)))
 sed "s/@VERSION@/$version/" uwp/AppxManifest.xml.in > "$STAGE/AppxManifest.xml"
 
 win() { cygpath -w "$(realpath "$1")"; }
