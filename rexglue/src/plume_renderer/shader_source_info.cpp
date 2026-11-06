@@ -174,10 +174,26 @@ ShaderSourceInfo ParseShaderSource(std::string_view src) {
       info.sampler_slots |= 1u << slot;
     }
   }
-  info.consumed_locations = ParseConsumedLocations(src);
+  // XenosRecomp writes an input's location as VK_LOCATION(N) since its fxc
+  // output (XENOS_FXC: shader model 5.1 knows no [[vk::location]]); read as
+  // the attribute it stands for. Unread, every shader translated since had no
+  // semantics here, and on D3D12 their pipelines were refused - the menus'
+  // dark panels, the quit prompt's among them.
+  std::string located(src);
+  for (size_t at = located.find("VK_LOCATION("); at != std::string::npos;
+       at = located.find("VK_LOCATION(", at)) {
+    const size_t close = located.find(')', at);
+    if (close == std::string::npos) {
+      break;
+    }
+    located.replace(close, 1, ")]]");
+    located.replace(at, std::string_view("VK_LOCATION(").size(), "[[vk::location(");
+    at = close;
+  }
+  info.consumed_locations = ParseConsumedLocations(located);
   info.matrix_registers = ParseMatrixRegisters(std::string(src));
   info.instance_registers = ParseMatrixRegisters(std::string(src), true);
-  info.location_semantics = ParseLocationSemantics(src);
+  info.location_semantics = ParseLocationSemantics(located);
   return info;
 }
 
