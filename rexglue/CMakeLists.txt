@@ -68,6 +68,11 @@ if(REX_UWP)
     # The Xbox One in Dev Mode (rexglue-sdk REX_UWP): plume makes its swap chain
     # on the CoreWindow.
     add_compile_definitions(REX_PLATFORM_UWP=1)
+    # Its CPU, the Jaguar (AVX, F16C, BMI1, MOVBE, and tuned for it): the
+    # title's movie decoder, one core's worth of recompiled vector code, made
+    # 21 frames a second where x86-64-v2 made 18. Configure build-uwp with
+    # CMAKE_C(XX)_FLAGS=-march=btver2 as well, for the SDK beneath.
+    add_compile_options(-march=btver2)
 endif()
 if(REX_UWP)
     # The first run asks for the disc image and extracts it (uwp_install.cpp),
