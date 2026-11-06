@@ -3466,7 +3466,16 @@ plume::RenderPipeline* PlumeDrawContext::GetOrCreatePipeline(
   desc.specConstants = &spec;
   desc.specConstantsCount = 1;
 
+  // A pipeline the driver takes long over is a frame stalled (the Xbox One
+  // compiles each one the first time it is met): named, with how long.
+  const auto pipeline_started = std::chrono::steady_clock::now();
   std::unique_ptr<plume::RenderPipeline> pipeline = device_->createGraphicsPipeline(desc);
+  if (const auto took = std::chrono::duration_cast<std::chrono::milliseconds>(
+          std::chrono::steady_clock::now() - pipeline_started);
+      took.count() >= 50) {
+    REXLOG_WARN("plume: pipeline vs={:016X} ps={:016X} took {} ms to make", vs_hash, ps_hash,
+                took.count());
+  }
   if (!pipeline || !VulkanPipelineOk(pipeline.get())) {
     static uint32_t fail_logs = 0;
     if (fail_logs < 8) {

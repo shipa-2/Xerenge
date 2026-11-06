@@ -1,5 +1,6 @@
 #pragma once
 
+#include <cstdio>
 #include <algorithm>
 #include <atomic>
 #include <condition_variable>
@@ -70,6 +71,7 @@ class WorkerPool {
     // Eight workers at most, and two cores left alone for the title's own
     // threads and the driver.
     const unsigned count = std::min(8u, hardware > 3 ? hardware - 3 : 1u);
+    std::fprintf(stderr, "plume: worker pool of %u for %u hardware thread(s)\n", count, hardware);
     for (unsigned i = 0; i < count; ++i) {
       workers_.emplace_back([this] { Loop(); });
     }
