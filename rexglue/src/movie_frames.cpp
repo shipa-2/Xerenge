@@ -128,3 +128,22 @@ REX_HOOK_RAW(sub_82482430) {
   }
   __imp__sub_82482430(ctx, base);
 }
+
+// The menu's background video (the loop at 0x82357A70) asks the player for its
+// next frame and how far ahead of its time that frame is (third argument). A
+// frame behind its time is dropped and the next one asked for, four at most,
+// and with all four behind nothing is copied out for the menu at all. On the
+// Xbox One the title's decoder makes about 17 of the clip's 30 frames a
+// second, so every frame was behind: the menu's video stayed black. A frame
+// behind is shown there as one on time - the backdrop runs slow on a slow
+// machine instead of not at all. Movies played anywhere else keep their timing.
+extern "C" void __imp__sub_824801A8(PPCContext& __restrict, uint8_t*);  // next frame
+
+REX_HOOK_RAW(sub_824801A8) {
+  const uint32_t ahead = ctx.r5.u32;
+  const bool menu_backdrop = uint32_t(ctx.lr) == 0x82357ADCu;
+  __imp__sub_824801A8(ctx, base);
+  if (menu_backdrop && ahead != 0 && int32_t(xerenge::LoadGuestU32(base, ahead)) < 0) {
+    xerenge::StoreGuestU32(base, ahead, 0);
+  }
+}
