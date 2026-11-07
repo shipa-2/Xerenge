@@ -48,6 +48,9 @@ extern "C" void __imp__sub_82230B70(PPCContext& __restrict, uint8_t*);
 extern "C" void sub_8222BFD8(PPCContext& __restrict, uint8_t*);
 extern "C" void __imp__sub_8211F448(PPCContext& __restrict, uint8_t*);
 extern "C" void __imp__sub_8240BE58(PPCContext& __restrict, uint8_t*);
+extern "C" void __imp__sub_82160138(PPCContext& __restrict, uint8_t*);
+extern "C" void __imp__sub_82160078(PPCContext& __restrict, uint8_t*);
+extern "C" void __imp__sub_82144AE0(PPCContext& __restrict, uint8_t*);
 extern "C" void __imp__sub_821E9638(PPCContext& __restrict, uint8_t*);
 extern "C" void __imp__sub_821E95A8(PPCContext& __restrict, uint8_t*);
 extern "C" void __imp__sub_82224DD0(PPCContext& __restrict, uint8_t*);
@@ -310,6 +313,52 @@ REX_HOOK_RAW(sub_8240BE58) {
     std::memcpy(xerenge::GuestPointer(base, ref + 4), host.c_str(), host.size() + 1);
     REXLOG_INFO("--online: Locker (Burnout Clips) at {}", host);
   }
+}
+
+// A Burnout Clip's thumbnail, followed while it does not work (its header
+// carries 12288 bytes of zeros): 0x82160138 asks for a capture into the
+// thumbnail's texture (a request at 0x825EF480: pending, done, the texture,
+// the flag to set), 0x82160078 sets the texture up over its memory and
+// 0x82144AE0 encodes what the texture holds as a JPEG of 12 KB at most.
+REX_HOOK_RAW(sub_82160138) {
+  const uint32_t self = ctx.r3.u32;
+  __imp__sub_82160138(ctx, base);
+  REXLOG_INFO("--online: clip thumbnail capture asked (object {:08X}, request {:02X} {:02X} texture "
+              "{:08X})",
+              self, *xerenge::GuestPointer(base, 0x825EF480), *xerenge::GuestPointer(base, 0x825EF481),
+              xerenge::LoadGuestU32(base, 0x825EF484));
+  // The texture's Direct3D header: common part, then the fetch constant.
+  const uint32_t texture = xerenge::LoadGuestU32(base, 0x825EF484);
+  if (texture) {
+    std::string words;
+    for (uint32_t i = 0; i < 13; ++i) {
+      words += fmt::format(" {:08X}", xerenge::LoadGuestU32(base, texture + i * 4));
+    }
+    REXLOG_INFO("--online: clip thumbnail texture header{}", words);
+  }
+}
+REX_HOOK_RAW(sub_82160078) {
+  const uint32_t self = ctx.r3.u32;
+  __imp__sub_82160078(ctx, base);
+  REXLOG_INFO("--online: clip thumbnail texture set up (object {:08X}, memory {:08X})", self,
+              xerenge::LoadGuestU32(base, self + 0x3004));
+}
+REX_HOOK_RAW(sub_82144AE0) {
+  const uint32_t self = ctx.r3.u32;
+  {
+    // The texture it locks and encodes (self+0x303C): its header, the fetch
+    // constant from +0x1C.
+    std::string words;
+    for (uint32_t i = 0; i < 13; ++i) {
+      words += fmt::format(" {:08X}", xerenge::LoadGuestU32(base, self + 0x303C + i * 4));
+    }
+    REXLOG_INFO("--online: clip thumbnail encodes the texture{}", words);
+  }
+  __imp__sub_82144AE0(ctx, base);
+  const uint32_t size = xerenge::LoadGuestU32(base, self + 0x3000);
+  REXLOG_INFO("--online: clip thumbnail encoded (object {:08X}): {} byte(s), starting {:02X}{:02X}{:02X}{:02X}",
+              self, size, *xerenge::GuestPointer(base, self), *xerenge::GuestPointer(base, self + 1),
+              *xerenge::GuestPointer(base, self + 2), *xerenge::GuestPointer(base, self + 3));
 }
 
 // The replay manager's login step (Burnout Clips sharing, also on EA's Locker),

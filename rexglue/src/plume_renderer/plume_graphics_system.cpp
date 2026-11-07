@@ -294,6 +294,14 @@ bool PlumeGraphicsSystem::InitializePlumeDevice() {
       const std::string capture_dir = dir && *dir ? dir : "logs/captures";
       renderdoc_api_->api_1_0_0()->SetLogFilePathTemplate((capture_dir + "/plume").c_str());
       REXLOG_INFO("plume: RenderDoc loaded - F12 captures to {}/", capture_dir);
+      // Its Vulkan layer hooks an instance only with this set (renderdoccmd sets
+      // it; loaded by us it was not): without it nothing was ever captured -
+      // F12 or a frame started and ended here.
+#if REX_PLATFORM_WIN32
+      _putenv_s("ENABLE_VULKAN_RENDERDOC_CAPTURE", "1");
+#else
+      setenv("ENABLE_VULKAN_RENDERDOC_CAPTURE", "1", 0);
+#endif
 #endif
     }
   }
@@ -1321,6 +1329,17 @@ void PlumeGraphicsSystem::PublishDrawSnapshot(uint32_t prim_type, uint32_t sourc
       uint32_t color_mask = 0;
       CopyBeDwords(memory_, &color_mask, device + kD3DColorMaskOffset, 1);
       snap.color_mask = color_mask;
+      // A draw into the third target alone (the explosions' fire and smoke
+      // layer, GitHub #27) blends as that target does: RB_BLENDCONTROL2
+      // (0x220A), not the first target's. With the first's - blending off -
+      // each puff of smoke wrote over the one behind it, hard edged.
+      static const bool fire_layer = std::getenv("XERENGE_FIRE_LAYER") != nullptr;
+      if (fire_layer && (color_mask & 0xFFu) == 0 && (color_mask & 0xF00u) != 0 &&
+          RangeReadable(memory_, device + kD3DRenderStateOffset + (0x220A - 0x2200) * 4, 4)) {
+        uint32_t blend2 = 0;
+        CopyBeDwords(memory_, &blend2, device + kD3DRenderStateOffset + (0x220A - 0x2200) * 4, 1);
+        snap.blend_control = blend2;
+      }
       // Render target slot 1 (device + 0x30F8 + 4 * slot): bound while the
       // scene is drawn, and its shaders write their second output into it.
       if (RangeReadable(memory_, device + 0x30FC, 4)) {
@@ -1637,6 +1656,13 @@ void PlumeGraphicsSystem::NoteGuestResolve(uint32_t flags, uint32_t dest_physica
   marker.resolve_height = source_height;
   marker.resolve_face = face;
   marker.resolve_cube = cube;
+  // The thumbnail request (0x825EF480: waiting, done) is read here, on the
+  // title's thread as it asks for the copy - by the time the copy is encoded
+  // the title has marked the request done.
+  if (memory_) {
+    const auto* request = memory_->TranslateVirtual<const uint8_t*>(0x825EF480u);
+    marker.resolve_writeback = request && request[0] == 1 && request[1] == 0;
+  }
   PushMarker(std::move(marker));
   // Once per destination: the menus resolve into the same two front buffers
   // every frame, and a cap on the first dozen lines never reached the scene.
@@ -1971,6 +1997,21 @@ void PlumeGraphicsSystem::PresentGuestFrame(uint32_t width, uint32_t height) {
         renderdoc_api_->api_1_0_0()->GetCapture(captures - 1, path, &length, &timestamp);
         draw_context_->RequestQueueDump(path);
         call_trace_requested_.store(true);
+        // XERENGE_CAPTURE_BURST=<n>: after a capture taken by hand, the n
+        // frames that follow as well - a glitch of a frame or two is gone
+        // before F12 is pressed (the palms flying up in split screen, #60).
+        // The burst's own captures do not start another.
+        static const uint32_t burst = [] {
+          const char* n = std::getenv("XERENGE_CAPTURE_BURST");
+          return n ? uint32_t(std::strtoul(n, nullptr, 10)) : 0u;
+        }();
+        static uint32_t burst_until = 0;
+        if (burst != 0 && captures > burst_until &&
+            renderdoc_api_->api_1_0_0()->TriggerMultiFrameCapture) {
+          renderdoc_api_->api_1_0_0()->TriggerMultiFrameCapture(burst);
+          burst_until = captures + burst;
+          REXLOG_INFO("plume: RenderDoc capturing the next {} frames", burst);
+        }
       }
       captures_seen = captures;
     }
@@ -2454,7 +2495,94 @@ void PlumeGraphicsSystem::PresentClearColorOnUiThread(uint32_t guest_width,
     renderdoc_api_->api_1_0_0()->StartFrameCapture(capture_device, nullptr);
   }
 #endif
+#if !defined(__ANDROID__)
+  // The menus' flashes and the black frames, a frame long, caught as they
+  // happen. The swap chain reads two patches of each frame back once the GPU
+  // is done with it: the bottom right corner (the flashes turn it bright) and
+  // the middle of the bottom left quarter (the black frames) and the red of
+  // the middle (the title's logo, which flickers).
+  //   XERENGE_FLASH_LOG: such a frame is described in the log - what was drawn
+  //     over it after its last copy, and the frame before - at full speed.
+  //   XERENGE_CAPTURE_FLASH: every frame captured by RenderDoc and kept only
+  //     when it is such a frame - the whole frame to look at, but the game runs
+  //     at a frame or two a second while it is on.
+  // Neither in the first 30 s (the logos, the loading).
+  static const bool capture_flash = std::getenv("XERENGE_CAPTURE_FLASH") != nullptr;
+  static const bool log_flash = std::getenv("XERENGE_FLASH_LOG") != nullptr;
+  static const auto flash_start = std::chrono::steady_clock::now() + std::chrono::seconds(30);
+  const bool flash_watching = (capture_flash || log_flash) && std::chrono::steady_clock::now() >= flash_start;
+  // The library's copy that captures (RenderDocAPI::UseCapturingCopy), looked
+  // for once a few frames are out - before any, RenderDoc knows of no window.
+  // Always, not only for the flashes: the other copy never counts a capture,
+  // so F12's captures went without the draw queue logged beside them.
+  static uint32_t flash_frames_seen = 0;
+  if (renderdoc_api_ && ++flash_frames_seen == 10) {
+    if (!renderdoc_api_->UseCapturingCopy()) {
+      REXLOG_WARN("plume: no copy of RenderDoc in the process captures");
+    }
+  }
+  bool flash_on = false;
+  if (capture_flash && flash_frames_seen > 10 && renderdoc_api_ && renderdoc_api_->api_1_0_0() &&
+      renderdoc_api_->can_discard()) {
+    flash_on = true;
+    renderdoc_api_->api_1_0_0()->StartFrameCapture(nullptr, nullptr);
+  }
+#endif
   swapchain_->ClearAndPresent(0.03f, 0.04f, 0.07f, 1.0f, encode, &ctx, resolve, hold);
+#if !defined(__ANDROID__)
+  if (flash_watching) {
+    static double corner_average = -1.0, middle_average = -1.0;
+    static uint32_t corner_frames = 0, middle_frames = 0;
+    static auto last_kept = std::chrono::steady_clock::time_point{};
+    const auto now = std::chrono::steady_clock::now();
+    const bool rested = now - last_kept > std::chrono::seconds(2);
+    std::string what;
+    double corner = 0.0, middle = 0.0;
+    if (swapchain_->TakeCornerBrightness(&corner)) {
+      if (corner_frames > 30 && corner > corner_average + 0.25 && rested) {
+        what = fmt::format("corner flash - bottom right brightness {:.3f} against {:.3f}", corner,
+                           corner_average);
+      }
+      corner_average = corner_average < 0.0 ? corner : corner_average * 0.9 + corner * 0.1;
+      ++corner_frames;
+    }
+    if (swapchain_->TakeCenterBrightness(&middle)) {
+      if (what.empty() && middle_frames > 30 && middle_average > 0.05 && middle < middle_average * 0.3 &&
+          rested) {
+        what = fmt::format("black frame - bottom left brightness {:.3f} against {:.3f}", middle,
+                           middle_average);
+      }
+      middle_average = middle_average < 0.0 ? middle : middle_average * 0.9 + middle * 0.1;
+      ++middle_frames;
+    }
+    // ... or the red gone from the middle at once: the title's logo, flickering.
+    static double red_average = -1.0;
+    static uint32_t red_frames = 0;
+    double red = 0.0;
+    if (swapchain_->TakeMiddleRedness(&red)) {
+      if (what.empty() && red_frames > 30 && red_average > 0.04 && red < red_average * 0.5 && rested) {
+        what = fmt::format("red gone from the middle - redness {:.3f} against {:.3f}", red, red_average);
+      }
+      red_average = red_average < 0.0 ? red : red_average * 0.9 + red * 0.1;
+      ++red_frames;
+    }
+    if (!what.empty()) {
+      last_kept = now;
+      std::string captured;
+      if (flash_on) {
+        captured = renderdoc_api_->api_1_0_0()->EndFrameCapture(nullptr, nullptr)
+                       ? "; frame captured"
+                       : "; frame NOT captured (RenderDoc refused)";
+        flash_on = false;
+      }
+      REXLOG_WARN("plume: {}{}\n  this frame: {}\n  the one before: {}", what, captured,
+                  swapchain_->FrameSummary(), swapchain_->PreviousFrameSummary());
+    }
+  }
+  if (flash_on) {
+    renderdoc_api_->api_1_0_0()->DiscardFrameCapture(nullptr, nullptr);
+  }
+#endif
   SavePipelineCache(false);
 #if defined(__ANDROID__)
   if (capture_device) {

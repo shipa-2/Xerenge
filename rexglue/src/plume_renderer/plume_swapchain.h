@@ -12,6 +12,7 @@
 #include <memory>
 #include <string>
 #include <vector>
+#include <functional>
 
 #include <plume_render_interface_types.h>
 
@@ -201,11 +202,50 @@ class PlumeSwapchain {
   uint64_t probe_frames_ = 0;
   std::string probe_summary_;
   void CheckProbe();
+  // XERENGE_CAPTURE_FLASH: the frame's bottom right corner, 8x8, read back
+  // after the GPU is done with it - its brightness (0-1), or false when none
+  // was read this frame.
+ public:
+  bool TakeCornerBrightness(double* brightness);
+  // ... and the middle of the frame, 64x64 (the black frames).
+  bool TakeCenterBrightness(double* brightness);
+  // ... and how red the middle of the frame is, 128x64 at 42% of its height (the
+  // title's logo): red above the other two channels, 0-1.
+  bool TakeMiddleRedness(double* redness);
+
+ private:
+  std::unique_ptr<plume::RenderBuffer> corner_buffer_;
+  void* corner_mapped_ = nullptr;
+  bool corner_pending_ = false;
+  double corner_brightness_ = -1.0;
+  double center_brightness_ = -1.0;
+  std::unique_ptr<plume::RenderBuffer> red_buffer_;
+  void* red_mapped_ = nullptr;
+  bool red_pending_ = false;
+  double red_ = -1.0;
+  // What the frame whose corner was read held, and the one before it.
+  std::string corner_summary_, corner_summary_previous_;
+
+ public:
+  const std::string& FrameSummary() const { return corner_summary_; }
+  const std::string& PreviousFrameSummary() const { return corner_summary_previous_; }
+
+ private:
+  void ReadCorner();
   // XERENGE_SNAPSHOT_SECONDS=<s>[,<s>...]: the frame as drawn, saved as a PPM
   // (XERENGE_SNAPSHOT_DIR, logs by default) that many seconds after the first
   // present - a look at a run nobody watches.
   std::unique_ptr<plume::RenderBuffer> snapshot_buffer_;
   void* snapshot_mapped_ = nullptr;
+  // The shown frame read back for a copy the title reads (GuestFrameRequest),
+  // written once the GPU is done with it, three presents on.
+  std::unique_ptr<plume::RenderBuffer> guest_frame_buffer_;
+  void* guest_frame_mapped_ = nullptr;
+  uint64_t guest_frame_bytes_ = 0;
+  uint32_t guest_frame_width_ = 0, guest_frame_height_ = 0;
+  uint32_t guest_frame_wait_ = 0;
+  bool guest_frame_pending_ = false;
+  GuestFrameRequest guest_frame_request_;
   uint32_t snapshot_width_ = 0;
   uint32_t snapshot_height_ = 0;
   double snapshot_pending_ = -1.0;

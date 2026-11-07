@@ -315,6 +315,9 @@ struct GuestDrawSnapshot {
   // Into which face of a cube map, when the destination is one.
   uint32_t resolve_face = 0;
   bool resolve_cube = false;
+  // Asked while a Burnout Clip thumbnail is waited for: the copy is written
+  // back into the title's memory as well (RequestGuestFrame).
+  bool resolve_writeback = false;
   uint32_t resolve_width = 0;
   uint32_t resolve_height = 0;
   uint32_t vs_bool = 0;
@@ -435,6 +438,21 @@ class BindlessTable {
   plume::RenderDescriptorSet* mirror_ = nullptr;
   uint32_t next_version_ = 0;
 };
+
+// A copy the title will read with the processor - a Burnout Clip's thumbnail -
+// to be given the frame as shown (plume_draw.cpp): asked for by the draw
+// context, taken by the swap chain when it shows the frame, written once read
+// back.
+struct GuestFrameRequest {
+  uint32_t dest = 0;
+  uint32_t guest_width = 0;
+  uint32_t guest_height = 0;
+  memory::Memory* memory = nullptr;
+};
+void RequestGuestFrame(const GuestFrameRequest& request);
+bool TakeGuestFrameRequest(GuestFrameRequest* out);
+void WriteFrameToGuest(const GuestFrameRequest& request, const uint8_t* pixels, uint32_t width,
+                       uint32_t height);
 
 class PlumeDrawContext {
  public:
@@ -674,6 +692,11 @@ class PlumeDrawContext {
   bool etc2_supported_ = false;
   // XERENGE_FRAME_PROBE: the middle of what a resolve copies from, read back a few
   // frames later - whether the draws themselves came out black (ResolveRenderTarget).
+  bool copy_writeback_ = false;  // the copy being made is to be written back
+  // The frame each copy destination was last copied to: the thumbnail's copy is
+  // one not made in the frames before, not the frame's own every-frame copies.
+  std::unordered_map<uint32_t, uint64_t> copy_last_frame_;
+  memory::Memory* encode_memory_ = nullptr;
   std::unique_ptr<plume::RenderBuffer> resolve_probe_;
   void* resolve_probe_mapped_ = nullptr;
   uint64_t resolve_probe_frame_ = 0;

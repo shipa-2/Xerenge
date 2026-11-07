@@ -4692,8 +4692,24 @@ uint32_t PlumeDrawContext::FillVertices(const GuestDrawSnapshot& snap, memory::M
         if (auto e = mesh_cache_.find(check.key);
             e != mesh_cache_.end() && e->second.count != 0 && e->second.stored == frame_serial_ &&
             e->second.index_hash == check.index_hash) {
+          // And only if what it reads is still what was stored: in split
+          // screen the same mesh is drawn for each player with its own
+          // copies' places (the hand-instanced palms and litter), and the
+          // second player's drew the first one's - props flew up into the sky
+          // (GitHub #60).
+          uint64_t data_hash = 0;
+          bool readable = !e->second.ranges.empty();
+          for (const auto& [start, end] : e->second.ranges) {
+            const auto* host = memory->TranslatePhysical<const uint8_t*>(start);
+            if (!host || end <= start || end - start > (64u << 20)) {
+              readable = false;
+              break;
+            }
+            data_hash = XXH3_64bits_withSeed(host, end - start, data_hash);
+          }
           const auto owner = cache_by_offset_.find(e->second.offset);
-          if (owner != cache_by_offset_.end() && owner->second == check.key) {
+          if (readable && data_hash == e->second.data_hash && owner != cache_by_offset_.end() &&
+              owner->second == check.key) {
             ++cache_hits_;
             e->second.last_used = frame_serial_;
             last_fill_cache_offset_ = e->second.offset;
@@ -5587,8 +5603,8 @@ void PlumeDrawContext::UploadLayeredTexture(plume::RenderCommandList* list, uint
     list->copyTextureRegion(
         plume::RenderTextureCopyLocation::Subresource(tex.texture.get(), 0, layer),
         plume::RenderTextureCopyLocation::PlacedFootprint(
-            staging.get(), host_format, width, height, 1, row_texels,
-            uint64_t(row_bytes) * height * layer),
+            staging.get(), host_format, width, height, 1, layer_staging.row_texels,
+            layer_stride * layer),
         0, 0, 0, nullptr);
   }
   list->barriers(plume::RenderBarrierStage::GRAPHICS,
@@ -5906,7 +5922,7 @@ bool PlumeDrawContext::UploadHostTexture(plume::RenderCommandList* list, uint64_
   for (uint32_t level = 0; level < levels; ++level) {
     const uint32_t level_width = level ? (*mips)[level - 1].width : width;
     const uint32_t level_height = level ? (*mips)[level - 1].height : height;
-    const uint32_t level_row = level ? (*mips)[level - 1].row_texels : row_texels;
+    const uint32_t level_row = level_staging[level].row_texels;
     list->copyTextureRegion(
         plume::RenderTextureCopyLocation::Subresource(host->texture.get(), level, 0),
         plume::RenderTextureCopyLocation::PlacedFootprint(staging.get(), host_format,
@@ -6081,6 +6097,67 @@ void PlumeDrawContext::PresentResolvedFrame(plume::RenderCommandList* list,
   list->barriers(plume::RenderBarrierStage::GRAPHICS, nullptr, 0, after, 2);
 }
 
+// A Burnout Clip's thumbnail: the title asks for it at 0x82160138 - a request
+// at 0x825EF480 (a byte set while it waits, one set when done) - copies the
+// frame into memory and reads the copy back with the processor, shrinks it to
+// 192x144 and saves that as a JPEG in the clip. Copies stay on the GPU here:
+// it found zeros, a black square on the film strip. The finished frame - as
+// shown, after the colour grading and the bloom drawn at the very end - is
+// what the console's copy holds; the swap chain reads it back and writes it
+// where the title copied to (WriteFrameToGuest).
+namespace {
+std::mutex g_guest_frame_mutex;
+bool g_guest_frame_wanted = false;
+GuestFrameRequest g_guest_frame;
+}  // namespace
+
+void RequestGuestFrame(const GuestFrameRequest& request) {
+  std::lock_guard lock(g_guest_frame_mutex);
+  g_guest_frame = request;
+  g_guest_frame_wanted = true;
+}
+
+bool TakeGuestFrameRequest(GuestFrameRequest* out) {
+  std::lock_guard lock(g_guest_frame_mutex);
+  if (!g_guest_frame_wanted) {
+    return false;
+  }
+  g_guest_frame_wanted = false;
+  *out = g_guest_frame;
+  return true;
+}
+
+// Laid out at the title's size, each texel the nearest of the frame: 32-bit
+// texels, tiled as Xenos tiles a 2D texture, big-endian A, R, G, B.
+void WriteFrameToGuest(const GuestFrameRequest& request, const uint8_t* pixels, uint32_t width,
+                       uint32_t height) {
+  if (!request.memory || !pixels || width == 0 || height == 0 || request.guest_width == 0 ||
+      request.guest_height == 0) {
+    return;
+  }
+  auto* dest = request.memory->TranslatePhysical<uint8_t*>(request.dest);
+  if (!dest) {
+    return;
+  }
+  const uint32_t pitch = (request.guest_width + 31) & ~31u;
+  const bool bgra = kColorTargetFormat == plume::RenderFormat::B8G8R8A8_UNORM;
+  for (uint32_t y = 0; y < request.guest_height; ++y) {
+    for (uint32_t x = 0; x < request.guest_width; ++x) {
+      const uint32_t sx = uint32_t(uint64_t(x) * width / request.guest_width);
+      const uint32_t sy = uint32_t(uint64_t(y) * height / request.guest_height);
+      const uint8_t* p = pixels + (size_t(sy) * width + sx) * 4;
+      uint8_t* q = dest + rex::graphics::texture_util::GetTiledOffset2D(int32_t(x), int32_t(y),
+                                                                        pitch, 2);
+      q[0] = 0xFF;
+      q[1] = bgra ? p[2] : p[0];
+      q[2] = p[1];
+      q[3] = bgra ? p[0] : p[2];
+    }
+  }
+  REXLOG_INFO("plume: the shown frame written into {:08X} ({}x{}) for the clip thumbnail",
+              request.dest, request.guest_width, request.guest_height);
+}
+
 void PlumeDrawContext::ResolveRenderTarget(plume::RenderCommandList* list,
                                            plume::RenderTexture* color, uint32_t width,
                                            uint32_t height, uint32_t dest_base,
@@ -6238,6 +6315,20 @@ void PlumeDrawContext::ResolveRenderTarget(plume::RenderCommandList* list,
       }
     }
   }
+  // A Burnout Clip's thumbnail is taken from a copy like this one, read by the
+  // processor: the frame as shown is written there (RequestGuestFrame). Only
+  // a copy made while the title waits for one, to a place not copied to in the
+  // frames before - not the frame's own every-frame copies.
+  const auto last_copy = copy_last_frame_.find(dest_base);
+  const bool fresh_dest =
+      last_copy == copy_last_frame_.end() || frame_serial_ > last_copy->second + 120;
+  copy_last_frame_[dest_base] = frame_serial_;
+  if (copy_writeback_ && fresh_dest && !region && !cube && encode_memory_) {
+    RequestGuestFrame({dest_base, guest_width, guest_height, encode_memory_});
+    REXLOG_INFO("plume: copy into {:08X} ({}x{}) to hold the shown frame for the clip thumbnail",
+                dest_base, guest_width, guest_height);
+  }
+  copy_writeback_ = false;
   // The whole frame, one to one: source and destination are the same size, so
   // nothing is cropped and nothing is rescaled. A target drawn at its own size
   // copies its corner instead, into its face when it is a cube map.
@@ -7609,6 +7700,7 @@ void PlumeDrawContext::EncodeDraws(plume::RenderCommandList* list,
                                    plume::RenderTexture* colour_target,
                                    const RenderPassBreak* pass) {
   uint32_t resolved_in_place = 0;
+  encode_memory_ = memory;
   if (ready_) {
     WarmPipelines();
   }
@@ -8277,10 +8369,22 @@ void PlumeDrawContext::EncodeDraws(plume::RenderCommandList* list,
     bool passthrough = true;
     if (wants_depth) {
       EncodeStage("building the pipeline");
+      // A draw into the third target alone (RB_COLOR_MASK 0xF00): the
+      // explosions' fire and smoke, drawn into a layer of their own after the
+      // scene has been copied, then copied out (source 2) and laid over the
+      // frame. Masked to the first target they wrote nothing - no fire, no
+      // smoke (GitHub #27). The one target here stands in for it.
+      // Off unless XERENGE_FIRE_LAYER is set: work in progress (the smoke came
+      // out cut in two and a black square showed in a corner).
+      static const bool fire_layer = std::getenv("XERENGE_FIRE_LAYER") != nullptr;
+      uint32_t color_mask = snap.color_mask;
+      if (fire_layer && (color_mask & 0xFFu) == 0 && (color_mask & 0xF00u) != 0) {
+        color_mask = (color_mask >> 8) & 0xFu;
+      }
       pipeline = GetOrCreatePipeline(snap.vs_hash, snap.ps_hash, topology, blend_control,
-                                     snap.rt1_bound ? snap.color_mask
-                                                    : (snap.color_mask & 0xFu),
-                                     snap.depth_control, snap.alpha_test, snap.poly_offset, snap.cull);
+                                     snap.rt1_bound ? color_mask : (color_mask & 0xFu),
+                                     snap.depth_control, snap.alpha_test,
+                                     snap.poly_offset, snap.cull);
       passthrough = pipeline == nullptr;
     }
     {
@@ -9258,6 +9362,11 @@ void PlumeDrawContext::EncodeDraws(plume::RenderCommandList* list,
         list->clearColor(0, plume::RenderColor(snap.clear_color[0], snap.clear_color[1],
                                                snap.clear_color[2], snap.clear_color[3]));
       }
+      // The third target's clear (flags 0x4, the fire and smoke layer) is not
+      // taken: the layer is the picture with the particles over it - the
+      // composite replaces the scene with it wherever its alpha is above
+      // zero - and on the console the scene is already there under them.
+      // Cleared here, the smoke lay over black: a black cloud (GitHub #27).
       if ((snap.clear_flags & 0x2u) != 0 && snap.clear_whole && pass &&
           pass->second_target) {
         list->clearColor(1, plume::RenderColor(snap.clear_color[0], snap.clear_color[1],
@@ -9347,6 +9456,7 @@ void PlumeDrawContext::EncodeDraws(plume::RenderCommandList* list,
                           region_h, snap.resolve_source, snap.resolve_face, snap.resolve_cube);
             }
           }
+          copy_writeback_ = snap.resolve_writeback;
           ResolveRenderTarget(list, source, width, height, snap.resolve_dest,
                               snap.resolve_width ? snap.resolve_width : width,
                               snap.resolve_height ? snap.resolve_height : height, region_w,
@@ -9460,7 +9570,9 @@ void PlumeDrawContext::EncodeDraws(plume::RenderCommandList* list,
   }
   frame_drawn_since_copy_ = drawn_since_copy;
   {
-    static const bool probing = std::getenv("XERENGE_FRAME_PROBE") != nullptr;
+    static const bool probing = std::getenv("XERENGE_FRAME_PROBE") != nullptr ||
+                                std::getenv("XERENGE_FLASH_LOG") != nullptr ||
+                                std::getenv("XERENGE_CAPTURE_FLASH") != nullptr;
     if (probing) {
       uint32_t clears = 0, copies = 0, d3d = 0, video = 0;
       for (const auto& d : draws) {
@@ -9477,18 +9589,47 @@ void PlumeDrawContext::EncodeDraws(plume::RenderCommandList* list,
         }
       }
       std::string tail;
-      for (size_t i = last_copy + 1; i < draws.size() && i < last_copy + 8; ++i) {
+      // The interface: what is drawn over the frame after its last copy (up to
+      // 60), each draw's shaders and size - a flash shows which one it is.
+      for (size_t i = last_copy + 1; i < draws.size() && i < last_copy + 60; ++i) {
         const auto& d = draws[i];
         tail += d.is_clear ? " clear"
-                           : fmt::format(" draw(vs={:016X} vb={:08X} n={}{})", d.vs_hash,
-                                         d.d3d_vertex_buffer, d.num_indices,
+                           : fmt::format(" draw(vs={:016X} ps={:016X} vb={:08X} n={}{}{})", d.vs_hash,
+                                         d.ps_hash, d.d3d_vertex_buffer, d.num_indices,
+                                         d.interface_draw ? " ui" : "",
                                          !d.has_video_frame() ? "" : " video");
       }
+      // The whole frame in order, runs of draws counted: where its copies fall
+      // among its draws and clears (a frame with two copies came up dark).
+      std::string order;
+      uint32_t run = 0;
+      const auto flush = [&] {
+        if (run) {
+          order += fmt::format(" D{}", run);
+          run = 0;
+        }
+      };
+      for (const auto& d : draws) {
+        if (d.is_resolve) {
+          flush();
+          order += fmt::format(" C>{:08X}", d.resolve_dest);
+        } else if (d.is_clear) {
+          flush();
+          order += " clear";
+        } else if (d.has_video_frame()) {
+          flush();
+          order += " video";
+        } else {
+          ++run;
+        }
+      }
+      flush();
       g_plume_frame_summary = fmt::format(
           "frame {}: {} entries, {} encoded ({} Direct3D, {} video), {} clears, {} copies, shown "
           "from {} {:08X}; after the last copy ({} of {}):{}",
           frame_serial_, draws.size(), encoded, d3d, video, clears, copies,
           drawn_since_copy ? "target" : "copy", frame_output_dest_, last_copy, draws.size(), tail);
+      g_plume_frame_summary += "; order:" + order;
     }
   }
   if (pass && pass->mark) {

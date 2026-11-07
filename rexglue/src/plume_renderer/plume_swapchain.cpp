@@ -408,9 +408,17 @@ bool PlumeSwapchain::Initialize(plume::RenderDevice* device, SDL_Window* window,
     return false;
   }
 
-  if (std::getenv("XERENGE_FRAME_PROBE") != nullptr) {
+  const bool flash_watch =
+      std::getenv("XERENGE_CAPTURE_FLASH") != nullptr || std::getenv("XERENGE_FLASH_LOG") != nullptr;
+  if (std::getenv("XERENGE_FRAME_PROBE") != nullptr || flash_watch) {
     probe_buffer_ = device_->createBuffer(plume::RenderBufferDesc::ReadbackBuffer(64 * 64 * 4));
     probe_mapped_ = probe_buffer_ ? probe_buffer_->map() : nullptr;
+  }
+  if (flash_watch) {
+    corner_buffer_ = device_->createBuffer(plume::RenderBufferDesc::ReadbackBuffer(64 * 8 * 4));
+    corner_mapped_ = corner_buffer_ ? corner_buffer_->map() : nullptr;
+    red_buffer_ = device_->createBuffer(plume::RenderBufferDesc::ReadbackBuffer(128 * 64 * 4));
+    red_mapped_ = red_buffer_ ? red_buffer_->map() : nullptr;
   }
 
   CreateFramebuffers();
@@ -944,6 +952,7 @@ void PlumeSwapchain::CheckProbe() {
     sum += uint32_t(px[i * 4]) + px[i * 4 + 1] + px[i * 4 + 2];
   }
   const double mean = double(sum) / (64.0 * 64.0 * 3.0 * 255.0);
+  center_brightness_ = mean;
   ++probe_frames_;
   static uint32_t reported = 0;
   if (probe_frames_ > 30 && probe_average_ > 0.05 && mean < probe_average_ * 0.3 &&
@@ -957,6 +966,8 @@ void PlumeSwapchain::CheckProbe() {
     REXLOG_INFO("plume: frame probe - brightness {:.3f}, average {:.3f}", mean, probe_average_);
   }
 }
+
+
 
 void PlumeSwapchain::ClearAndPresent(float r, float g, float b, float a, DrawEncodeFn encode,
                                      void* encode_context, ResolveFn resolve, bool hold) {
@@ -1230,8 +1241,9 @@ void PlumeSwapchain::ClearAndPresent(float r, float g, float b, float a, DrawEnc
     out->barriers(plume::RenderBarrierStage::COPY, nullptr, 0, to_copy, 2);
 #endif
     if (probe_mapped_ && width >= 64 && height >= 64) {
-      const plume::RenderBox box(int32_t(width / 2 - 32), int32_t(height / 2 - 32),
-                                 int32_t(width / 2 + 32), int32_t(height / 2 + 32));
+      // The middle of the bottom left quarter, where the black frames show.
+      const int32_t probe_x = int32_t(width / 4), probe_y = int32_t(height * 3 / 4);
+      const plume::RenderBox box(probe_x - 32, probe_y - 32, probe_x + 32, probe_y + 32);
       out->copyTextureRegion(
           plume::RenderTextureCopyLocation::PlacedFootprint(probe_buffer_.get(),
                                                             kColorTargetFormat,
@@ -1239,6 +1251,53 @@ void PlumeSwapchain::ClearAndPresent(float r, float g, float b, float a, DrawEnc
           plume::RenderTextureCopyLocation::Subresource(shown, 0, 0), 0, 0, 0, &box);
       probe_pending_ = true;
       probe_summary_ = g_plume_frame_summary;
+    }
+    if (corner_mapped_ && width >= 8 && height >= 8) {
+      const plume::RenderBox box(int32_t(width - 8), int32_t(height - 8), int32_t(width),
+                                 int32_t(height));
+      out->copyTextureRegion(
+          plume::RenderTextureCopyLocation::PlacedFootprint(corner_buffer_.get(), kColorTargetFormat,
+                                                            8, 8, 1, 64, 0),  // rows 256 bytes apart, as D3D12 requires
+          plume::RenderTextureCopyLocation::Subresource(shown, 0, 0), 0, 0, 0, &box);
+      corner_pending_ = true;
+      corner_summary_previous_ = std::move(corner_summary_);
+      corner_summary_ = g_plume_frame_summary;
+    }
+    if (red_mapped_ && width >= 128 && height >= 64) {
+      const int32_t red_x = int32_t(width / 2), red_y = int32_t(height * 42 / 100);
+      const plume::RenderBox box(red_x - 64, red_y - 32, red_x + 64, red_y + 32);
+      out->copyTextureRegion(
+          plume::RenderTextureCopyLocation::PlacedFootprint(red_buffer_.get(), kColorTargetFormat, 128, 64,
+                                                            1, 128, 0),
+          plume::RenderTextureCopyLocation::Subresource(shown, 0, 0), 0, 0, 0, &box);
+      red_pending_ = true;
+    }
+    // A copy the title reads with the processor (a clip's thumbnail): the frame
+    // as shown, read back now and written into its memory three presents on.
+    if (guest_frame_pending_ && ++guest_frame_wait_ >= 3) {
+      guest_frame_pending_ = false;
+      WriteFrameToGuest(guest_frame_request_, static_cast<const uint8_t*>(guest_frame_mapped_),
+                        guest_frame_width_, guest_frame_height_);
+    }
+    if (!guest_frame_pending_ && TakeGuestFrameRequest(&guest_frame_request_)) {
+      const uint64_t bytes = uint64_t(width) * height * 4;
+      if (guest_frame_bytes_ < bytes) {
+        guest_frame_buffer_ =
+            device_->createBuffer(plume::RenderBufferDesc::ReadbackBuffer(bytes));
+        guest_frame_mapped_ = guest_frame_buffer_ ? guest_frame_buffer_->map() : nullptr;
+        guest_frame_bytes_ = guest_frame_mapped_ ? bytes : 0;
+      }
+      if (guest_frame_mapped_) {
+        out->copyTextureRegion(
+            plume::RenderTextureCopyLocation::PlacedFootprint(guest_frame_buffer_.get(),
+                                                              kColorTargetFormat, width, height,
+                                                              1, width, 0),
+            plume::RenderTextureCopyLocation::Subresource(shown, 0, 0));
+        guest_frame_width_ = width;
+        guest_frame_height_ = height;
+        guest_frame_wait_ = 0;
+        guest_frame_pending_ = true;
+      }
     }
     double snapshot_seconds = 0.0;
     if (snapshot_pending_ < 0.0 && SnapshotDue(&snapshot_seconds)) {
@@ -1350,7 +1409,8 @@ void PlumeSwapchain::ClearAndPresent(float r, float g, float b, float a, DrawEnc
   // computes that frame (3.5 ms a frame in the race), but with it black frames
   // flashed up now and then and the cause is not found yet - so it is opt-in.
   static const bool async_present = std::getenv("XERENGE_ASYNC_PRESENT") != nullptr;
-  if (!async_present) {
+  // (Waited for in any case while the corner is read: XERENGE_CAPTURE_FLASH.)
+  if (!async_present || corner_mapped_) {
     command_queue_->waitForCommandFence(submit_fence_.get());
     submit_pending_ = false;
     if (scene_pending_) {
@@ -1359,6 +1419,7 @@ void PlumeSwapchain::ClearAndPresent(float r, float g, float b, float a, DrawEnc
     }
     ReadGpuTime();
     CheckProbe();
+    ReadCorner();
     SaveSnapshot();
   }
   const auto fence_done = std::chrono::steady_clock::now();
@@ -1422,6 +1483,74 @@ float PlumeSwapchain::DisplayRefreshHz() const {
   const SDL_DisplayMode* mode = display ? SDL_GetCurrentDisplayMode(display) : nullptr;
   return mode ? mode->refresh_rate : 0.0f;
 #endif
+}
+
+}  // namespace rex::plume_renderer
+
+namespace rex::plume_renderer {
+
+void PlumeSwapchain::ReadCorner() {
+  red_ = -1.0;
+  if (red_pending_ && red_mapped_) {
+    red_pending_ = false;
+    // The target is BGRA or RGBA by kColorTargetFormat; red is the channel
+    // that stands out either way, against the larger of the other two.
+    const auto* px = static_cast<const uint8_t*>(red_mapped_);
+    const bool bgra = kColorTargetFormat == plume::RenderFormat::B8G8R8A8_UNORM;
+    double sum = 0.0;
+    for (uint32_t i = 0; i < 128 * 64; ++i) {
+      const int r = px[i * 4 + (bgra ? 2 : 0)], g = px[i * 4 + 1], b = px[i * 4 + (bgra ? 0 : 2)];
+      sum += std::max(0, r - std::max(g, b));
+    }
+    red_ = sum / (128.0 * 64.0 * 255.0);
+  }
+  corner_brightness_ = -1.0;
+  if (!corner_pending_ || !corner_mapped_) {
+    return;
+  }
+  corner_pending_ = false;
+  const auto* px = static_cast<const uint8_t*>(corner_mapped_);
+  uint32_t sum = 0;
+  // Eight texels a row, its rows 64 texels apart (the copy's pitch).
+  for (uint32_t i = 0; i < 8 * 8; ++i) {
+    const uint32_t at = ((i / 8) * 64 + i % 8) * 4;
+    sum += uint32_t(px[at]) + px[at + 1] + px[at + 2];
+  }
+  corner_brightness_ = double(sum) / (8.0 * 8.0 * 3.0 * 255.0);
+}
+
+bool PlumeSwapchain::TakeCornerBrightness(double* brightness) {
+  if (corner_brightness_ < 0.0) {
+    return false;
+  }
+  *brightness = corner_brightness_;
+  corner_brightness_ = -1.0;
+  return true;
+}
+}  // namespace rex::plume_renderer
+
+namespace rex::plume_renderer {
+
+bool PlumeSwapchain::TakeCenterBrightness(double* brightness) {
+  if (center_brightness_ < 0.0) {
+    return false;
+  }
+  *brightness = center_brightness_;
+  center_brightness_ = -1.0;
+  return true;
+}
+
+}  // namespace rex::plume_renderer
+
+namespace rex::plume_renderer {
+
+bool PlumeSwapchain::TakeMiddleRedness(double* redness) {
+  if (red_ < 0.0) {
+    return false;
+  }
+  *redness = red_;
+  red_ = -1.0;
+  return true;
 }
 
 }  // namespace rex::plume_renderer
