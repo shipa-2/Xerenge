@@ -9,11 +9,3 @@ game_root = "/home/shipa/Projects/Xerenge/game_eu"
 file_path = "/home/shipa/Projects/Xerenge/game_eu/default.xex"
 out_directory_path = "generated/default"
 includes = ["functions.toml"]
-# Registers kept in locals instead of PPCContext where no caller or hook reads
-# them across a call (the upstream recompilers ship with these on). Not
-# non_volatile_as_local: widescreen.cpp reads RenderObjects's r31 in a hook.
-ctr_as_local = true
-xer_as_local = true
-reserved_as_local = true
-cr_as_local = true
-non_argument_as_local = true
