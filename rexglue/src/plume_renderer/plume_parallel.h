@@ -1,6 +1,7 @@
 #pragma once
 
 #include <cstdio>
+#include <cstdlib>
 #include <algorithm>
 #include <atomic>
 #include <condition_variable>
@@ -35,42 +36,60 @@ class WorkerPool {
     return thread_ids_;
   }
 
-  // fn(i) for every i in [0, count), in any order, on any thread.
+  // fn(i) for every i in [0, count), in any order, on any thread. Returns as
+  // soon as the last index is done - not once every worker has also noticed:
+  // on a machine with fewer free cores than threads (the Xbox One), waiting
+  // for a worker that took the job and was then descheduled cost the frame
+  // milliseconds after all the work was finished.
   void ParallelFor(size_t count, const std::function<void(size_t)>& fn) {
     if (count == 0) {
       return;
     }
-    if (count == 1 || workers_.empty()) {
+    // Inline when there is nothing to share, or when called from inside a job
+    // (a worker, or the caller while it works): one job runs at a time.
+    if (count == 1 || workers_.empty() || InsideJob()) {
       for (size_t i = 0; i < count; ++i) {
         fn(i);
       }
       return;
     }
+    std::lock_guard caller(call_mutex_);
+    InsideJob() = true;
+    struct Leave {
+      ~Leave() { InsideJob() = false; }
+    } leave;
+    uint32_t generation;
     {
       std::lock_guard lock(mutex_);
+      generation = ++generation_;
       job_ = &fn;
       count_ = count;
-      next_.store(0, std::memory_order_relaxed);
       done_.store(0, std::memory_order_relaxed);
-      ++generation_;
+      // The job's number rides with the next index, so a worker still holding
+      // the last job can never claim an index of this one.
+      ticket_.store(uint64_t(generation) << 32, std::memory_order_release);
     }
     wake_.notify_all();
-    Work(fn, count);
+    Work(fn, count, generation);
     std::unique_lock lock(mutex_);
-    // Every index done, and no worker still inside this job: one that took it
-    // late must not go on to take indices of the next job with this one's fn.
-    finished_.wait(lock, [&] {
-      return done_.load(std::memory_order_acquire) == count && active_ == 0;
-    });
+    finished_.wait(lock, [&] { return done_.load(std::memory_order_acquire) == count; });
     job_ = nullptr;
   }
 
  private:
+  static bool& InsideJob() {
+    thread_local bool inside = false;
+    return inside;
+  }
+
   WorkerPool() {
     const unsigned hardware = std::max(2u, std::thread::hardware_concurrency());
     // Eight workers at most, and two cores left alone for the title's own
-    // threads and the driver.
-    const unsigned count = std::min(8u, hardware > 3 ? hardware - 3 : 1u);
+    // threads and the driver. XERENGE_WORKERS=N chooses the number.
+    unsigned count = std::min(8u, hardware > 3 ? hardware - 3 : 1u);
+    if (const char* text = std::getenv("XERENGE_WORKERS"); text && *text) {
+      count = std::min(16u, unsigned(std::strtoul(text, nullptr, 10)));
+    }
     std::fprintf(stderr, "plume: worker pool of %u for %u hardware thread(s)\n", count, hardware);
     for (unsigned i = 0; i < count; ++i) {
       workers_.emplace_back([this] { Loop(); });
@@ -88,12 +107,17 @@ class WorkerPool {
     }
   }
 
-  void Work(const std::function<void(size_t)>& fn, size_t count) {
+  // Claims and runs indices of job `generation` until none are left.
+  void Work(const std::function<void(size_t)>& fn, size_t count, uint32_t generation) {
     for (;;) {
-      const size_t i = next_.fetch_add(1, std::memory_order_relaxed);
-      if (i >= count) {
-        break;
-      }
+      uint64_t ticket = ticket_.load(std::memory_order_acquire);
+      size_t i;
+      do {
+        i = size_t(ticket & 0xFFFFFFFFu);
+        if (uint32_t(ticket >> 32) != generation || i >= count) {
+          return;
+        }
+      } while (!ticket_.compare_exchange_weak(ticket, ticket + 1, std::memory_order_acq_rel));
       fn(i);
       if (done_.fetch_add(1, std::memory_order_acq_rel) + 1 == count) {
         std::lock_guard lock(mutex_);
@@ -103,7 +127,8 @@ class WorkerPool {
   }
 
   void Loop() {
-    uint64_t seen = 0;
+    uint32_t seen = 0;
+    InsideJob() = true;
 #ifdef __linux__
     {
       std::lock_guard lock(mutex_);
@@ -113,39 +138,36 @@ class WorkerPool {
     for (;;) {
       const std::function<void(size_t)>* job = nullptr;
       size_t count = 0;
+      uint32_t generation = 0;
       {
         std::unique_lock lock(mutex_);
         wake_.wait(lock, [&] { return stopping_ || generation_ != seen; });
         if (stopping_) {
           return;
         }
-        seen = generation_;
+        seen = generation = generation_;
         job = job_;
         count = count_;
-        if (job) {
-          ++active_;
-        }
       }
+      // The job may be over and its fn gone by now: Work dereferences it only
+      // after claiming an index of that very job, which keeps it alive.
       if (job) {
-        Work(*job, count);
-        std::lock_guard lock(mutex_);
-        --active_;
-        finished_.notify_all();
+        Work(*job, count, generation);
       }
     }
   }
 
   std::vector<std::thread> workers_;
   std::vector<int> thread_ids_;
+  std::mutex call_mutex_;
   std::mutex mutex_;
   std::condition_variable wake_;
   std::condition_variable finished_;
   const std::function<void(size_t)>* job_ = nullptr;
   size_t count_ = 0;
-  std::atomic<size_t> next_{0};
+  std::atomic<uint64_t> ticket_{0};
   std::atomic<size_t> done_{0};
-  uint64_t generation_ = 0;
-  unsigned active_ = 0;
+  uint32_t generation_ = 0;
   bool stopping_ = false;
 };
 
