@@ -8,6 +8,11 @@ project(burnout LANGUAGES CXX)
 set(CMAKE_CXX_STANDARD 23)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
 
+# Burnout's code has no guest SEH scopes (generate_exception_handlers is off),
+# so the recompiled code needs no asynchronous EH on Windows - which only held
+# the optimizer back (the Xbox One build left tiny helpers out of line).
+set(REXGLUE_RECOMP_ASYNC_EH OFF CACHE BOOL "" FORCE)
+
 include(generated/rexglue.cmake)
 
 # Sources
