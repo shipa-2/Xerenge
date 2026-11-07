@@ -35,6 +35,59 @@ struct TextureInfo;
 
 namespace rex::plume_renderer {
 
+// Per draw of the frame, by the snapshot's place in the frame's list: what
+// the per-draw maps were, without hashing. A snapshot from elsewhere (a copy)
+// finds nothing, as it found nothing in the map.
+template <typename T, typename Snapshot>
+class PerDraw {
+ public:
+  struct Entry {
+    const Snapshot* first = nullptr;
+    T second{};
+  };
+  void Begin(const Snapshot* base, size_t count) {
+    base_ = base;
+    if (entries_.size() < count) entries_.resize(count);
+    present_.assign(count, 0);
+  }
+  Entry* find(const Snapshot* snap) {
+    if (!base_ || snap < base_) return nullptr;
+    const size_t i = size_t(snap - base_);
+    return i < present_.size() && present_[i] ? &entries_[i] : nullptr;
+  }
+  Entry* end() const { return nullptr; }
+  void emplace(const Snapshot* snap, T value) {
+    if (!base_ || snap < base_) return;
+    const size_t i = size_t(snap - base_);
+    if (i >= present_.size()) return;
+    entries_[i].first = snap;
+    entries_[i].second = std::move(value);
+    present_[i] = 1;
+  }
+  void reserve(size_t) {}
+
+ private:
+  const Snapshot* base_ = nullptr;
+  std::vector<Entry> entries_;
+  std::vector<uint8_t> present_;
+};
+
+// For the maps looked up per draw: the standard hash of an integer is FNV-1a
+// over its bytes, which the present thread's profile put among its top items.
+// A multiply-shift mixer spreads keys (hashes, addresses) as well, far cheaper.
+struct FastKeyHash {
+  size_t operator()(uint64_t v) const noexcept {
+    v ^= v >> 33;
+    v *= 0xFF51AFD7ED558CCDull;
+    v ^= v >> 33;
+    return size_t(v);
+  }
+  template <typename T>
+  size_t operator()(T* p) const noexcept {
+    return (*this)(uint64_t(reinterpret_cast<uintptr_t>(p)));
+  }
+};
+
 // A draw's constant words, shared between copies of its snapshot and copied
 // only when one of them is written. A snapshot carries 9 KB of these, and a
 // thousand snapshots a frame were copied three and four times over - into the
@@ -862,7 +915,7 @@ class PlumeDrawContext {
   };
   // Whether the cache buffer at a mesh's place still holds what was stored there.
   bool CacheHoldsMesh(uint64_t key, const CachedMesh& entry) const;
-  std::unordered_map<uint64_t, CachedMesh> mesh_cache_;
+  std::unordered_map<uint64_t, CachedMesh, FastKeyHash> mesh_cache_;
   // The cache buffer is a ring: new meshes go at cache_used_ and push out the
   // ones stored there longest ago, never one drawn in the frame being
   // encoded (the GPU reads it when the frame is submitted). Emptying the whole
@@ -884,7 +937,7 @@ class PlumeDrawContext {
   // refilled every frame gives a new key every frame - are dropped on their
   // own, not together with everything cached: that emptied the whole cache
   // every few seconds in the race.
-  std::unordered_set<uint64_t> mesh_seen_once_;
+  std::unordered_set<uint64_t, FastKeyHash> mesh_seen_once_;
   // Guest writes to the pages textures come from, counted per 4 KB page by the
   // memory system's write watch. A texture whose pages have not been written
   // since it was last hashed keeps its hash without its bytes being read
@@ -896,7 +949,7 @@ class PlumeDrawContext {
     uint64_t hash = 0;
     uint64_t writes = 0;  // sum of its pages' write counts when hashed
   };
-  std::unordered_map<uint64_t, TextureWatch> texture_watch_;
+  std::unordered_map<uint64_t, TextureWatch, FastKeyHash> texture_watch_;
   static std::pair<uint32_t, uint32_t> OnGuestWrite(void* context, uint32_t start,
                                                     uint32_t length, bool exact_range);
   uint64_t PageWrites(uint32_t start, size_t size) const;
@@ -962,12 +1015,12 @@ class PlumeDrawContext {
   // that drew from it are done). Whether it had one.
   bool RetireMeshPlace(uint64_t key, CachedMesh& entry);
   void NoteNoCacheRoom(uint32_t count);
-  std::unordered_map<const GuestDrawSnapshot*, PreUnpacked> pre_unpacked_;
+  PerDraw<PreUnpacked, GuestDrawSnapshot> pre_unpacked_;
   std::vector<float> pre_arena_;
   MeshCheck CheckMeshCache(const GuestDrawSnapshot& snap, const std::vector<VfetchAttr>& attrs,
                            uint32_t vertex_count, memory::Memory* memory) const;
   // This frame's checks, made before encoding, by draw.
-  std::unordered_map<const GuestDrawSnapshot*, MeshCheck> mesh_checks_;
+  PerDraw<MeshCheck, GuestDrawSnapshot> mesh_checks_;
   // Set by FillVertices: where in cache_vb_ the draw's vertices are, or ~0u
   // when they went into the per-frame buffer as usual.
   uint32_t last_fill_cache_offset_ = ~0u;
@@ -1041,7 +1094,7 @@ class PlumeDrawContext {
     std::unique_ptr<plume::RenderDescriptorSet> set;
     uint64_t last_used = 0;
   };
-  std::unordered_map<uint64_t, DrawSet> draw_sets_;
+  std::unordered_map<uint64_t, DrawSet, FastKeyHash> draw_sets_;
   uint64_t draw_sets_made_ = 0;
   plume::RenderDescriptorSet* DrawSetFor(const DrawBindings& bindings);
   void TrimDrawSets();
@@ -1052,7 +1105,7 @@ class PlumeDrawContext {
 
   mutable std::shared_mutex vfetch_mutex_;
   std::unordered_map<uint64_t, std::vector<VfetchAttr>> vfetch_by_shader_;
-  std::unordered_map<uint64_t, std::unique_ptr<ResolvedShaderVfetch>> resolved_vfetch_by_shader_;
+  std::unordered_map<uint64_t, std::unique_ptr<ResolvedShaderVfetch>, FastKeyHash> resolved_vfetch_by_shader_;
 
   // Bumped when the map is cleared (Shutdown): the entries are otherwise never
   // replaced, so a pointer found once stays good.
@@ -1124,7 +1177,7 @@ class PlumeDrawContext {
   mutable const float* last_packed_dst_ = nullptr;
   uint64_t fill_vs_hash_ = 0;
   void CheckPackedWrites();
-  std::unordered_map<uint64_t, std::unique_ptr<GuestHostTexture>> guest_textures_;
+  std::unordered_map<uint64_t, std::unique_ptr<GuestHostTexture>, FastKeyHash> guest_textures_;
   uint32_t next_bindless_ = 1;
 };
 

@@ -6876,8 +6876,10 @@ void PlumeDrawContext::BindGuestTextures(plume::RenderCommandList* list,
           for (size_t at = 0; at < mip_size; at += 4096) {
             sample = XXH3_64bits_withSeed(mip_src + at, std::min<size_t>(64, mip_size - at), sample);
           }
+          // XERENGE_FULL_TEXTURE_HASH=1: every texture in full every frame, as before.
+          static const bool full_every_frame = std::getenv("XERENGE_FULL_TEXTURE_HASH") != nullptr;
           if (auto known = texture_watch_.find(key);
-              known != texture_watch_.end() && known->second.writes == sample &&
+              !full_every_frame && known != texture_watch_.end() && known->second.writes == sample &&
               ((key ^ frame_serial_) & 3) != 0) {
             frame_hashes.emplace(key, known->second.hash);
             continue;
@@ -7742,7 +7744,7 @@ void PlumeDrawContext::EncodeDraws(plume::RenderCommandList* list,
   // index buffers and the vertex ranges they read is most of what a cached
   // draw costs, and none of it depends on the draws before.
   EncodeStage("vertex cache checks");
-  mesh_checks_.clear();
+  mesh_checks_.Begin(draws.data(), draws.size());
   if (cache_mapped_ && memory) {
     std::vector<const GuestDrawSnapshot*> candidates;
     candidates.reserve(draws.size());
@@ -7783,7 +7785,7 @@ void PlumeDrawContext::EncodeDraws(plume::RenderCommandList* list,
   // beforehand, in their order, and noted of them afterwards.
   static const char* const kPreparingAhead = "unpacking ahead: preparing";
   EncodeStage(kPreparingAhead);
-  pre_unpacked_.clear();
+  pre_unpacked_.Begin(draws.data(), draws.size());
   // Frames alternate between two halves of the vertex and constant buffers:
   // the GPU may still be drawing the last frame from its half while this one
   // is written (XERENGE_ASYNC_PRESENT keeps a frame in flight).
