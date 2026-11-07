@@ -31,6 +31,15 @@ SIGNTOOL="$SDKBIN/signtool.exe"
 CRT=${CRT:-$(ls -d "/c/Program Files"*"/Microsoft Visual Studio/"*/*/VC/Redist/MSVC/14.*/onecore/x64/Microsoft.VC14*.CRT 2>/dev/null | sort -V | tail -1)}
 [ -x "$MAKEAPPX" ] || { echo "makeappx not found under $KITS" >&2; exit 1; }
 [ -d "$CRT" ] || { echo "OneCore C++ runtime not found (set CRT=)" >&2; exit 1; }
+# The runtime is copied beside the game only when the game relinks, so a
+# change to the SDK alone left the package with the previous rexruntime.dll.
+# Take the SDK's own output when it is newer.
+SDK_RUNTIME=${SDK_RUNTIME:-../rexglue-sdk/out/uwp-amd64/rexruntime.dll}
+if [ -f "$SDK_RUNTIME" ] && [ "$SDK_RUNTIME" -nt "$BUILD/rexruntime.dll" ]; then
+    echo "rexruntime.dll: the SDK's newer build ($SDK_RUNTIME)"
+    cp "$SDK_RUNTIME" "$BUILD/rexruntime.dll"
+    [ -f "${SDK_RUNTIME%.dll}.pdb" ] && cp "${SDK_RUNTIME%.dll}.pdb" "$BUILD/"
+fi
 for f in burnout.exe rexruntime.dll rexgpu-plume.dll; do
     [ -f "$BUILD/$f" ] || { echo "$BUILD/$f missing: build $BUILD first" >&2; exit 1; }
 done
