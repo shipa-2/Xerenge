@@ -1735,6 +1735,9 @@ thread_local bool tl_vsync_worker = false;
 // vblank and spins the rest, so the next frame starts on a core that is still
 // fast, at the price of that core's power. Not on Android, where a spinning
 // core costs battery and heat.
+// Nor on the Xbox One: its six game cores are all busy in a race (the title,
+// its audio, the renderer and its workers), and 3-4 ms a frame of spinning
+// there was time taken from them - a race dropped to 11-20 fps.
 #if defined(__ANDROID__)
 constexpr bool PerformancePowerMode() {
   return false;
@@ -1742,6 +1745,9 @@ constexpr bool PerformancePowerMode() {
 #else
 bool PerformancePowerMode() {
   static const bool on = [] {
+#if defined(PLUME_UWP) || defined(REX_PLATFORM_UWP)
+    return false;
+#endif
     const char* mode = std::getenv("XERENGE_POWER_MODE");
     return mode != nullptr && std::strcmp(mode, "performance") == 0;
   }();
