@@ -77,7 +77,8 @@ std::atomic<bool> g_playing_logo{false};
 std::atomic<uint32_t> g_logo_calls{0};
 
 bool SkipLogos() {
-  static const bool on = std::getenv("XERENGE_SKIP_LOGOS") != nullptr;
+  static const char* value = std::getenv("XERENGE_SKIP_LOGOS");
+  static const bool on = value && *value && *value != '0';
   return on;
 }
 

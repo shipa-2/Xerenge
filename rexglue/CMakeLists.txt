@@ -24,6 +24,7 @@ set(BURNOUT_SOURCES
     src/custom_music.cpp
     src/game_font.cpp
     src/mods.cpp
+    src/movie_decode.cpp
     src/movie_frames.cpp
     src/tint_trace.cpp
     src/render_patches.cpp
