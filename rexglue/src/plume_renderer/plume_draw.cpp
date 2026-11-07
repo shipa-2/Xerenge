@@ -6752,7 +6752,15 @@ void PlumeDrawContext::BindGuestTextures(plume::RenderCommandList* list,
   // loop below takes the result.
   std::unordered_map<uint64_t, uint64_t> frame_hashes;
   {
+    // Off on the Xbox One (XERENGE_WRITE_WATCH=1 turns it on): thousands of
+    // page protection changes a frame on its memory views, and a fault per
+    // first write, left threads stuck in its kernel - whole-process stalls of
+    // half a minute, and the freezes at the logo, the garage and race starts.
+#if defined(PLUME_UWP) || defined(REX_PLATFORM_UWP)
+    static const bool watching = std::getenv("XERENGE_WRITE_WATCH") != nullptr;
+#else
     static const bool watching = std::getenv("XERENGE_NO_WRITE_WATCH") == nullptr;
+#endif
     if (watching && !page_writes_ && memory) {
       page_writes_.reset(new std::atomic<uint32_t>[kWatchedPages]);
       for (uint32_t i = 0; i < kWatchedPages; ++i) {
@@ -6856,7 +6864,25 @@ void PlumeDrawContext::BindGuestTextures(plume::RenderCommandList* list,
           }
           jobs.push_back({key, src, size, 0, writes, mip_src, mip_size});
         } else {
-          jobs.push_back({key, src, size, 0, 0, mip_src, mip_size});
+          // No write watch (the Xbox One): hashing every texture in full every
+          // frame took 6 ms of a race frame. A sample - 64 bytes of each 4 KB
+          // page - every frame catches a rewrite at once; the full hash comes
+          // every fourth frame for each texture (staggered by key), so a small
+          // edit inside a page shows within four frames.
+          uint64_t sample = 0;
+          for (size_t at = 0; at < size; at += 4096) {
+            sample = XXH3_64bits_withSeed(src + at, std::min<size_t>(64, size - at), sample);
+          }
+          for (size_t at = 0; at < mip_size; at += 4096) {
+            sample = XXH3_64bits_withSeed(mip_src + at, std::min<size_t>(64, mip_size - at), sample);
+          }
+          if (auto known = texture_watch_.find(key);
+              known != texture_watch_.end() && known->second.writes == sample &&
+              ((key ^ frame_serial_) & 3) != 0) {
+            frame_hashes.emplace(key, known->second.hash);
+            continue;
+          }
+          jobs.push_back({key, src, size, 0, sample, mip_src, mip_size});
         }
       }
     }
@@ -6869,9 +6895,8 @@ void PlumeDrawContext::BindGuestTextures(plume::RenderCommandList* list,
     frame_hashes.reserve(frame_hashes.size() + jobs.size());
     for (const HashJob& job : jobs) {
       frame_hashes.emplace(job.key, job.hash);
-      if (page_writes_) {
-        texture_watch_[job.key] = {job.hash, job.writes};
-      }
+      // With the watch, the write count it was hashed at; without, its sample.
+      texture_watch_[job.key] = {job.hash, job.writes};
     }
     {
       static uint64_t frames = 0;
