@@ -10,6 +10,8 @@
 #include <mutex>
 #include <thread>
 #include <vector>
+
+#include <rex/thread.h>
 #ifdef __linux__
 #include <unistd.h>
 #endif
@@ -128,6 +130,7 @@ class WorkerPool {
 
   void Loop() {
     uint32_t seen = 0;
+    rex::thread::set_current_thread_name("plume worker");
     InsideJob() = true;
 #ifdef __linux__
     {

@@ -531,8 +531,27 @@ constexpr uint32_t kFullLayoutMask = (1u << kInputLocationCount) - 1;
 // kFullLayoutMask). XERENGE_FULL_VERTICES=1 keeps the full layout everywhere.
 uint32_t TitleVertexLayout(uint64_t vs_hash) {
   static const bool packed = std::getenv("XERENGE_FULL_VERTICES") == nullptr;
-  return packed ? (PlumeShaderCache::Instance().InputLocationMask(vs_hash) & kFullLayoutMask)
-                : kFullLayoutMask;
+  if (!packed) {
+    return kFullLayoutMask;
+  }
+  // Asked several times a draw, and the shader cache answers under its lock:
+  // a shader's inputs never change, so each thread keeps the last few.
+  struct Known {
+    uint64_t hash = 0;
+    uint32_t mask = 0;
+    bool valid = false;
+  };
+  thread_local std::array<Known, 64> known{};
+  Known& slot = known[(vs_hash ^ (vs_hash >> 32)) & 63];
+  if (slot.valid && slot.hash == vs_hash) {
+    return slot.mask;
+  }
+  const uint32_t mask = PlumeShaderCache::Instance().InputLocationMask(vs_hash) & kFullLayoutMask;
+  // Not kept while the shader is still unknown (no mask yet): it may arrive.
+  if (mask != 0) {
+    slot = Known{vs_hash, mask, true};
+  }
+  return mask;
 }
 
 // One slot per encoded draw. Kept in step with the overlay ring that feeds

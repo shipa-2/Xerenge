@@ -939,6 +939,7 @@ void PlumeGraphicsSystem::StartVideoWorker() {
     return;
   }
   video_worker_ = std::thread([this] {
+    rex::thread::set_current_thread_name("plume video");
     for (;;) {
       GuestDrawSnapshot request;
       {
@@ -978,6 +979,7 @@ void PlumeGraphicsSystem::StartPresentWorker() {
     return;
   }
   present_worker_ = std::thread([this] {
+    rex::thread::set_current_thread_name("plume present");
     for (;;) {
       uint32_t w = 0, h = 0;
       {
