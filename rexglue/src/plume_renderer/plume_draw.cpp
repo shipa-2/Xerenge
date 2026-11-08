@@ -1,3 +1,4 @@
+#include "plume_renderer/plume_heap_check.h"
 #include <atomic>
 #include <mutex>
 #include <string>
@@ -7615,6 +7616,7 @@ void AccountEncodeStage(const char* next) {
 }
 
 void EncodeStage(const char* stage, const GuestDrawSnapshot* snap) {
+  HeapCheck(stage);
   // Per draw, so only in debug mode: the stage times and the stuck-encoder
   // watchdog (which ignores a stage with no time, as here) both read the clock.
   if (!xerenge::Diagnostics()) {

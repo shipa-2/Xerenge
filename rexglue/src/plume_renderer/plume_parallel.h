@@ -1,5 +1,6 @@
 #pragma once
 
+#include "plume_renderer/plume_heap_check.h"
 #include <cstdio>
 #include <cstdlib>
 #include <algorithm>
@@ -121,6 +122,7 @@ class WorkerPool {
         }
       } while (!ticket_.compare_exchange_weak(ticket, ticket + 1, std::memory_order_acq_rel));
       fn(i);
+      HeapCheck("worker job");
       if (done_.fetch_add(1, std::memory_order_acq_rel) + 1 == count) {
         std::lock_guard lock(mutex_);
         finished_.notify_all();

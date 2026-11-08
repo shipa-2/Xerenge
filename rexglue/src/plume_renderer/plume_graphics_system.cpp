@@ -2,6 +2,7 @@
  * @file        plume_renderer/plume_graphics_system.cpp
  * @brief       Plume GPU backend implementation (phase 1).
  */
+#include "plume_renderer/plume_heap_check.h"
 #include <set>
 #include "plume_renderer/plume_graphics_system.h"
 #include "plume_renderer/shader_source_info.h"
@@ -635,6 +636,7 @@ void PlumeGraphicsSystem::NoteGuestDraw(uint32_t primitive_type, uint32_t index_
   if (!enabled || index_count == 0) {
     return;
   }
+  HeapCheck("title thread: a draw noted");
   // This runs on the title's own thread, once per draw. Entering a scene the
   // title slows to about two frames a second while issuing thousands of these,
   // so what it costs has to be known rather than assumed.
