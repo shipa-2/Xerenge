@@ -90,6 +90,14 @@ class WorkerPool {
     // Eight workers at most, and two cores left alone for the title's own
     // threads and the driver. XERENGE_WORKERS=N chooses the number.
     unsigned count = std::min(8u, hardware > 3 ? hardware - 3 : 1u);
+#if defined(PLUME_UWP) || defined(REX_PLATFORM_UWP)
+    // The Xbox One gives the game few cores, and the title's thread, its audio
+    // worker and the present thread keep three of them busy: with five workers
+    // one was descheduled holding a claimed index, and the present thread
+    // waited a time slice for it - 14 ms a race frame in "unpacking ahead",
+    // for work that took a fraction of one.
+    count = std::min(count, 2u);
+#endif
     if (const char* text = std::getenv("XERENGE_WORKERS"); text && *text) {
       count = std::min(16u, unsigned(std::strtoul(text, nullptr, 10)));
     }

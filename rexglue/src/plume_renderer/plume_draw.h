@@ -960,6 +960,10 @@ class PlumeDrawContext {
   struct TextureWatch {
     uint64_t hash = 0;
     uint64_t writes = 0;  // sum of its pages' write counts when hashed
+    // Without the watch: the sample of each quarter of its pages (one quarter
+    // sampled a frame, in turn), and which quarters have one since the hash.
+    uint64_t samples[4] = {};
+    uint8_t sampled = 0;
   };
   std::unordered_map<uint64_t, TextureWatch, FastKeyHash> texture_watch_;
   static std::pair<uint32_t, uint32_t> OnGuestWrite(void* context, uint32_t start,

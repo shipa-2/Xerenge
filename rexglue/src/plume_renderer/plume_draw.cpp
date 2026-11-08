@@ -6934,20 +6934,34 @@ void PlumeDrawContext::BindGuestTextures(plume::RenderCommandList* list,
           // page - every frame catches a rewrite at once; the full hash comes
           // every fourth frame for each texture (staggered by key), so a small
           // edit inside a page shows within four frames.
-          uint64_t sample = 0;
-          for (size_t at = 0; at < size; at += 4096) {
+          // A quarter of the pages each frame, in turn - every page within four
+          // frames, as the full hash comes: a page each 4 KB, with a cache miss
+          // apiece, was 6.8 ms of a race frame on the present thread. The
+          // sample is compared with the same quarter's of four frames ago.
+          const size_t phase = size_t((frame_serial_ + (key >> 7)) & 3) * 4096;
+          uint64_t sample = phase;
+          for (size_t at = phase; at < size; at += 4 * 4096) {
             sample = XXH3_64bits_withSeed(src + at, std::min<size_t>(64, size - at), sample);
           }
-          for (size_t at = 0; at < mip_size; at += 4096) {
+          for (size_t at = phase; at < mip_size; at += 4 * 4096) {
             sample = XXH3_64bits_withSeed(mip_src + at, std::min<size_t>(64, mip_size - at), sample);
           }
           // XERENGE_FULL_TEXTURE_HASH=1: every texture in full every frame, as before.
           static const bool full_every_frame = std::getenv("XERENGE_FULL_TEXTURE_HASH") != nullptr;
+          const uint32_t quarter = uint32_t((frame_serial_ + (key >> 7)) & 3);
           if (auto known = texture_watch_.find(key);
-              !full_every_frame && known != texture_watch_.end() && known->second.writes == sample &&
-              ((key ^ frame_serial_) & 3) != 0) {
-            frame_hashes.emplace(key, known->second.hash);
-            continue;
+              !full_every_frame && known != texture_watch_.end() && ((key ^ frame_serial_) & 3) != 0) {
+            TextureWatch& w = known->second;
+            if (!((w.sampled >> quarter) & 1u)) {
+              // This quarter's first sample since the hash: taken as unchanged,
+              // as the full hash within four frames would say otherwise.
+              w.samples[quarter] = sample;
+              w.sampled |= uint8_t(1u << quarter);
+            }
+            if (w.samples[quarter] == sample) {
+              frame_hashes.emplace(key, w.hash);
+              continue;
+            }
           }
           jobs.push_back({key, src, size, 0, sample, mip_src, mip_size});
         }
@@ -6964,6 +6978,13 @@ void PlumeDrawContext::BindGuestTextures(plume::RenderCommandList* list,
       frame_hashes.emplace(job.key, job.hash);
       // With the watch, the write count it was hashed at; without, its sample.
       texture_watch_[job.key] = {job.hash, job.writes};
+      if (!page_writes_) {
+        // Hashed now: the quarter sampled this frame is the only one known.
+        TextureWatch& w = texture_watch_[job.key];
+        const uint32_t quarter = uint32_t((frame_serial_ + (job.key >> 7)) & 3);
+        w.sampled = uint8_t(1u << quarter);
+        w.samples[quarter] = job.writes;
+      }
     }
     {
       static uint64_t frames = 0;
