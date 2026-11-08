@@ -29,6 +29,9 @@
 #if defined(_WIN32)
 #include <plume_d3d12.h>
 #endif
+#if defined(_WIN32)
+#include <dxgi1_4.h>
+#endif
 #include <cstring>
 
 #include <algorithm>
@@ -2005,6 +2008,32 @@ void PlumeGraphicsSystem::PaceSwapToVblank() {
       REXLOG_INFO("plume: frame headroom - waited {} us a frame for the vblank, {} of them spun "
                   "(power mode {}, {} swaps)",
                   waited_us / swaps, spun_us / swaps, mode_name, swaps);
+#if defined(_WIN32)
+      // The GPU memory the system gives this process and what it uses: past
+      // the budget, the graphics kernel pages allocations in and out, and the
+      // Xbox One stalled for half a minute at a time as the garage loaded.
+      static IDXGIAdapter3* adapter = [] {
+        IDXGIAdapter3* found = nullptr;
+        IDXGIFactory1* factory = nullptr;
+        if (SUCCEEDED(CreateDXGIFactory1(IID_PPV_ARGS(&factory)))) {
+          IDXGIAdapter1* first = nullptr;
+          if (SUCCEEDED(factory->EnumAdapters1(0, &first))) {
+            first->QueryInterface(IID_PPV_ARGS(&found));
+            first->Release();
+          }
+          factory->Release();
+        }
+        return found;
+      }();
+      if (adapter) {
+        DXGI_QUERY_VIDEO_MEMORY_INFO local = {}, shared = {};
+        adapter->QueryVideoMemoryInfo(0, DXGI_MEMORY_SEGMENT_GROUP_LOCAL, &local);
+        adapter->QueryVideoMemoryInfo(0, DXGI_MEMORY_SEGMENT_GROUP_NON_LOCAL, &shared);
+        REXLOG_INFO("plume: video memory - local {} of {} MB budget, non-local {} of {} MB",
+                    local.CurrentUsage >> 20, local.Budget >> 20, shared.CurrentUsage >> 20,
+                    shared.Budget >> 20);
+      }
+#endif
       waited_us = 0;
       spun_us = 0;
       swaps = 0;
