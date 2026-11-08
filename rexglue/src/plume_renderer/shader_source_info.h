@@ -9,6 +9,7 @@
 // into a table compiled into the renderer. A development build without that
 // table falls back to reading generated/xenos-hlsl/<hash>.hlsl itself.
 
+#include <array>
 #include <cstdint>
 #include <string_view>
 #include <unordered_map>
@@ -40,6 +41,11 @@ struct ShaderSourceInfo {
   // none): D3D12 matches a draw's vertex layout to the shader by these, not
   // by location.
   std::vector<std::string> location_semantics;
+  // The float constant registers (c0-c255) the shader reads, bit n of word
+  // n / 64 for cn - its stage's, vertex or pixel. A relative read (an index
+  // from a0 or a loop counter) marks its base and everything above it. Empty
+  // (all zero) when the source was not understood: then read them all.
+  std::array<uint64_t, 4> constant_registers = {};
 };
 
 ShaderSourceInfo ParseShaderSource(std::string_view hlsl);

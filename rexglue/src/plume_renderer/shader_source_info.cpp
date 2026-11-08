@@ -1,6 +1,7 @@
 #include "plume_renderer/shader_source_info.h"
 
 #include <algorithm>
+#include <cctype>
 #include <cstdio>
 #include <cstdlib>
 #include <fstream>
@@ -140,6 +141,124 @@ std::vector<uint32_t> ParseConsumedLocations(std::string_view src) {
   return consumed;
 }
 
+// The float constant registers the shader reads. XenosRecomp names them by
+// macros over the stage's constant array:
+//   #define gObjToProjMatrix(INDEX) selectWrapper(..., g_VertexShaderConstants[0 + min(INDEX, 255)], 0.0)
+//   #define XENOS_RAW_CONST(N) g_VertexShaderConstants[N]
+// and the body calls them, gObjToProjMatrix(2) or gObjToProjMatrix(a0 + 4).
+// Anything else reading the arrays, or a macro shaped otherwise, and the
+// answer is "not understood" (all zero) - the caller then copies them all.
+std::array<uint64_t, 4> ParseConstantRegisters(std::string_view src) {
+  std::array<uint64_t, 4> mask = {};
+  const auto mark = [&mask](uint32_t first, uint32_t last) {
+    for (uint32_t r = first; r <= last && r < 256; ++r) {
+      mask[r >> 6] |= uint64_t(1) << (r & 63);
+    }
+  };
+  struct Macro {
+    std::string name;
+    uint32_t base = 0;
+    uint32_t limit = 255;
+  };
+  std::vector<Macro> macros;
+  bool understood = true;
+  size_t line_start = 0;
+  while (line_start < src.size()) {
+    size_t line_end = src.find('\n', line_start);
+    if (line_end == std::string_view::npos) {
+      line_end = src.size();
+    }
+    const std::string_view line = src.substr(line_start, line_end - line_start);
+    line_start = line_end + 1;
+    const size_t array = line.find("ShaderConstants[");
+    if (array == std::string_view::npos) {
+      continue;
+    }
+    // The declarations: cbuffer ... { float4 g_VertexShaderConstants[256]; }.
+    if (line.find("ShaderConstants[256]") != std::string_view::npos &&
+        line.find("float4") != std::string_view::npos) {
+      continue;
+    }
+    if (line.rfind("#define ", 0) != 0) {
+      understood = false;
+      continue;
+    }
+    const size_t name_start = 8;
+    const size_t open = line.find('(', name_start);
+    const size_t space = line.find(' ', name_start);
+    if (open == std::string_view::npos || (space != std::string_view::npos && space < open)) {
+      // #define NAME g_VertexShaderConstants[12] - one register, taken as read.
+      const size_t number = array + std::string_view("ShaderConstants[").size();
+      char* end = nullptr;
+      const std::string digits(line.substr(number, 8));
+      const unsigned long reg = std::strtoul(digits.c_str(), &end, 10);
+      if (end == digits.c_str() || *end != ']') {
+        understood = false;
+      } else {
+        mark(uint32_t(reg), uint32_t(reg));
+      }
+      continue;
+    }
+    Macro macro;
+    macro.name = std::string(line.substr(name_start, open - name_start));
+    const std::string_view after = line.substr(array + std::string_view("ShaderConstants[").size());
+    if (after.rfind("N]", 0) == 0) {
+      macro.base = 0;  // XENOS_RAW_CONST(N)
+    } else {
+      // "<base> + min(INDEX, <limit>)]"
+      char* end = nullptr;
+      const std::string text(after.substr(0, 40));
+      macro.base = uint32_t(std::strtoul(text.c_str(), &end, 10));
+      const size_t min_at = text.find("min(INDEX, ");
+      if (end == text.c_str() || min_at == std::string::npos) {
+        understood = false;
+        continue;
+      }
+      macro.limit = uint32_t(std::strtoul(text.c_str() + min_at + 11, nullptr, 10));
+    }
+    macros.push_back(std::move(macro));
+  }
+  if (!understood) {
+    return {};
+  }
+  for (const Macro& macro : macros) {
+    const std::string call = macro.name + "(";
+    for (size_t at = src.find(call); at != std::string_view::npos; at = src.find(call, at + 1)) {
+      // Not a longer name ending in this one, and not the definition itself.
+      if (at > 0 && (std::isalnum(static_cast<unsigned char>(src[at - 1])) || src[at - 1] == '_')) {
+        continue;
+      }
+      if (at >= 8 && src.substr(at - 8, 8) == "#define ") {
+        continue;
+      }
+      size_t depth = 1;
+      size_t end = at + call.size();
+      while (end < src.size() && depth > 0) {
+        if (src[end] == '(') {
+          ++depth;
+        } else if (src[end] == ')') {
+          --depth;
+        }
+        ++end;
+      }
+      std::string arg(src.substr(at + call.size(), end - 1 - (at + call.size())));
+      arg.erase(std::remove_if(arg.begin(), arg.end(),
+                               [](unsigned char c) { return std::isspace(c); }),
+                arg.end());
+      const bool literal = !arg.empty() && std::all_of(arg.begin(), arg.end(), [](unsigned char c) {
+        return std::isdigit(c);
+      });
+      if (literal) {
+        const uint32_t index = uint32_t(std::strtoul(arg.c_str(), nullptr, 10));
+        mark(macro.base + std::min(index, macro.limit), macro.base + std::min(index, macro.limit));
+      } else {
+        mark(macro.base, macro.base + macro.limit);
+      }
+    }
+  }
+  return mask;
+}
+
 }  // namespace
 
 ShaderSourceInfo ParseShaderSource(std::string_view src) {
@@ -194,6 +313,7 @@ ShaderSourceInfo ParseShaderSource(std::string_view src) {
   info.matrix_registers = ParseMatrixRegisters(std::string(src));
   info.instance_registers = ParseMatrixRegisters(std::string(src), true);
   info.location_semantics = ParseLocationSemantics(located);
+  info.constant_registers = ParseConstantRegisters(src);
   return info;
 }
 

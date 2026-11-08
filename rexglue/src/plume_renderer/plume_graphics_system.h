@@ -228,6 +228,10 @@ class PlumeGraphicsSystem final : public system::IGraphicsSystem {
   // fetch) still hold the words of the last ones above: cleared by any write
   // into them - a pull that changed a word, a register write, a ring packet.
   std::atomic<bool> constants_as_last_[3] = {false, false, false};
+  // Whether this draw's pull found the block changed since the last draw's:
+  // then the block cannot equal the last one and is copied without comparing.
+  // The title's thread alone reads and writes these.
+  bool pulled_changed_[3] = {false, false, false};
   void NoteConstantWrite(uint32_t index) {
     if (index >= 0x4000 && index < 0x48C0) {
       constants_as_last_[(index - 0x4000) >> 10].store(false, std::memory_order_relaxed);
@@ -237,6 +241,15 @@ class PlumeGraphicsSystem final : public system::IGraphicsSystem {
   SharedWords<1024> last_device_vs_constants_;
   SharedWords<1024> last_device_ps_constants_;
   SharedWords<192> last_device_fetch_constants_;
+  // The last such draw's words, read again with a comparison (title thread).
+  std::array<uint32_t, 1024> device_vs_scratch_ = {};
+  std::array<uint32_t, 1024> device_ps_scratch_ = {};
+  std::array<uint32_t, 192> device_fetch_scratch_ = {};
+  // The float constant registers the last vertex (0) and pixel (1) shader read.
+  const std::array<uint64_t, 4>& ConstantMask(int stage, uint64_t hash);
+  uint64_t constant_mask_hash_[2] = {0, 0};
+  bool constant_mask_valid_[2] = {false, false};
+  std::array<uint64_t, 4> constant_mask_[2] = {};
   // Menu frames issue upwards of 200 draws, ~160 of them valid overlays. At 96
   // this ring wrapped every frame and silently overwrote the draws issued
   // earliest - which is why rank badges and their labels went missing while

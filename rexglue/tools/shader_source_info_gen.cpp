@@ -91,7 +91,9 @@ int main(int argc, char** argv) {
         << (info.position_scaling ? "true" : "false") << ", "
         << (info.writes_oc1 ? "true" : "false") << ", " << info.sampler_slots << "u, "
         << List(info.consumed_locations) << ", " << List(info.matrix_registers) << ", "
-        << List(info.instance_registers) << ", " << Strings(info.location_semantics)
+        << List(info.instance_registers) << ", " << Strings(info.location_semantics) << ", {" << info.constant_registers[0] << "ull, "
+        << info.constant_registers[1] << "ull, " << info.constant_registers[2] << "ull, "
+        << info.constant_registers[3] << "ull}"
         << "});\n";
   }
   out << "}\n\n}  // namespace rex::plume_renderer\n";

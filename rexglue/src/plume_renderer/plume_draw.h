@@ -123,6 +123,15 @@ class SharedWords {
     last.words_ = std::move(fresh);
   }
 
+  // A fresh block of the words at src, known to differ from last's; last then
+  // follows it. AssignShared without the compare.
+  void AssignFresh(const uint32_t* src, SharedWords& last) {
+    auto fresh = std::make_shared<Words>();
+    std::memcpy(fresh->data(), src, sizeof(Words));
+    words_ = fresh;
+    last.words_ = std::move(fresh);
+  }
+
   // last's block, known to hold the same words.
   void ShareWith(const SharedWords& last) { words_ = last.words_; }
 

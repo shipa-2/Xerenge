@@ -4,6 +4,7 @@
  */
 #include <set>
 #include "plume_renderer/plume_graphics_system.h"
+#include "plume_renderer/shader_source_info.h"
 #include "plume_renderer/plume_etc2_cache.h"
 #include "diagnostics.h"
 
@@ -863,7 +864,26 @@ bool CopyDeviceDwordsChanged(memory::Memory* memory, uint32_t* dst, uint32_t dev
   }
   const uint8_t* src = memory->TranslateVirtual<const uint8_t*>(device_guest + offset);
   uint32_t differ = 0;
-  for (uint32_t i = 0; i < count; ++i) {
+  uint32_t i = 0;
+#if defined(__SSSE3__)
+  // Four words at a time: a 2240-word pull per draw, a thousand draws a frame.
+  const __m128i swap = _mm_setr_epi8(3, 2, 1, 0, 7, 6, 5, 4, 11, 10, 9, 8, 15, 14, 13, 12);
+  __m128i any = _mm_setzero_si128();
+  for (; i + 4 <= count; i += 4) {
+    const __m128i value =
+        _mm_shuffle_epi8(_mm_loadu_si128(reinterpret_cast<const __m128i*>(src + i * 4)), swap);
+    __m128i* out = reinterpret_cast<__m128i*>(dst + i);
+    const __m128i diff = _mm_xor_si128(value, _mm_loadu_si128(out));
+    // Stored only where it changed: most of a draw's constants are the last
+    // draw's, and writing all 9 KB back was where this loop spent its time.
+    if (_mm_movemask_epi8(_mm_cmpeq_epi8(diff, _mm_setzero_si128())) != 0xFFFF) {
+      any = _mm_or_si128(any, diff);
+      _mm_storeu_si128(out, value);
+    }
+  }
+  differ = _mm_movemask_epi8(_mm_cmpeq_epi8(any, _mm_setzero_si128())) != 0xFFFF;
+#endif
+  for (; i < count; ++i) {
     const uint32_t value = rex::memory::load_and_swap<uint32_t>(src + i * 4);
     differ |= value ^ dst[i];
     dst[i] = value;
@@ -871,7 +891,74 @@ bool CopyDeviceDwordsChanged(memory::Memory* memory, uint32_t* dst, uint32_t dev
   return differ != 0;
 }
 
+// CopyDeviceDwordsChanged for a block of 256 float constants, only the
+// registers set in mask: a draw's shaders read a few dozen of them, and
+// copying all 2048 words of both stages per draw was 12 MB a frame through
+// the title's thread. The rest of dst keeps what earlier draws left - no
+// shader reading them, nothing looks.
+bool CopyDeviceRegistersChanged(memory::Memory* memory, uint32_t* dst, uint32_t device_guest,
+                                uint32_t offset, const std::array<uint64_t, 4>& mask) {
+  if (offset + 256 * 16 > kD3DDeviceMinBytes) {
+    CopyBeDwords(memory, dst, device_guest + offset, 1024);
+    return true;
+  }
+  const uint8_t* src = memory->TranslateVirtual<const uint8_t*>(device_guest + offset);
+  bool differ = false;
+#if defined(__SSSE3__)
+  const __m128i swap = _mm_setr_epi8(3, 2, 1, 0, 7, 6, 5, 4, 11, 10, 9, 8, 15, 14, 13, 12);
+#endif
+  for (uint32_t word = 0; word < 4; ++word) {
+    for (uint64_t bits = mask[word]; bits != 0; bits &= bits - 1) {
+      const uint32_t reg = word * 64 + uint32_t(__builtin_ctzll(bits));
+#if defined(__SSSE3__)
+      const __m128i value = _mm_shuffle_epi8(
+          _mm_loadu_si128(reinterpret_cast<const __m128i*>(src + reg * 16)), swap);
+      __m128i* out = reinterpret_cast<__m128i*>(dst + reg * 4);
+      const __m128i diff = _mm_xor_si128(value, _mm_loadu_si128(out));
+      if (_mm_movemask_epi8(_mm_cmpeq_epi8(diff, _mm_setzero_si128())) != 0xFFFF) {
+        _mm_storeu_si128(out, value);
+        differ = true;
+      }
+#else
+      for (uint32_t c = 0; c < 4; ++c) {
+        const uint32_t value = rex::memory::load_and_swap<uint32_t>(src + reg * 16 + c * 4);
+        if (dst[reg * 4 + c] != value) {
+          dst[reg * 4 + c] = value;
+          differ = true;
+        }
+      }
+#endif
+    }
+  }
+  return differ;
+}
+
 }  // namespace
+
+const std::array<uint64_t, 4>& PlumeGraphicsSystem::ConstantMask(int stage, uint64_t hash) {
+  if (constant_mask_hash_[stage] == hash && constant_mask_valid_[stage]) {
+    return constant_mask_[stage];
+  }
+  std::array<uint64_t, 4> mask = {};
+  const ShaderSourceInfo* info = hash ? FindShaderSourceInfo(hash) : nullptr;
+  if (info) {
+    mask = info->constant_registers;
+  }
+  if ((mask[0] | mask[1] | mask[2] | mask[3]) == 0) {
+    mask.fill(~uint64_t(0));  // not understood: all of them
+  }
+  // What the renderer itself reads from a draw's constants, whatever its
+  // shaders do: c0-c15 of both stages (the video, the interface's tests,
+  // the half pixel) and the vertex count in c51.
+  mask[0] |= 0xFFFFu;
+  if (stage == 0) {
+    mask[0] |= uint64_t(1) << 51;
+  }
+  constant_mask_hash_[stage] = hash;
+  constant_mask_valid_[stage] = true;
+  constant_mask_[stage] = mask;
+  return constant_mask_[stage];
+}
 
 bool PlumeGraphicsSystem::DeviceLooksValid(uint32_t device_guest) const {
   if (!memory_ || !DeviceRangeReadable(memory_, device_guest)) {
@@ -900,14 +987,17 @@ void PlumeGraphicsSystem::PullDeviceConstants(uint32_t device_guest) {
   if (CopyDeviceDwordsChanged(memory_, &gpu_registers_[0x4000], device_guest, kD3DVsFloatOffset,
                               1024)) {
     constants_as_last_[0] = false;
+    pulled_changed_[0] = true;
   }
   if (CopyDeviceDwordsChanged(memory_, &gpu_registers_[0x4400], device_guest, kD3DPsFloatOffset,
                               1024)) {
     constants_as_last_[1] = false;
+    pulled_changed_[1] = true;
   }
   if (CopyDeviceDwordsChanged(memory_, &gpu_registers_[0x4800], device_guest, kD3DFetchOffset,
                               192)) {
     constants_as_last_[2] = false;
+    pulled_changed_[2] = true;
   }
   CopyDeviceDwords(memory_, &gpu_registers_[0x4900], device_guest, kD3DVsBoolOffset, 4);
   CopyDeviceDwords(memory_, &gpu_registers_[0x4904], device_guest, kD3DPsBoolOffset, 4);
@@ -1111,22 +1201,22 @@ void PlumeGraphicsSystem::PublishDrawSnapshot(uint32_t prim_type, uint32_t sourc
   snap.source_select = source_select;
   snap.num_indices = num_indices;
   // A block nothing has written since the last draw took it is that draw's.
-  if (constants_as_last_[0]) {
-    snap.vs_constants.ShareWith(last_vs_constants_);
-  } else {
-    snap.vs_constants.AssignShared(&gpu_registers_[0x4000], last_vs_constants_);
-  }
-  if (constants_as_last_[1]) {
-    snap.ps_constants.ShareWith(last_ps_constants_);
-  } else {
-    snap.ps_constants.AssignShared(&gpu_registers_[0x4400], last_ps_constants_);
-  }
-  if (constants_as_last_[2]) {
-    snap.fetch_constants.ShareWith(last_fetch_constants_);
-  } else {
-    snap.fetch_constants.AssignShared(&gpu_registers_[0x4800], last_fetch_constants_);
-  }
-  constants_as_last_[0] = constants_as_last_[1] = constants_as_last_[2] = true;
+  // One this draw's pull changed differs from it, so it is copied without the
+  // 4 KB compare that would only find so - most of a scene draw's memcmp.
+  auto take = [this](auto& block, auto& last, uint32_t base, int i) {
+    if (constants_as_last_[i].load(std::memory_order_relaxed)) {
+      block.ShareWith(last);
+    } else if (pulled_changed_[i]) {
+      block.AssignFresh(&gpu_registers_[base], last);
+    } else {
+      block.AssignShared(&gpu_registers_[base], last);
+    }
+    pulled_changed_[i] = false;
+    constants_as_last_[i].store(true, std::memory_order_relaxed);
+  };
+  take(snap.vs_constants, last_vs_constants_, 0x4000, 0);
+  take(snap.ps_constants, last_ps_constants_, 0x4400, 1);
+  take(snap.fetch_constants, last_fetch_constants_, 0x4800, 2);
   // A draw built from the Direct3D calls has no constants in the register
   // file: this path never receives a SET_CONSTANT packet, so what the ring
   // left there belongs to the interface. The title's own copy does have them,
@@ -1152,12 +1242,23 @@ void PlumeGraphicsSystem::PublishDrawSnapshot(uint32_t prim_type, uint32_t sourc
         // copied the block it shared first - an allocation and 4 KB twice per
         // draw on the title's thread, and the frees half the present thread's
         // allocator work on the Pixel.
-        static thread_local std::array<uint32_t, 1024> vs_scratch;
-        static thread_local std::array<uint32_t, 1024> ps_scratch;
-        CopyDeviceDwords(memory_, vs_scratch.data(), d3d_device, kD3DVsFloatOffset, 1024);
-        CopyDeviceDwords(memory_, ps_scratch.data(), d3d_device, kD3DPsFloatOffset, 1024);
-        snap.vs_constants.AssignShared(vs_scratch.data(), last_device_vs_constants_);
-        snap.ps_constants.AssignShared(ps_scratch.data(), last_device_ps_constants_);
+        //
+        // The scratch keeps the last such draw's words, which are those of the
+        // last blocks: copied with the comparison, an unchanged block is shared
+        // without a 4 KB memcmp and a changed one copied without one - with the
+        // stores of a full copy, a fifth of the title's thread in a race.
+        if (CopyDeviceRegistersChanged(memory_, device_vs_scratch_.data(), d3d_device,
+                                       kD3DVsFloatOffset, ConstantMask(0, snap.vs_hash))) {
+          snap.vs_constants.AssignFresh(device_vs_scratch_.data(), last_device_vs_constants_);
+        } else {
+          snap.vs_constants.ShareWith(last_device_vs_constants_);
+        }
+        if (CopyDeviceRegistersChanged(memory_, device_ps_scratch_.data(), d3d_device,
+                                       kD3DPsFloatOffset, ConstantMask(1, snap.ps_hash))) {
+          snap.ps_constants.AssignFresh(device_ps_scratch_.data(), last_device_ps_constants_);
+        } else {
+          snap.ps_constants.ShareWith(last_device_ps_constants_);
+        }
       }
       // The boolean constants steer the shaders' branches, and the ring's
       // copy belongs to the interface just like its float constants do.
@@ -1182,10 +1283,13 @@ void PlumeGraphicsSystem::PublishDrawSnapshot(uint32_t prim_type, uint32_t sourc
     if (d3d_device != 0 && DeviceRangeReadable(memory_, d3d_device)) {
       // Pulled from this device at the snapshot's start already, like the
       // float constants above; read again only if the device changed since.
-      std::array<uint32_t, 192> from_device = snap.fetch_constants;
+      bool fetch_changed = false;
       if (d3d_device != device) {
-        CopyDeviceDwords(memory_, from_device.data(), d3d_device, kD3DFetchOffset, 192);
+        fetch_changed = CopyDeviceDwordsChanged(memory_, device_fetch_scratch_.data(), d3d_device,
+                                                kD3DFetchOffset, 192);
       }
+      const uint32_t* from_device =
+          d3d_device != device ? device_fetch_scratch_.data() : std::as_const(snap.fetch_constants).data();
       static std::atomic<uint32_t> compared{0};
       if (compared.fetch_add(1, std::memory_order_relaxed) < 6) {
         const uint32_t object = buffers.textures[0];
@@ -1197,7 +1301,11 @@ void PlumeGraphicsSystem::PublishDrawSnapshot(uint32_t prim_type, uint32_t sourc
                     from_device[1], object_word1);
       }
       if (d3d_device != device) {
-        snap.fetch_constants.AssignShared(from_device.data(), last_device_fetch_constants_);
+        if (fetch_changed) {
+          snap.fetch_constants.AssignFresh(from_device, last_device_fetch_constants_);
+        } else {
+          snap.fetch_constants.ShareWith(last_device_fetch_constants_);
+        }
       }
       fetch_from_device = true;
     }
