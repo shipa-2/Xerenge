@@ -507,13 +507,20 @@ constexpr uint32_t kSharedConstantBytes = 512;
 // six faces, filled half of that a frame (524288) and dropped the post-processing
 // and the interface again: a black 320x180 corner and no HUD, flickering. Twice
 // that on a desktop (640 MB of upload heap); a phone keeps the smaller one.
-#if defined(__ANDROID__)
+// The Xbox One keeps the smaller ones too: there upload heap is the process's
+// own memory, shared with everything else, and these two buffers alone (a
+// gigabyte at the desktop sizes, of a two-gigabyte process) left the system
+// paging the rest of the game out - half-minute stalls entering the garage
+// and the title screen, reading it back. A frame that overflows the smaller
+// buffer says so in the log (vertex buffer full).
+#if defined(__ANDROID__) || defined(PLUME_UWP) || defined(REX_PLATFORM_UWP)
 constexpr uint32_t kDummyVertexCount = 1048576;
+constexpr uint32_t kCacheVertexCount = 524288;
 #else
 constexpr uint32_t kDummyVertexCount = 2097152;
+constexpr uint32_t kCacheVertexCount = 1048576;
 #endif
 constexpr uint32_t kVertsPerFrame = kDummyVertexCount / 2;
-constexpr uint32_t kCacheVertexCount = 1048576;
 constexpr uint32_t kInputLocationCount = 20;
 constexpr uint32_t kVertexStrideBytes = kInputLocationCount * 16;
 // Every location: the layout the staging buffer, the passthrough pipelines and
@@ -2538,6 +2545,7 @@ void PlumeDrawContext::Shutdown() {
   dummy_vb_.reset();
   guest_textures_.clear();
   next_bindless_ = 1;
+  free_bindless_.clear();
   null_texture_staging_.reset();
   identity_lut_view_.reset();
   identity_lut_.reset();
@@ -5701,6 +5709,11 @@ void PlumeDrawContext::EnsureSampler(const GuestDrawSnapshot& snap, uint32_t slo
 }
 
 uint32_t PlumeDrawContext::AcquireTextureSlot() {
+  if (!free_bindless_.empty()) {
+    const uint32_t slot = free_bindless_.back();
+    free_bindless_.pop_back();
+    return slot;
+  }
   if (next_bindless_ < kBindlessTextureCount) {
     return next_bindless_++;
   }
@@ -5736,6 +5749,55 @@ uint32_t PlumeDrawContext::AcquireTextureSlot() {
                            null_texture_view_.get());
   guest_textures_.erase(stalest);
   return slot;
+}
+
+// Every texture the title ever drew with was kept until all 4096 slots were
+// taken, each with two staging buffers its own size: on the Xbox One, where
+// GPU memory is the process's own, that was 1.3 GB of a 2 GB process, the
+// system paged the rest of the game out, and entering the garage or the title
+// screen stalled for half a minute reading it back. Once a second: a texture
+// unused for ten seconds goes, slot and all (made again from guest memory if it
+// is drawn again), and one not uploaded again for two lets its staging go.
+void PlumeDrawContext::TrimGuestTextures() {
+  constexpr uint64_t kTrimEvery = 60;
+  constexpr uint64_t kUnusedFrames = 600;
+  constexpr uint64_t kStagingFrames = 120;
+  if (frame_serial_ % kTrimEvery != 0) {
+    return;
+  }
+  size_t evicted = 0, staging_freed = 0;
+  for (auto it = guest_textures_.begin(); it != guest_textures_.end();) {
+    GuestHostTexture* tex = it->second.get();
+    if (!tex) {
+      ++it;
+      continue;
+    }
+    if (tex->last_used + kUnusedFrames < frame_serial_ && tex->bindless != 0) {
+      // As AcquireTextureSlot evicts: the slot back to the empty texture first,
+      // so nothing made there next looks like this entry.
+      texture_set_->setTexture(tex->bindless, null_texture_.get(),
+                               plume::RenderTextureLayout::SHADER_READ, null_texture_view_.get());
+      free_bindless_.push_back(tex->bindless);
+      it = guest_textures_.erase(it);
+      ++evicted;
+      continue;
+    }
+    if ((tex->staging[0] || tex->staging[1]) && tex->last_upload + kStagingFrames < frame_serial_) {
+      tex->staging[0].reset();
+      tex->staging[1].reset();
+      tex->staging_size[0] = tex->staging_size[1] = 0;
+      ++staging_freed;
+    }
+    ++it;
+  }
+  if (evicted || staging_freed) {
+    static uint32_t shown = 0;
+    if (shown < 8 || (shown % 64) == 0) {
+      REXLOG_INFO("plume: textures trimmed - {} unused evicted, {} staging buffers freed, {} kept",
+                  evicted, staging_freed, guest_textures_.size());
+    }
+    ++shown;
+  }
 }
 
 bool PlumeDrawContext::PixelShaderWritesOc1(uint64_t ps_hash) {
@@ -5908,6 +5970,7 @@ bool PlumeDrawContext::UploadHostTexture(plume::RenderCommandList* list, uint64_
     }
     host->staging_size[half] = staging_needed;
   }
+  host->last_upload = frame_serial_;
   if (auto* mapped = static_cast<uint8_t*>(staging->map())) {
     StageRows(mapped, pixels.data(), pixels.size(), level_staging[0]);
     for (uint32_t level = 1; level < levels; ++level) {
@@ -6740,6 +6803,7 @@ void PlumeDrawContext::BindGuestTextures(plume::RenderCommandList* list,
     cache_used_ = 0;
   }
   TrimDrawSets();
+  TrimGuestTextures();
   ++frame_serial_;
   size_t last_video = draws.size();
   for (size_t i = 0; i < draws.size(); ++i) {

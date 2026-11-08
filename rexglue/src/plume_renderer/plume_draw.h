@@ -693,6 +693,9 @@ class PlumeDrawContext {
     // The frame this texture was last bound in, for evicting the stalest one
     // when the bindless slots run out.
     uint64_t last_used = 0;
+    // The frame its staging buffers were last filled in: unused for a while,
+    // they are let go (TrimGuestTextures).
+    uint64_t last_upload = 0;
   };
 
   // Textures holding resolved render targets, keyed by the guest address the
@@ -1107,6 +1110,10 @@ class PlumeDrawContext {
   uint64_t draw_sets_made_ = 0;
   plume::RenderDescriptorSet* DrawSetFor(const DrawBindings& bindings);
   void TrimDrawSets();
+  // Textures unused for a while given back, and the staging buffers of ones
+  // not uploaded again lately (TrimGuestTextures, once a second).
+  void TrimGuestTextures();
+  std::vector<uint32_t> free_bindless_;
 
   std::array<plume::RenderInputSlot, 1> input_slots_{};
   std::array<plume::RenderInputElement, 32> input_elements_{};
