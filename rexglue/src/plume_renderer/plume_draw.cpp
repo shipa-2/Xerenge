@@ -1980,6 +1980,21 @@ bool LocateGuestMips(const rex::graphics::xenos::xe_gpu_texture_fetch_t& fetch,
 }
 
 // What a texture was built from: its base and, when it has them, its mips.
+// A texture's change sample over one quarter of its pages (every fourth 4 KB
+// page from the quarter's, 64 bytes of each), base and mips.
+uint64_t QuarterSample(const uint8_t* src, size_t size, const uint8_t* mip_src, size_t mip_size,
+                       uint32_t quarter) {
+  const size_t phase = size_t(quarter & 3) * 4096;
+  uint64_t sample = phase;
+  for (size_t at = phase; at < size; at += 4 * 4096) {
+    sample = XXH3_64bits_withSeed(src + at, std::min<size_t>(64, size - at), sample);
+  }
+  for (size_t at = phase; mip_src && at < mip_size; at += 4 * 4096) {
+    sample = XXH3_64bits_withSeed(mip_src + at, std::min<size_t>(64, mip_size - at), sample);
+  }
+  return sample;
+}
+
 uint64_t TextureContentHash(const uint8_t* src, size_t size, const uint8_t* mip_src,
                             size_t mip_size) {
   uint64_t hash = XXH3_64bits(src, size);
@@ -6931,30 +6946,23 @@ void PlumeDrawContext::BindGuestTextures(plume::RenderCommandList* list,
         } else {
           // No write watch (the Xbox One): hashing every texture in full every
           // frame took 6 ms of a race frame. A sample - 64 bytes of each 4 KB
-          // page - every frame catches a rewrite at once; the full hash comes
-          // every fourth frame for each texture (staggered by key), so a small
-          // edit inside a page shows within four frames.
-          // A quarter of the pages each frame, in turn - every page within four
-          // frames, as the full hash comes: a page each 4 KB, with a cache miss
-          // apiece, was 6.8 ms of a race frame on the present thread. The
-          // sample is compared with the same quarter's of four frames ago.
-          const size_t phase = size_t((frame_serial_ + (key >> 7)) & 3) * 4096;
-          uint64_t sample = phase;
-          for (size_t at = phase; at < size; at += 4 * 4096) {
-            sample = XXH3_64bits_withSeed(src + at, std::min<size_t>(64, size - at), sample);
-          }
-          for (size_t at = phase; at < mip_size; at += 4 * 4096) {
-            sample = XXH3_64bits_withSeed(mip_src + at, std::min<size_t>(64, mip_size - at), sample);
-          }
+          // page - catches a rewrite; a quarter of the pages is sampled each
+          // frame, in turn, and compared with that quarter's sample taken when
+          // the texture was last hashed (all four then). Every page within four
+          // frames: sampling every page every frame, a cache miss apiece, was
+          // 6.8 ms of a race frame. The full hash, for an edit inside a page
+          // that misses its sample, comes every 32nd frame (staggered by key):
+          // every fourth was 2.3 ms.
+          const uint32_t quarter = uint32_t((frame_serial_ + (key >> 7)) & 3);
+          const uint64_t sample = QuarterSample(src, size, mip_src, mip_size, quarter);
           // XERENGE_FULL_TEXTURE_HASH=1: every texture in full every frame, as before.
           static const bool full_every_frame = std::getenv("XERENGE_FULL_TEXTURE_HASH") != nullptr;
-          const uint32_t quarter = uint32_t((frame_serial_ + (key >> 7)) & 3);
           if (auto known = texture_watch_.find(key);
-              !full_every_frame && known != texture_watch_.end() && ((key ^ frame_serial_) & 3) != 0) {
+              !full_every_frame && known != texture_watch_.end() && ((key ^ frame_serial_) & 31) != 0) {
             TextureWatch& w = known->second;
             if (!((w.sampled >> quarter) & 1u)) {
               // This quarter's first sample since the hash: taken as unchanged,
-              // as the full hash within four frames would say otherwise.
+              // as the next full hash would say otherwise.
               w.samples[quarter] = sample;
               w.sampled |= uint8_t(1u << quarter);
             }
@@ -6979,11 +6987,12 @@ void PlumeDrawContext::BindGuestTextures(plume::RenderCommandList* list,
       // With the watch, the write count it was hashed at; without, its sample.
       texture_watch_[job.key] = {job.hash, job.writes};
       if (!page_writes_) {
-        // Hashed now: the quarter sampled this frame is the only one known.
+        // Hashed now: every quarter's sample as the texture stands.
         TextureWatch& w = texture_watch_[job.key];
-        const uint32_t quarter = uint32_t((frame_serial_ + (job.key >> 7)) & 3);
-        w.sampled = uint8_t(1u << quarter);
-        w.samples[quarter] = job.writes;
+        for (uint32_t q = 0; q < 4; ++q) {
+          w.samples[q] = QuarterSample(job.src, job.size, job.mip_src, job.mip_size, q);
+        }
+        w.sampled = 0xF;
       }
     }
     {
