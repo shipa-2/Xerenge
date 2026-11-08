@@ -2667,11 +2667,13 @@ void PlumeGraphicsSystem::PresentClearColorOnUiThread(uint32_t guest_width,
     }
   }
   bool flash_on = false;
+#if !REX_PLATFORM_MAC  // no RenderDoc on macOS: the SDK leaves its API type opaque there
   if (capture_flash && flash_frames_seen > 10 && renderdoc_api_ && renderdoc_api_->api_1_0_0() &&
       renderdoc_api_->can_discard()) {
     flash_on = true;
     renderdoc_api_->api_1_0_0()->StartFrameCapture(nullptr, nullptr);
   }
+#endif
 #endif
   swapchain_->ClearAndPresent(0.03f, 0.04f, 0.07f, 1.0f, encode, &ctx, resolve, hold);
 #if !defined(__ANDROID__)
@@ -2715,9 +2717,11 @@ void PlumeGraphicsSystem::PresentClearColorOnUiThread(uint32_t guest_width,
       last_kept = now;
       std::string captured;
       if (flash_on) {
+#if !REX_PLATFORM_MAC
         captured = renderdoc_api_->api_1_0_0()->EndFrameCapture(nullptr, nullptr)
                        ? "; frame captured"
                        : "; frame NOT captured (RenderDoc refused)";
+#endif
         flash_on = false;
       }
       REXLOG_WARN("plume: {}{}\n  this frame: {}\n  the one before: {}", what, captured,
@@ -2725,7 +2729,9 @@ void PlumeGraphicsSystem::PresentClearColorOnUiThread(uint32_t guest_width,
     }
   }
   if (flash_on) {
+#if !REX_PLATFORM_MAC
     renderdoc_api_->api_1_0_0()->DiscardFrameCapture(nullptr, nullptr);
+#endif
   }
 #endif
   SavePipelineCache(false);
