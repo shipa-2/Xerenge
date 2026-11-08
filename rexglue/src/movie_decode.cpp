@@ -73,27 +73,35 @@ bool Enabled() {
 }
 
 struct Session {
+  // The decoder is used from more than one thread: the movie thread decodes,
+  // the player stops or seeks (Flush) and copies pictures out from others.
+  // FFmpeg's decoder takes one caller at a time - a flush in the middle of a
+  // decode freed the frame pool under it, and the heap corruption that left
+  // hung the Xbox One a few seconds into the title screen's video.
+  std::mutex decoder_mutex;
   rex::audio::Wmv3Decoder decoder;
   std::vector<uint8_t> frame;
   bool failed = false;
 };
 
+// Shared, so a new stream on the same glue struct (which drops the old session)
+// cannot destroy a decoder another thread is still inside.
 std::mutex sessions_mutex;
-std::unordered_map<uint32_t, std::unique_ptr<Session>> sessions;
+std::unordered_map<uint32_t, std::shared_ptr<Session>> sessions;
 
-Session& SessionFor(uint32_t glue) {
+std::shared_ptr<Session> SessionFor(uint32_t glue) {
   std::lock_guard lock(sessions_mutex);
   auto& s = sessions[glue];
   if (!s) {
-    s = std::make_unique<Session>();
+    s = std::make_shared<Session>();
   }
-  return *s;
+  return s;
 }
 
-Session* FindSession(uint32_t glue) {
+std::shared_ptr<Session> FindSession(uint32_t glue) {
   std::lock_guard lock(sessions_mutex);
   auto it = sessions.find(glue);
-  return it == sessions.end() ? nullptr : it->second.get();
+  return it == sessions.end() ? nullptr : it->second;
 }
 
 uint32_t Load(const uint8_t* base, uint32_t address) {
@@ -174,12 +182,18 @@ REX_HOOK_RAW(sub_824C02F8) {
   const uint32_t object = ctx.r3.u32;
   const uint32_t out = ctx.r4.u32;
   const uint32_t glue = Load(base, object + 32);
-  Session& session = SessionFor(glue);
+  const std::shared_ptr<Session> held = SessionFor(glue);
+  Session& session = *held;
   if (!Enabled() || session.failed) {
     __imp__sub_824C02F8(ctx, base);
     return;
   }
-  if (!session.decoder.is_open() && !OpenDecoder(base, glue, session)) {
+  bool opened;
+  {
+    std::lock_guard decoder_lock(session.decoder_mutex);
+    opened = session.decoder.is_open() || OpenDecoder(base, glue, session);
+  }
+  if (!opened) {
     REXLOG_WARN("movie: the host decoder could not start; the title's decodes");
     session.failed = true;
     __imp__sub_824C02F8(ctx, base);
@@ -207,7 +221,11 @@ REX_HOOK_RAW(sub_824C02F8) {
     return;
   }
 
-  const bool picture = session.decoder.Decode(session.frame.data(), session.frame.size());
+  bool picture;
+  {
+    std::lock_guard decoder_lock(session.decoder_mutex);
+    picture = session.decoder.Decode(session.frame.data(), session.frame.size());
+  }
   Store(base, out, picture ? Load(base, glue + kPictureBytes) : 0);
   ctx.r3.u64 = 0;
 }
@@ -217,8 +235,15 @@ REX_HOOK_RAW(sub_824C02F8) {
 // flag set.
 REX_HOOK_RAW(sub_824C0358) {
   const uint32_t glue = Load(base, ctx.r3.u32 + 32);
-  Session* session = FindSession(glue);
+  const std::shared_ptr<Session> session = FindSession(glue);
+  std::unique_lock<std::mutex> decoder_lock;
+  if (session) {
+    decoder_lock = std::unique_lock(session->decoder_mutex);
+  }
   if (!Enabled() || !session || session->failed || !session->decoder.is_open()) {
+    if (decoder_lock.owns_lock()) {
+      decoder_lock.unlock();
+    }
     __imp__sub_824C0358(ctx, base);
     return;
   }
@@ -246,14 +271,16 @@ REX_HOOK_RAW(sub_824C0358) {
 }
 
 REX_HOOK_RAW(sub_824C0248) {
-  if (Session* session = FindSession(Load(base, ctx.r3.u32 + 32))) {
+  if (const std::shared_ptr<Session> session = FindSession(Load(base, ctx.r3.u32 + 32))) {
+    std::lock_guard decoder_lock(session->decoder_mutex);
     session->decoder.Flush();
   }
   __imp__sub_824C0248(ctx, base);
 }
 
 REX_HOOK_RAW(sub_824C01F0) {
-  if (Session* session = FindSession(Load(base, ctx.r3.u32 + 32))) {
+  if (const std::shared_ptr<Session> session = FindSession(Load(base, ctx.r3.u32 + 32))) {
+    std::lock_guard decoder_lock(session->decoder_mutex);
     session->decoder.Flush();
   }
   __imp__sub_824C01F0(ctx, base);
