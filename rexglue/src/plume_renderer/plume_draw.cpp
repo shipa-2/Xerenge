@@ -1980,6 +1980,25 @@ bool LocateGuestMips(const rex::graphics::xenos::xe_gpu_texture_fetch_t& fetch,
 }
 
 // What a texture was built from: its base and, when it has them, its mips.
+// The registers set in mask (16 bytes each) from src to dst, run by run.
+void CopyRegisters(uint8_t* dst, const uint32_t* src, const std::array<uint64_t, 4>& mask) {
+  uint32_t reg = 0;
+  while (reg < 256) {
+    const uint64_t word = mask[reg >> 6] >> (reg & 63);
+    if (word == 0) {
+      reg = (reg | 63) + 1;
+      continue;
+    }
+    reg += uint32_t(__builtin_ctzll(word));
+    uint32_t end = reg;
+    while (end < 256 && ((mask[end >> 6] >> (end & 63)) & 1u)) {
+      ++end;
+    }
+    std::memcpy(dst + reg * 16, src + reg * 4, size_t(end - reg) * 16);
+    reg = end;
+  }
+}
+
 // A texture's change sample over one quarter of its pages (every fourth 4 KB
 // page from the quarter's, 64 bytes of each), base and mips.
 uint64_t QuarterSample(const uint8_t* src, size_t size, const uint8_t* mip_src, size_t mip_size,
@@ -5815,6 +5834,25 @@ void PlumeDrawContext::TrimGuestTextures() {
   }
 }
 
+const std::array<uint64_t, 4>& PlumeDrawContext::ConstantMaskFor(int stage, uint64_t hash) {
+  auto& masks = constant_masks_[stage & 1];
+  if (auto it = masks.find(hash); it != masks.end()) {
+    return it->second;
+  }
+  std::array<uint64_t, 4> mask = {};
+  if (const ShaderSourceInfo* info = hash ? FindShaderSourceInfo(hash) : nullptr) {
+    mask = info->constant_registers;
+  }
+  if ((mask[0] | mask[1] | mask[2] | mask[3]) == 0) {
+    mask.fill(~uint64_t(0));
+  }
+  mask[0] |= 0xFFFFu;
+  if (stage == 0) {
+    mask[0] |= uint64_t(1) << 51;
+  }
+  return masks.emplace(hash, mask).first->second;
+}
+
 bool PlumeDrawContext::PixelShaderWritesOc1(uint64_t ps_hash) {
   if (auto it = ps_writes_oc1_.find(ps_hash); it != ps_writes_oc1_.end()) {
     return it->second;
@@ -8316,6 +8354,8 @@ void PlumeDrawContext::EncodeDraws(plume::RenderCommandList* list,
   // The constant blocks the last draw wrote, for reuse by the next.
   const uint32_t* last_vs = nullptr;
   const uint32_t* last_ps = nullptr;
+  // And the registers each wrote (an unwritten one is whatever the slot held).
+  std::array<uint64_t, 4> last_vs_written = {}, last_ps_written = {};
   uint32_t last_vs_slot = 0;
   uint32_t last_ps_slot = 0;
   alignas(16) uint8_t last_shared[kSharedConstantBytes];
@@ -8671,21 +8711,34 @@ void PlumeDrawContext::EncodeDraws(plume::RenderCommandList* list,
     // thread already gives a draw the last one's block when the words are the
     // same (AssignShared): another block is all but always different, and
     // comparing its 4 KB to find that out cost more than writing it.
-    if (last_vs && last_vs == snap.vs_constants.data()) {
+    // Only the registers the draw's shaders read (and c0-c15): a whole block
+    // is 4 KB, and two a draw, 2700 draws a race frame, was 22 MB a frame into
+    // the upload heap - 7 ms on the Xbox One. Its own shaders' draws
+    // (passthrough) take the whole block.
+    static const std::array<uint64_t, 4> kAllRegisters = {~0ull, ~0ull, ~0ull, ~0ull};
+    const std::array<uint64_t, 4>& vs_read = passthrough ? kAllRegisters : ConstantMaskFor(0, snap.vs_hash);
+    const std::array<uint64_t, 4>& ps_read = passthrough ? kAllRegisters : ConstantMaskFor(1, snap.ps_hash);
+    const auto covers = [](const std::array<uint64_t, 4>& written, const std::array<uint64_t, 4>& read) {
+      return ((read[0] & ~written[0]) | (read[1] & ~written[1]) | (read[2] & ~written[2]) |
+              (read[3] & ~written[3])) == 0;
+    };
+    if (last_vs && last_vs == snap.vs_constants.data() && covers(last_vs_written, vs_read)) {
       vs_slot = last_vs_slot;
     } else {
-      std::memcpy(static_cast<uint8_t*>(vs_constants_mapped_) + vs_slot * kVsSlotBytes,
-                  snap.vs_constants.data(), kVsConstantBytes);
+      CopyRegisters(static_cast<uint8_t*>(vs_constants_mapped_) + vs_slot * kVsSlotBytes,
+                    snap.vs_constants.data(), vs_read);
       last_vs = snap.vs_constants.data();
       last_vs_slot = vs_slot;
+      last_vs_written = vs_read;
     }
-    if (last_ps && last_ps == snap.ps_constants.data()) {
+    if (last_ps && last_ps == snap.ps_constants.data() && covers(last_ps_written, ps_read)) {
       ps_slot = last_ps_slot;
     } else {
-      std::memcpy(static_cast<uint8_t*>(ps_constants_mapped_) + ps_slot * kPsSlotBytes,
-                  snap.ps_constants.data(), kPsConstantBytes);
+      CopyRegisters(static_cast<uint8_t*>(ps_constants_mapped_) + ps_slot * kPsSlotBytes,
+                    snap.ps_constants.data(), ps_read);
       last_ps = snap.ps_constants.data();
       last_ps_slot = ps_slot;
+      last_ps_written = ps_read;
     }
     EncodeStage("binding textures (creating and uploading them)");
     alignas(16) uint8_t shared[kSharedConstantBytes];

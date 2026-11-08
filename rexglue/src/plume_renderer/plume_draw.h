@@ -1117,6 +1117,10 @@ class PlumeDrawContext {
   // Textures unused for a while given back, and the staging buffers of ones
   // not uploaded again lately (TrimGuestTextures, once a second).
   void TrimGuestTextures();
+  // The float constant registers a shader reads (its ShaderSourceInfo), with
+  // c0-c15 (and the vertex count, c51, for a vertex shader); all when unknown.
+  const std::array<uint64_t, 4>& ConstantMaskFor(int stage, uint64_t hash);
+  std::unordered_map<uint64_t, std::array<uint64_t, 4>, FastKeyHash> constant_masks_[2];
   std::vector<uint32_t> free_bindless_;
 
   std::array<plume::RenderInputSlot, 1> input_slots_{};
