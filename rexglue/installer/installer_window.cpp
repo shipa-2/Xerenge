@@ -422,6 +422,12 @@ InstallerWindow::InstallerWindow(QWidget* parent) : QWidget(parent) {
       tr("Redraw two of the car reflection's six sides a frame, in turn, rather than all six. "
          "Faster on a weak GPU; reflections lag a little."));
   hacks_layout->addWidget(reflection_split_box_);
+  no_rubber_band_box_ = new QCheckBox(tr("No AI rubber banding"));
+  no_rubber_band_box_->setToolTip(
+      tr("The AI races with its own car's top speed, not yours plus 30 mph when behind you, "
+         "and a wrecked AI car comes back where it crashed rather than next to you. AI cars "
+         "ahead still wait for you."));
+  hacks_layout->addWidget(no_rubber_band_box_);
   auto* resolution_row = new QHBoxLayout;
   resolution_row->addWidget(new QLabel(tr("Render resolution")));
   resolution_combo_ = new QComboBox;
@@ -812,6 +818,7 @@ void InstallerWindow::LoadSettings(const QString& path) {
   flag("packed_vertices", packed_vertices_box_);
   flag("culling", culling_box_);
   flag("reflection_split", reflection_split_box_);
+  flag("no_rubber_band", no_rubber_band_box_);
   if (values.contains("render_resolution")) {
     const QString value = values.value("render_resolution");
     const int index = resolution_combo_->findData(value);
@@ -943,6 +950,7 @@ void InstallerWindow::StartInstall() {
         << "packed_vertices = " << (packed_vertices_box_->isChecked() ? "true" : "false") << "\n"
         << "culling = " << (culling_box_->isChecked() ? "true" : "false") << "\n"
         << "reflection_split = " << (reflection_split_box_->isChecked() ? "true" : "false") << "\n"
+        << "no_rubber_band = " << (no_rubber_band_box_->isChecked() ? "true" : "false") << "\n"
         << "render_resolution = "
         << (resolution_combo_->currentData().toString() == "custom"
                 ? resolution_custom_edit_->text().trimmed()
