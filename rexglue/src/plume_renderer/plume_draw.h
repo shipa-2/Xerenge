@@ -203,6 +203,31 @@ class SharedWords {
     last.words_ = std::move(fresh);
   }
 
+  // AssignFresh, only the float registers (4 words each) set in mask: the rest
+  // of the block is left as the pool had it - what no shader of the draw reads.
+  // A whole 4 KB block a draw was most of the title thread's memcpy.
+  void AssignFreshMasked(const uint32_t* src, SharedWords& last, const std::array<uint64_t, 4>& mask) {
+    auto fresh = std::allocate_shared_for_overwrite<Words>(PooledAllocator<Words>{});
+    uint32_t* dst = fresh->data();
+    uint32_t reg = 0;
+    while (reg < N / 4 && reg < 256) {
+      const uint64_t word = mask[reg >> 6] >> (reg & 63);
+      if (word == 0) {
+        reg = (reg | 63) + 1;
+        continue;
+      }
+      reg += uint32_t(__builtin_ctzll(word));
+      uint32_t end = reg;
+      while (end < N / 4 && end < 256 && ((mask[end >> 6] >> (end & 63)) & 1u)) {
+        ++end;
+      }
+      std::memcpy(dst + reg * 4, src + reg * 4, size_t(end - reg) * 16);
+      reg = end;
+    }
+    words_ = fresh;
+    last.words_ = std::move(fresh);
+  }
+
   // last's block, known to hold the same words.
   void ShareWith(const SharedWords& last) { words_ = last.words_; }
 

@@ -1252,15 +1252,29 @@ void PlumeGraphicsSystem::PublishDrawSnapshot(uint32_t prim_type, uint32_t sourc
         // last blocks: copied with the comparison, an unchanged block is shared
         // without a 4 KB memcmp and a changed one copied without one - with the
         // stores of a full copy, a fifth of the title's thread in a race.
+        // The snapshot's block holds only the registers its shaders read, so
+        // an unchanged one is shared only if it holds all this draw reads.
+        const auto covers = [](const std::array<uint64_t, 4>& held, const std::array<uint64_t, 4>& need) {
+          return ((need[0] & ~held[0]) | (need[1] & ~held[1]) | (need[2] & ~held[2]) |
+                  (need[3] & ~held[3])) == 0;
+        };
+        const std::array<uint64_t, 4> vs_mask = ConstantMask(0, snap.vs_hash);
+        const std::array<uint64_t, 4> ps_mask = ConstantMask(1, snap.ps_hash);
         if (CopyDeviceRegistersChanged(memory_, device_vs_scratch_.data(), d3d_device,
-                                       kD3DVsFloatOffset, ConstantMask(0, snap.vs_hash))) {
-          snap.vs_constants.AssignFresh(device_vs_scratch_.data(), last_device_vs_constants_);
+                                       kD3DVsFloatOffset, vs_mask) ||
+            !covers(last_device_vs_written_, vs_mask)) {
+          snap.vs_constants.AssignFreshMasked(device_vs_scratch_.data(), last_device_vs_constants_,
+                                              vs_mask);
+          last_device_vs_written_ = vs_mask;
         } else {
           snap.vs_constants.ShareWith(last_device_vs_constants_);
         }
         if (CopyDeviceRegistersChanged(memory_, device_ps_scratch_.data(), d3d_device,
-                                       kD3DPsFloatOffset, ConstantMask(1, snap.ps_hash))) {
-          snap.ps_constants.AssignFresh(device_ps_scratch_.data(), last_device_ps_constants_);
+                                       kD3DPsFloatOffset, ps_mask) ||
+            !covers(last_device_ps_written_, ps_mask)) {
+          snap.ps_constants.AssignFreshMasked(device_ps_scratch_.data(), last_device_ps_constants_,
+                                              ps_mask);
+          last_device_ps_written_ = ps_mask;
         } else {
           snap.ps_constants.ShareWith(last_device_ps_constants_);
         }

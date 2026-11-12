@@ -245,6 +245,10 @@ class PlumeGraphicsSystem final : public system::IGraphicsSystem {
   std::array<uint32_t, 1024> device_vs_scratch_ = {};
   std::array<uint32_t, 1024> device_ps_scratch_ = {};
   std::array<uint32_t, 192> device_fetch_scratch_ = {};
+  // The registers the last blocks above were filled with (AssignFreshMasked):
+  // a draw shares one only if it holds every register that draw reads.
+  std::array<uint64_t, 4> last_device_vs_written_ = {};
+  std::array<uint64_t, 4> last_device_ps_written_ = {};
   // The float constant registers the last vertex (0) and pixel (1) shader read.
   const std::array<uint64_t, 4>& ConstantMask(int stage, uint64_t hash);
   uint64_t constant_mask_hash_[2] = {0, 0};
