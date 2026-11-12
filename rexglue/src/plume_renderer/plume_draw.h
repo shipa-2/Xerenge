@@ -88,6 +88,73 @@ struct FastKeyHash {
   }
 };
 
+// Recycled blocks of one size for SharedWords: a draw's fetch constants (and
+// often its float constants) take a fresh block, made on the title's thread
+// and freed on the present thread a frame later - the allocator's work was
+// about a tenth of the title's thread in a race. A short spinlock guards the
+// list: two threads, and only a push or a pop under it.
+template <size_t Bytes>
+class BlockPool {
+ public:
+  static BlockPool& Get() {
+    static BlockPool pool;
+    return pool;
+  }
+  void* Take() {
+    while (lock_.test_and_set(std::memory_order_acquire)) {
+    }
+    void* block = nullptr;
+    if (!free_.empty()) {
+      block = free_.back();
+      free_.pop_back();
+    }
+    lock_.clear(std::memory_order_release);
+    return block ? block : ::operator new(Bytes);
+  }
+  void Give(void* block) {
+    while (lock_.test_and_set(std::memory_order_acquire)) {
+    }
+    const bool kept = free_.size() < kKeep;
+    if (kept) {
+      free_.push_back(block);
+    }
+    lock_.clear(std::memory_order_release);
+    if (!kept) {
+      ::operator delete(block);
+    }
+  }
+
+ private:
+  static constexpr size_t kKeep = 8192;
+  BlockPool() { free_.reserve(kKeep); }
+  std::atomic_flag lock_ = ATOMIC_FLAG_INIT;
+  std::vector<void*> free_;
+};
+
+// The allocator std::allocate_shared takes, single objects from BlockPool.
+template <typename T>
+struct PooledAllocator {
+  using value_type = T;
+  PooledAllocator() = default;
+  template <typename U>
+  PooledAllocator(const PooledAllocator<U>&) {}
+  T* allocate(size_t n) {
+    return static_cast<T*>(n == 1 ? BlockPool<sizeof(T)>::Get().Take()
+                                  : ::operator new(n * sizeof(T)));
+  }
+  void deallocate(T* p, size_t n) {
+    if (n == 1) {
+      BlockPool<sizeof(T)>::Get().Give(p);
+    } else {
+      ::operator delete(p);
+    }
+  }
+  template <typename U>
+  bool operator==(const PooledAllocator<U>&) const { return true; }
+  template <typename U>
+  bool operator!=(const PooledAllocator<U>&) const { return false; }
+};
+
 // A draw's constant words, shared between copies of its snapshot and copied
 // only when one of them is written. A snapshot carries 9 KB of these, and a
 // thousand snapshots a frame were copied three and four times over - into the
@@ -99,11 +166,15 @@ template <size_t N>
 class SharedWords {
  public:
   using Words = std::array<uint32_t, N>;
+  template <typename... Args>
+  static std::shared_ptr<Words> MakeWords(Args&&... args) {
+    return std::allocate_shared<Words>(PooledAllocator<Words>{}, std::forward<Args>(args)...);
+  }
 
   SharedWords() : words_(Zeroes()) {}
-  SharedWords(const Words& words) : words_(std::make_shared<Words>(words)) {}
+  SharedWords(const Words& words) : words_(MakeWords(words)) {}
   SharedWords& operator=(const Words& words) {
-    words_ = std::make_shared<Words>(words);
+    words_ = MakeWords(words);
     return *this;
   }
   operator Words() const { return *words_; }
@@ -117,7 +188,7 @@ class SharedWords {
       words_ = last.words_;
       return;
     }
-    auto fresh = std::make_shared<Words>();
+    auto fresh = MakeWords();
     std::memcpy(fresh->data(), src, sizeof(Words));
     words_ = fresh;
     last.words_ = std::move(fresh);
@@ -126,7 +197,7 @@ class SharedWords {
   // A fresh block of the words at src, known to differ from last's; last then
   // follows it. AssignShared without the compare.
   void AssignFresh(const uint32_t* src, SharedWords& last) {
-    auto fresh = std::make_shared<Words>();
+    auto fresh = MakeWords();
     std::memcpy(fresh->data(), src, sizeof(Words));
     words_ = fresh;
     last.words_ = std::move(fresh);
@@ -157,14 +228,14 @@ class SharedWords {
 
  private:
   static const std::shared_ptr<Words>& Zeroes() {
-    static const std::shared_ptr<Words> zeroes = std::make_shared<Words>();
+    static const std::shared_ptr<Words> zeroes = MakeWords();
     return zeroes;
   }
   // Every snapshot starts on the shared zeroes, so the first write always
   // copies, and a fresh one is written by the thread that owns it alone.
   void Detach() {
     if (words_ == Zeroes() || words_.use_count() != 1) {
-      words_ = std::make_shared<Words>(*words_);
+      words_ = MakeWords(*words_);
     }
   }
 

@@ -388,6 +388,15 @@ void Trace(std::string entry) {
   }
 }
 
+// Trace with its line formatted only while a frame is being traced: formatted
+// first, every draw built a string nobody kept - 4.6% of the title's thread.
+#define TRACEF(...)                                      \
+  do {                                                   \
+    if (g_tracing.load(std::memory_order_relaxed)) {     \
+      Trace(fmt::format(__VA_ARGS__));                   \
+    }                                                    \
+  } while (0)
+
 void TraceSwap() {
   static const uint64_t wanted = [] {
     const char* v = std::getenv("XERENGE_TRACE_FRAME");
@@ -1049,7 +1058,7 @@ REX_HOOK_RAW(sub_8238B0F0) {
 // draws, and the texture's fetch constant (+0x10, base in the second word)
 // says where the GPU will later read it from.
 REX_HOOK_RAW(sub_82387920) {
-  Trace(fmt::format("Resolve flags={:X} dest={:08X}", ctx.r4.u32, ctx.r6.u32 >= 0x10000000u ? GpuPhysical(GuestWord(ctx.r6.u32 + 0x14) & 0xFFFFF000u) : 0u));
+  TRACEF("Resolve flags={:X} dest={:08X}", ctx.r4.u32, ctx.r6.u32 >= 0x10000000u ? GpuPhysical(GuestWord(ctx.r6.u32 + 0x14) & 0xFFFFF000u) : 0u);
   if (RenderTargetsFromDirect3D()) {
     if (auto* graphics = ActiveGraphicsSystem()) {
       const uint32_t flags = ctx.r4.u32;
@@ -1073,7 +1082,7 @@ REX_HOOK_RAW(sub_82387920) {
 // D3DDevice_ClearF(device, flags, count, rects, color, float z, stencil). The z
 // arrives in f1, the flags in r4: 0x10 is depth on this console.
 REX_HOOK_RAW(D3DDevice_ClearF) {
-  Trace(fmt::format("Clear flags={:X}", ctx.r4.u32));
+  TRACEF("Clear flags={:X}", ctx.r4.u32);
   // Clearing the reflection or glow target must not reach the frame's depth
   // buffer - there is only one here, and it would be wiped mid-scene.
   uint32_t target = 0;
@@ -1122,7 +1131,7 @@ REX_HOOK_RAW(D3DDevice_ClearF) {
 }
 
 REX_HOOK_RAW(D3DDevice_DrawIndexedVertices) {
-  Trace(fmt::format("DrawIndexed prim={} rt={:08X}", ctx.r4.u32, CurrentRenderTarget()));
+  TRACEF("DrawIndexed prim={} rt={:08X}", ctx.r4.u32, CurrentRenderTarget());
   xerenge::TraceInterfaceDraw("DrawIndexed", uint32_t(ctx.lr), ctx.r1.u32, base);
   // The declaration read where it is used, so the stride that goes with it is
   // known. One sample says little; several with different strides pin down how
@@ -1418,7 +1427,7 @@ REX_HOOK_RAW(D3DDevice_SetTexture) {
 }
 
 REX_HOOK_RAW(D3DDevice_SetRenderTarget) {
-  Trace(fmt::format("SetRenderTarget slot={} {:08X}", ctx.r4.u32, ctx.r5.u32));
+  TRACEF("SetRenderTarget slot={} {:08X}", ctx.r4.u32, ctx.r5.u32);
   NoteD3D(6, ctx);
   // Every distinct surface the title renders into, once, with its size. The
   // scene is drawn into several - the frame itself and smaller ones for
@@ -1475,7 +1484,7 @@ REX_HOOK_RAW(D3DDevice_SetRenderTarget) {
 }
 
 REX_HOOK_RAW(D3DDevice_DrawVertices) {
-  Trace(fmt::format("DrawVertices prim={} rt={:08X}", ctx.r4.u32, CurrentRenderTarget()));
+  TRACEF("DrawVertices prim={} rt={:08X}", ctx.r4.u32, CurrentRenderTarget());
   xerenge::TraceInterfaceDraw("DrawVertices", uint32_t(ctx.lr), ctx.r1.u32, base);
   NoteD3D(7, ctx);
   DescribeDraw("DrawVertices", ctx.r4.u32, 0, ctx.r5.u32, ctx.r6.u32);
@@ -1525,7 +1534,7 @@ REX_HOOK_RAW(D3DDevice_DrawVertices) {
 // The vertices themselves are written after it returns, and are read when the
 // frame is encoded, by which time they are there.
 REX_HOOK_RAW(D3DDevice_BeginVertices) {
-  Trace(fmt::format("BeginVertices prim={} n={} rt={:08X}", ctx.r4.u32, ctx.r5.u32, CurrentRenderTarget()));
+  TRACEF("BeginVertices prim={} n={} rt={:08X}", ctx.r4.u32, ctx.r5.u32, CurrentRenderTarget());
   xerenge::TraceInterfaceDraw("BeginVertices", uint32_t(ctx.lr), ctx.r1.u32, base);
   NoteD3D(8, ctx);
   const uint32_t primitive_type = ctx.r4.u32;
@@ -1577,7 +1586,7 @@ REX_HOOK_RAW(D3DDevice_BeginTiling) {
 }
 
 REX_HOOK_RAW(D3DDevice_EndTiling) {
-  Trace(fmt::format("EndTiling dest={:08X}", ctx.r6.u32));
+  TRACEF("EndTiling dest={:08X}", ctx.r6.u32);
   NoteD3D(10, ctx);
   // EndTiling(device, flags, resolve rects, destination texture, clear colour,
   // ...) resolves the tiled frame into its destination itself, tile by tile -
