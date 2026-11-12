@@ -18,5 +18,6 @@ xer_as_local = true
 reserved_as_local = true
 cr_as_local = true
 non_argument_as_local = true
-# Not non_volatile_as_local yet: on the Xbox One the title's thread then spun in
-# a loop at 100% in the garage and in a race (2026-11-12); the culprit is open.
+# non_volatile_as_local: its Xbox One hang (the title's thread spinning for a job
+# worker) was SEH funclets reading r12 from a zeroed local, fixed in the SDK.
+non_volatile_as_local = true
