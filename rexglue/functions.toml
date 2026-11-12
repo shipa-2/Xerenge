@@ -88,3 +88,7 @@
 # movies never use it, the settings pages (settings_movie.cpp) did, and the
 # game stopped on "Call to invalid or unregistered function".
 0x8243C4A0 = { size = 0x38 }
+
+# RenderObjects keeps its non-volatile registers in PPCContext (non_volatile_as_local):
+# widescreen.cpp's element hooks read its r31 - the list node being drawn - there.
+0x82353218 = { size = 0x150, share_registers = true }
