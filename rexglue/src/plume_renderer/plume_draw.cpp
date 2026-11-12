@@ -6895,8 +6895,12 @@ void PlumeDrawContext::BindGuestTextures(plume::RenderCommandList* list,
       uint64_t writes = 0;
       const uint8_t* mip_src = nullptr;
       size_t mip_size = 0;
+      // Without the write watch: every quarter's sample as hashed.
+      uint64_t quarters[4] = {};
     };
     std::vector<HashJob> jobs;
+    // Without the write watch: the textures to sample, the sample in .writes.
+    std::vector<HashJob> samples;
     std::unordered_set<uint64_t> queued;
     for (const GuestDrawSnapshot& snap : draws) {
       if (!snap.valid || snap.has_video_frame()) {
@@ -6991,32 +6995,52 @@ void PlumeDrawContext::BindGuestTextures(plume::RenderCommandList* list,
           // 6.8 ms of a race frame. The full hash, for an edit inside a page
           // that misses its sample, comes every 32nd frame (staggered by key):
           // every fourth was 2.3 ms.
-          const uint32_t quarter = uint32_t((frame_serial_ + (key >> 7)) & 3);
-          const uint64_t sample = QuarterSample(src, size, mip_src, mip_size, quarter);
-          // XERENGE_FULL_TEXTURE_HASH=1: every texture in full every frame, as before.
-          static const bool full_every_frame = std::getenv("XERENGE_FULL_TEXTURE_HASH") != nullptr;
-          if (auto known = texture_watch_.find(key);
-              !full_every_frame && known != texture_watch_.end() && ((key ^ frame_serial_) & 31) != 0) {
-            TextureWatch& w = known->second;
-            if (!((w.sampled >> quarter) & 1u)) {
-              // This quarter's first sample since the hash: taken as unchanged,
-              // as the next full hash would say otherwise.
-              w.samples[quarter] = sample;
-              w.sampled |= uint8_t(1u << quarter);
-            }
-            if (w.samples[quarter] == sample) {
-              frame_hashes.emplace(key, w.hash);
-              continue;
-            }
-          }
-          jobs.push_back({key, src, size, 0, sample, mip_src, mip_size});
+          // Sampled below, on the worker threads: a cache miss a page, one
+          // texture after another, was most of the textures' time on the
+          // Xbox One.
+          samples.push_back({key, src, size, 0, 0, mip_src, mip_size});
         }
+      }
+    }
+    if (!samples.empty()) {
+      EncodeStage("textures: sampling");
+      WorkerPool::Get().ParallelFor(samples.size(), [&](size_t i) {
+        HashJob& s = samples[i];
+        s.writes = QuarterSample(s.src, s.size, s.mip_src, s.mip_size,
+                                 uint32_t((frame_serial_ + (s.key >> 7)) & 3));
+      });
+      // XERENGE_FULL_TEXTURE_HASH=1: every texture in full every frame, as before.
+      static const bool full_every_frame = std::getenv("XERENGE_FULL_TEXTURE_HASH") != nullptr;
+      for (const HashJob& s : samples) {
+        const uint64_t key = s.key;
+        const uint32_t quarter = uint32_t((frame_serial_ + (key >> 7)) & 3);
+        const uint64_t sample = s.writes;
+        if (auto known = texture_watch_.find(key);
+            !full_every_frame && known != texture_watch_.end() && ((key ^ frame_serial_) & 31) != 0) {
+          TextureWatch& w = known->second;
+          if (!((w.sampled >> quarter) & 1u)) {
+            // This quarter's first sample since the hash: taken as unchanged,
+            // as the next full hash would say otherwise.
+            w.samples[quarter] = sample;
+            w.sampled |= uint8_t(1u << quarter);
+          }
+          if (w.samples[quarter] == sample) {
+            frame_hashes.emplace(key, w.hash);
+            continue;
+          }
+        }
+        jobs.push_back(s);
       }
     }
     EncodeStage("textures: hashing");
     WorkerPool::Get().ParallelFor(jobs.size(), [&](size_t i) {
-      jobs[i].hash = TextureContentHash(jobs[i].src, jobs[i].size, jobs[i].mip_src,
-                                        jobs[i].mip_size);
+      HashJob& job = jobs[i];
+      job.hash = TextureContentHash(job.src, job.size, job.mip_src, job.mip_size);
+      if (!page_writes_) {
+        for (uint32_t q = 0; q < 4; ++q) {
+          job.quarters[q] = QuarterSample(job.src, job.size, job.mip_src, job.mip_size, q);
+        }
+      }
     });
     EncodeStage("textures: binding");
     frame_hashes.reserve(frame_hashes.size() + jobs.size());
@@ -7028,7 +7052,7 @@ void PlumeDrawContext::BindGuestTextures(plume::RenderCommandList* list,
         // Hashed now: every quarter's sample as the texture stands.
         TextureWatch& w = texture_watch_[job.key];
         for (uint32_t q = 0; q < 4; ++q) {
-          w.samples[q] = QuarterSample(job.src, job.size, job.mip_src, job.mip_size, q);
+          w.samples[q] = job.quarters[q];
         }
         w.sampled = 0xF;
       }
