@@ -37,6 +37,8 @@ set(BURNOUT_SOURCES
     src/online_stub.cpp
     src/online_lobby.cpp
     src/game_timing.cpp
+    src/ai_pacing.cpp
+    src/ai_watch.cpp
     src/plume_d3d_hooks.cpp
     src/widescreen.cpp
 )

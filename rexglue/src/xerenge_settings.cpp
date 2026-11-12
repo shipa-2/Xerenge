@@ -29,6 +29,8 @@ void XerengeSetMenuAntiAliasing(int32_t mode);
 void XerengeSetMenuSharpening(float strength);
 void XerengeSetMenuBloom(bool on);
 void XerengeSetMenuMotionBlur(bool on);
+void XerengeSetNoRubberBand(bool on);  // ai_pacing.cpp
+bool XerengeNoRubberBand();
 
 namespace xerenge::settings {
 namespace {
@@ -265,6 +267,12 @@ const std::vector<Setting>& Settings() {
     s.push_back({24, kHacks, "EARLY SUBMIT", "early_submit", OffOn(), 1});
     s.push_back({25, kHacks, "PACKED VERTICES", "packed_vertices", OffOn(), 1});
     s.push_back({26, kHacks, "REFLECTIONS IN TURNS", "reflection_split", OffOn(), 0});
+    // The AI's catch-up taken out (ai_pacing.cpp), at once.
+    Setting rubber_band{27, kHacks, "NO AI RUBBER BANDING", "no_rubber_band", OffOn(), 0};
+    rubber_band.restart = false;
+    rubber_band.live = [](int option) { XerengeSetNoRubberBand(option == 1); };
+    rubber_band.running = [] { return XerengeNoRubberBand() ? 1 : 0; };
+    s.push_back(rubber_band);
 
     s.push_back({30, kDebug, "DEBUG LOGS", "debug", OffOn(), 0});
     s.push_back({31, kDebug, "POWER MODE", "power_mode", {{"STOCK", "stock"}, {"PERFORMANCE", "performance"}}, 0});
@@ -486,6 +494,11 @@ void ApplyAtStart() {
 #else
     setenv("XERENGE_NO_RENDERDOC", "1", 1);
 #endif
+  }
+  // No AI rubber banding, from the conf as well as the environment (the
+  // launcher, run.sh --no-rubber-band): it is a row of the game's own.
+  if (ConfFlag("no_rubber_band", false)) {
+    XerengeSetNoRubberBand(true);
   }
   // The button icons, unless the command line chose them (run.sh --prompts=,
   // which also sets XERENGE_PROMPTS_ARG): the conf wins over what a restart

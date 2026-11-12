@@ -96,6 +96,11 @@
 #                       any shader, as it used to, instead of only what the
 #                       draw's shader reads (the default, a hack).
 #   ./run.sh --cull    plume culls the faces the title culls (experimental).
+#   ./run.sh --no-rubber-band
+#                       takes the catch-up out of the race AI (src/ai_pacing.cpp);
+#                       also no_rubber_band = true in xerenge.conf, or the HACKS
+#                       page. --ai-trace logs the AI's pacing for
+#                       tools/race_report.py.
 #   ./run.sh           runs on plume (librexgpu-plume.so), this project's
 #                       renderer, with the switches it is meant to run with
 #                       (as the installed launcher sets them); --plume is
@@ -217,6 +222,8 @@ for arg in "$@"; do
         --no-early-submit) ACQUIRE_FIRST=1 ;;
         --full-vertices) FULL_VERTICES=1 ;;
         --cull) CULL=1 ;;
+        --no-rubber-band) NO_RUBBER_BAND=1 ;;
+        --ai-trace) AI_TRACE=1 ;;
         --fps) FPS_SHOW=1 ;;
         --prompts=*) XERENGE_PROMPTS="${arg#--prompts=}"; XERENGE_PROMPTS_ARG=1; export XERENGE_PROMPTS XERENGE_PROMPTS_ARG ;;
         --power=*) POWER_MODE=${arg#*=} ;;
@@ -316,6 +323,8 @@ fi
 [ -n "$ACQUIRE_FIRST" ] && XERENGE_ACQUIRE_FIRST=1 && export XERENGE_ACQUIRE_FIRST
 [ -n "$FULL_VERTICES" ] && XERENGE_FULL_VERTICES=1 && export XERENGE_FULL_VERTICES
 [ -n "$CULL" ] && XERENGE_CULL=1 && export XERENGE_CULL
+[ -n "$NO_RUBBER_BAND" ] && XERENGE_NO_RUBBER_BAND=1 && export XERENGE_NO_RUBBER_BAND
+[ -n "$AI_TRACE" ] && XERENGE_AI_PACING_TRACE=1 && export XERENGE_AI_PACING_TRACE
 [ -n "$FPS_SHOW" ] && XERENGE_FPS_SHOW=1 && export XERENGE_FPS_SHOW
 [ -n "$POWER_MODE" ] && XERENGE_POWER_MODE=$POWER_MODE && export XERENGE_POWER_MODE
 # shellcheck disable=SC2086 # a list of options, split on purpose
