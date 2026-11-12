@@ -8311,12 +8311,6 @@ void PlumeDrawContext::EncodeDraws(plume::RenderCommandList* list,
   // garage walls, drawn after the car, painted straight over it. Direct3D
   // draws get the flipped range, as the console gives them; the interface
   // keeps the ordinary one.
-  bool viewport_flipped = false;
-  int32_t scissor_now[4] = {0, 0, int32_t(width), int32_t(height)};
-  int32_t viewport_x = 0;
-  int32_t viewport_y = 0;
-  uint32_t viewport_w = width;
-  uint32_t viewport_h = height;
   // A screen wider than 16:9 (XERENGE_ASPECT_16_9 unset): the scene is drawn
   // across all of it - widescreen.cpp widens the cameras to match - and the
   // interface keeps the console's 16:9 box in the middle, or it would stretch.
@@ -8363,52 +8357,392 @@ void PlumeDrawContext::EncodeDraws(plume::RenderCommandList* list,
       vh = std::min(th, height);
     }
   };
-  // The origin is signed: a menu's video zoomed to cover the frame starts
-  // above and left of it. The scissor stays on the frame.
-  auto use_viewport = [&](bool flipped, int32_t vx, int32_t vy, uint32_t vw, uint32_t vh) {
-    if (flipped == viewport_flipped && vx == viewport_x && vy == viewport_y && vw == viewport_w &&
-        vh == viewport_h) {
-      return;
+  // What a command list has bound and set, so that a draw repeating it does
+  // not bind or set it again: the frame's list has one, and so does each list
+  // a run of draws is recorded into on another thread. A pass break (around a
+  // copy) forgets the bindings.
+  struct RecordState {
+    plume::RenderCommandList* list = nullptr;
+    // The list the copies and the pass breaks go into, where the stage times
+    // and the stuck-encoder watchdog follow along.
+    bool main = true;
+    // The origin is signed: a menu's video zoomed to cover the frame starts
+    // above and left of it. The scissor stays on the frame.
+    bool viewport_flipped = false;
+    int32_t viewport_x = 0;
+    int32_t viewport_y = 0;
+    uint32_t viewport_w = 0;
+    uint32_t viewport_h = 0;
+    int32_t scissor_now[4] = {};
+    plume::RenderPipeline* bound_pipeline = nullptr;
+    // The last draw's slots and set, and what is bound: neighbouring draws often
+    // share textures, and then the set is neither looked up nor bound again.
+    DrawBindings last_bindings;
+    plume::RenderDescriptorSet* last_draw_set = nullptr;
+    uint64_t last_tables_changes = ~0ull;
+    plume::RenderDescriptorSet* bound_draw_set = nullptr;
+    uint32_t bound_offsets[3] = {~0u, ~0u, ~0u};
+    int bound_vertex_buffer = 0;  // 1 the frame's buffer, 2 the vertex cache
+    // The constant blocks the last draw wrote, for reuse by the next.
+    const uint32_t* last_vs = nullptr;
+    const uint32_t* last_ps = nullptr;
+    // And the registers each wrote (an unwritten one is whatever the slot held).
+    std::array<uint64_t, 4> last_vs_written = {}, last_ps_written = {};
+    uint32_t last_vs_slot = 0;
+    uint32_t last_ps_slot = 0;
+    alignas(16) uint8_t last_shared[kSharedConstantBytes];
+    bool have_last_shared = false;
+    uint32_t last_shared_slot = 0;
+    // Pipeline changes (for the debug-mode pass timings).
+    uint32_t binds = 0;
+    // A list that starts where another left off: the viewport and scissor are
+    // the frame's (as a reopened pass leaves them) and nothing is bound.
+    void Reset(uint32_t width, uint32_t height) {
+      viewport_flipped = false;
+      viewport_x = 0;
+      viewport_y = 0;
+      viewport_w = width;
+      viewport_h = height;
+      scissor_now[0] = 0;
+      scissor_now[1] = 0;
+      scissor_now[2] = int32_t(width);
+      scissor_now[3] = int32_t(height);
+      bound_pipeline = nullptr;
+      last_draw_set = nullptr;
+      last_tables_changes = ~0ull;
+      bound_draw_set = nullptr;
+      bound_offsets[0] = bound_offsets[1] = bound_offsets[2] = ~0u;
+      bound_vertex_buffer = 0;
+      last_vs = nullptr;
+      last_ps = nullptr;
+      have_last_shared = false;
     }
-    viewport_flipped = flipped;
-    viewport_x = vx;
-    viewport_y = vy;
-    viewport_w = vw;
-    viewport_h = vh;
-    list->setViewports(plume::RenderViewport(float(vx), float(vy), float(vw), float(vh),
-                                             flipped ? 1.0f : 0.0f, flipped ? 0.0f : 1.0f));
-    scissor_now[0] = std::max(vx, 0);
-    scissor_now[1] = std::max(vy, 0);
-    scissor_now[2] = std::min(vx + int32_t(vw), int32_t(width));
-    scissor_now[3] = std::min(vy + int32_t(vh), int32_t(height));
-    list->setScissors(
-        plume::RenderRect(scissor_now[0], scissor_now[1], scissor_now[2], scissor_now[3]));
   };
-  // What is bound, so that a draw repeating it does not bind it again. A
-  // pass break (around a copy) forgets both.
-  plume::RenderPipeline* bound_pipeline = nullptr;
-  // The last draw's slots and set, and what is bound: neighbouring draws often
-  // share textures, and then the set is neither looked up nor bound again.
-  DrawBindings last_bindings;
-  plume::RenderDescriptorSet* last_draw_set = nullptr;
-  uint64_t last_tables_changes = ~0ull;
-  plume::RenderDescriptorSet* bound_draw_set = nullptr;
-  uint32_t bound_offsets[3] = {~0u, ~0u, ~0u};
+  RecordState main_rs;
+  main_rs.list = list;
+  main_rs.Reset(width, height);
+  // The frame's list's state, by the names the copies and pass breaks use.
+  auto& viewport_flipped = main_rs.viewport_flipped;
+  auto& viewport_x = main_rs.viewport_x;
+  auto& viewport_y = main_rs.viewport_y;
+  auto& viewport_w = main_rs.viewport_w;
+  auto& viewport_h = main_rs.viewport_h;
+  auto& scissor_now = main_rs.scissor_now;
+  auto& bound_pipeline = main_rs.bound_pipeline;
+  auto& bound_draw_set = main_rs.bound_draw_set;
+  auto& bound_vertex_buffer = main_rs.bound_vertex_buffer;
   const auto tables_changes = [&] {
     const auto changes = [](const std::unique_ptr<BindlessTable>& t) { return t ? uint64_t(t->changes()) : 0; };
     return changes(texture_set_) + changes(volume_set_) + changes(cube_set_) + changes(sampler_set_);
   };
-  int bound_vertex_buffer = 0;  // 1 the frame's buffer, 2 the vertex cache
-  // The constant blocks the last draw wrote, for reuse by the next.
-  const uint32_t* last_vs = nullptr;
-  const uint32_t* last_ps = nullptr;
-  // And the registers each wrote (an unwritten one is whatever the slot held).
-  std::array<uint64_t, 4> last_vs_written = {}, last_ps_written = {};
-  uint32_t last_vs_slot = 0;
-  uint32_t last_ps_slot = 0;
-  alignas(16) uint8_t last_shared[kSharedConstantBytes];
-  bool have_last_shared = false;
-  uint32_t last_shared_slot = 0;
+  // A draw as encode_one settles it in draw order, for record_draw.
+  struct DrawRecord {
+    const GuestDrawSnapshot* snap = nullptr;
+    plume::RenderPipeline* pipeline = nullptr;
+    bool passthrough = true;
+    bool video_pipeline = false;
+    bool reads_copy = false;
+    bool is_video = false;
+    bool from_cache = false;
+    bool view_flipped = false;
+    uint32_t vertex_count = 0;
+    uint32_t slot = 0;
+    uint32_t segment_index = 0;
+    uint32_t layout_mask = 0;
+    uint32_t first = 0;
+    uint32_t grid_w = 0;
+    uint32_t grid_h = 0;
+    int32_t view_x = 0;
+    int32_t view_y = 0;
+    uint32_t view_w = 0;
+    uint32_t view_h = 0;
+    int32_t scissor[4] = {};
+    const float* packed_dst = nullptr;
+    const std::array<uint64_t, 4>* vs_read = nullptr;
+    const std::array<uint64_t, 4>* ps_read = nullptr;
+  };
+  // One planned draw (see the end of encode_one) into st.list. Reads what the
+  // draws are given and writes only the draw's own slots and st: the record
+  // halves of a run of draws can go on several threads, a list each.
+  auto record_draw = [&](const DrawRecord& rec, RecordState& st) {
+    const GuestDrawSnapshot& snap = *rec.snap;
+    plume::RenderCommandList* const list = st.list;
+    plume::RenderPipeline* const pipeline = rec.pipeline;
+    const bool passthrough = rec.passthrough;
+    const bool video_pipeline = rec.video_pipeline;
+    const bool reads_copy = rec.reads_copy;
+    const bool is_video = rec.is_video;
+    const uint32_t vertex_count = rec.vertex_count;
+    const std::array<uint64_t, 4>& vs_read = *rec.vs_read;
+    const std::array<uint64_t, 4>& ps_read = *rec.ps_read;
+    // Each block goes into this draw's slot unless it is the same as the one
+    // the last draw wrote, which is then used again: neighbouring draws often
+    // share their pixel constants, and every block written is 4 KB going into
+    // memory the GPU reads.
+    uint32_t vs_slot = rec.slot;
+    uint32_t ps_slot = rec.slot;
+    uint32_t shared_slot = rec.slot;
+    const auto covers = [](const std::array<uint64_t, 4>& written, const std::array<uint64_t, 4>& read) {
+      return ((read[0] & ~written[0]) | (read[1] & ~written[1]) | (read[2] & ~written[2]) |
+              (read[3] & ~written[3])) == 0;
+    };
+    if (st.last_vs && st.last_vs == snap.vs_constants.data() && covers(st.last_vs_written, vs_read)) {
+      vs_slot = st.last_vs_slot;
+    } else {
+      CopyRegisters(static_cast<uint8_t*>(vs_constants_mapped_) + vs_slot * kVsSlotBytes,
+                    snap.vs_constants.data(), vs_read);
+      st.last_vs = snap.vs_constants.data();
+      st.last_vs_slot = vs_slot;
+      st.last_vs_written = vs_read;
+    }
+    if (st.last_ps && st.last_ps == snap.ps_constants.data() && covers(st.last_ps_written, ps_read)) {
+      ps_slot = st.last_ps_slot;
+    } else {
+      CopyRegisters(static_cast<uint8_t*>(ps_constants_mapped_) + ps_slot * kPsSlotBytes,
+                    snap.ps_constants.data(), ps_read);
+      st.last_ps = snap.ps_constants.data();
+      st.last_ps_slot = ps_slot;
+      st.last_ps_written = ps_read;
+    }
+    if (st.main) {
+      EncodeStage("binding textures (creating and uploading them)");
+    }
+    alignas(16) uint8_t shared[kSharedConstantBytes];
+    {
+      // The half-pixel offset against what the draw is drawn into: a smaller
+      // target's own size, in its corner (native_extent), as its viewport is.
+      // Against the whole frame it came out at 0.5 - 0.1 x 12 = -0.7 of a
+      // 3840-wide frame's pixels rather than half of one of the bloom's 320,
+      // and the bloom's fifty-odd blur passes, each over the last, walked
+      // the glare some 40 pixels up and to the left: a faint copy of every
+      // pole beside it, sliding as the pole moved across the screen.
+      const uint32_t grid_w = rec.grid_w;
+      const uint32_t grid_h = rec.grid_h;
+      FillSharedConstants(shared, snap, grid_w, grid_h);
+      // XERENGE_COMPOSITE_SHIFT=<pixels>: another half-pixel offset for the
+      // pass that draws the frame's copy over the whole frame - the composite
+      // of the 3D picture - in the frame's own pixels. The title gives that
+      // pass texture coordinates from 0 to 1 and no half texel (its bloom's
+      // blur adds one where it wants a pixel as it is), so Direct3D 9's pixel
+      // centres put every sample on the corner between four of the copy's
+      // pixels: on the console the composite is also a 2x2 average of the
+      // scene. The copy is kept at the frame's size here, and the offset above
+      // - chosen for the interface, which is laid out on the guest's grid -
+      // leaves each sample 0.5 - 0.1 f of a pixel off its own: 0.35 at 1080p,
+      // 0.3 at 1440p, 0.2 at 2160p, a faint soft focus over the whole scene
+      // that is neither the console's nor none. 0 reads every pixel of the
+      // copy on its centre, the sharpest; 0.5 is the console's 2x2 average at
+      // the frame's resolution. Unset it is 0: above 720p the picture is
+      // wanted sharp, and the soft focus was nobody's choice. "old" leaves the
+      // offset above as it is; at 720p and below nothing changes either way.
+      static const float composite_shift = [] {
+        const char* v = std::getenv("XERENGE_COMPOSITE_SHIFT");
+        if (!v || !*v) {
+          return 0.0f;
+        }
+        return std::strcmp(v, "old") == 0 ? -1.0f : std::strtof(v, nullptr);
+      }();
+      if (composite_shift >= 0.0f && reads_copy && !is_video && grid_w == width &&
+          grid_h == height) {
+        const auto fetch = TextureFetchAt(snap, 0);
+        const auto copy = resolved_targets_.find(fetch.base_address << 12);
+        if (copy != resolved_targets_.end() && copy->second.width == width &&
+            copy->second.height == height && width > fetch.size_2d.width + 1u) {
+          const float half_x = 2.0f * composite_shift / float(width);
+          const float half_y = 2.0f * composite_shift / float(height);
+          std::memcpy(shared + 280, &half_x, 4);
+          std::memcpy(shared + 284, &half_y, 4);
+        }
+      }
+    }
+    if (st.have_last_shared && std::memcmp(st.last_shared, shared, kSharedConstantBytes) == 0) {
+      shared_slot = st.last_shared_slot;
+    } else {
+      std::memcpy(static_cast<uint8_t*>(shared_constants_mapped_) + shared_slot * kSharedSlotBytes,
+                  shared, kSharedConstantBytes);
+      std::memcpy(st.last_shared, shared, kSharedConstantBytes);
+      st.have_last_shared = true;
+      st.last_shared_slot = shared_slot;
+    }
+    if (st.main) {
+      EncodeStage("recording the draw");
+    }
+
+    const uint32_t constant_offsets[3] = {vs_slot * kVsSlotBytes, ps_slot * kPsSlotBytes,
+                                          shared_slot * kSharedSlotBytes};
+    // The draw's sampler slots. The title's shaders read slot n for their sampler
+    // register n (the indices FillSharedConstants worked out); the passthrough
+    // shader reads its one texture from slot 0, the video shader its planes from
+    // slots 0-2.
+    DrawBindings bindings;
+    if (video_pipeline) {
+      const uint32_t u = VideoPlaneSlot(snap.video_u_key);
+      bindings.tex2d[0] = VideoPlaneSlot(snap.video_key);
+      bindings.tex2d[1] = u;
+      bindings.tex2d[2] = snap.video_packed_uv ? u : VideoPlaneSlot(snap.video_v_key);
+    } else if (passthrough) {
+      bindings.tex2d[0] = BindlessForTexture(snap);
+    } else {
+      const auto* words = reinterpret_cast<const uint32_t*>(shared);
+      for (uint32_t s = 0; s < kDrawSlots; ++s) {
+        bindings.tex2d[s] = words[s];
+        bindings.layered[s] = words[16 + s];
+        bindings.cube[s] = words[32 + s];
+        bindings.sampler[s] = words[48 + s];
+      }
+    }
+    if (!PlumeUsesVulkan()) {
+      // D3D12: the bindless sets are bound for the frame; the shaders find
+      // their textures through the indices in the shared constants, and the
+      // constants come through root CBVs at this draw's offsets.
+      if (std::memcmp(constant_offsets, st.bound_offsets, sizeof(st.bound_offsets)) != 0 ||
+          st.bound_draw_set == nullptr) {
+        list->setGraphicsRootDescriptor(
+            plume::RenderBufferReference(vs_constants_.get(), constant_offsets[0]), 0);
+        list->setGraphicsRootDescriptor(
+            plume::RenderBufferReference(ps_constants_.get(), constant_offsets[1]), 1);
+        list->setGraphicsRootDescriptor(
+            plume::RenderBufferReference(shared_constants_.get(), constant_offsets[2]), 2);
+        std::memcpy(st.bound_offsets, constant_offsets, sizeof(st.bound_offsets));
+        st.bound_draw_set = d3d_sets_[0].get();
+      }
+    }
+    const uint64_t changes_now = tables_changes();
+    plume::RenderDescriptorSet* draw_set = nullptr;
+    if (!PlumeUsesVulkan()) {
+      draw_set = d3d_sets_[0].get();
+    } else if (st.last_draw_set && changes_now == st.last_tables_changes &&
+        std::memcmp(&bindings, &st.last_bindings, sizeof(bindings)) == 0) {
+      draw_set = st.last_draw_set;
+    } else {
+      draw_set = DrawSetFor(bindings);
+      st.last_bindings = bindings;
+      st.last_draw_set = draw_set;
+      st.last_tables_changes = changes_now;
+    }
+    if (!draw_set) {
+      static std::atomic<uint32_t> shown{0};
+      if (shown.fetch_add(1, std::memory_order_relaxed) < 24) {
+        REXLOG_INFO("plume: draw skipped (no descriptor set) vs={:016X} ps={:016X} prim={} indices={}",
+                    snap.vs_hash, snap.ps_hash, snap.prim_type, snap.num_indices);
+      }
+      return;
+    }
+    if (draw_set != st.bound_draw_set || std::memcmp(constant_offsets, st.bound_offsets, sizeof(st.bound_offsets)) != 0) {
+      list->setGraphicsDescriptorSetDynamic(draw_set, 0, constant_offsets, 3);
+      st.bound_draw_set = draw_set;
+      std::memcpy(st.bound_offsets, constant_offsets, sizeof(st.bound_offsets));
+    }
+    if (pipeline != st.bound_pipeline) {
+      list->setPipeline(pipeline);
+      st.bound_pipeline = pipeline;
+      ++st.binds;
+    }
+    if (!passthrough && snap.poly_offset) {
+      // Xenos keeps the slope term in 1/16 subpixel units and the constant in
+      // depth range units; Vulkan wants the slope as is and the constant in
+      // steps of the depth format - 2^-24 around the near end, where the
+      // reversed depth of the road under the car sits.
+      list->setDepthBias(snap.poly_offset_offset * 16777216.0f, 0.0f,
+                         snap.poly_offset_scale * (1.0f / 16.0f));
+    }
+    if (rec.view_flipped != st.viewport_flipped || rec.view_x != st.viewport_x ||
+        rec.view_y != st.viewport_y || rec.view_w != st.viewport_w || rec.view_h != st.viewport_h) {
+      st.viewport_flipped = rec.view_flipped;
+      st.viewport_x = rec.view_x;
+      st.viewport_y = rec.view_y;
+      st.viewport_w = rec.view_w;
+      st.viewport_h = rec.view_h;
+      list->setViewports(plume::RenderViewport(float(rec.view_x), float(rec.view_y),
+                                               float(rec.view_w), float(rec.view_h),
+                                               rec.view_flipped ? 1.0f : 0.0f,
+                                               rec.view_flipped ? 0.0f : 1.0f));
+      // Setting the viewport resets the scissor to it (use_viewport did so).
+      st.scissor_now[0] = std::max(rec.view_x, 0);
+      st.scissor_now[1] = std::max(rec.view_y, 0);
+      st.scissor_now[2] = std::min(rec.view_x + int32_t(rec.view_w), int32_t(width));
+      st.scissor_now[3] = std::min(rec.view_y + int32_t(rec.view_h), int32_t(height));
+      list->setScissors(plume::RenderRect(st.scissor_now[0], st.scissor_now[1],
+                                          st.scissor_now[2], st.scissor_now[3]));
+    }
+    if (rec.scissor[0] != st.scissor_now[0] || rec.scissor[1] != st.scissor_now[1] ||
+        rec.scissor[2] != st.scissor_now[2] || rec.scissor[3] != st.scissor_now[3]) {
+      list->setScissors(plume::RenderRect(rec.scissor[0], rec.scissor[1], rec.scissor[2],
+                                          rec.scissor[3]));
+      std::memcpy(st.scissor_now, rec.scissor, sizeof(st.scissor_now));
+    }
+    // Debug mode: the fragments this draw shades, counted on the GPU.
+    uint32_t fragment_query = ~0u;
+    if (pass && pass->begin_fragment_count) {
+      FragmentCountLabel label;
+      label.vs_hash = snap.vs_hash;
+      label.ps_hash = snap.ps_hash;
+      label.pass = rec.segment_index;
+      label.vertices = vertex_count;
+      label.depth_control = snap.depth_control;
+      label.blend_control = snap.blend_control;
+      label.target_width = snap.d3d_target_width;
+      label.target_height = snap.d3d_target_height;
+      fragment_query = pass->begin_fragment_count(pass->context, label);
+    }
+    if (rec.layout_mask != kFullLayoutMask) {
+      // Packed: the draw's vertices start at the front of its room, and the
+      // stride is the pipeline's, so the buffer is bound at that room.
+      const bool cached = rec.from_cache;
+      const uint32_t first = rec.first;
+      const plume::RenderVertexBufferView view(
+          plume::RenderBufferReference(cached ? cache_vb_.get() : dummy_vb_.get(),
+                                       uint64_t(first) * kVertexStrideBytes),
+          (cached ? kCacheVertexCount : kDummyVertexCount) * kVertexStrideBytes -
+              first * kVertexStrideBytes);
+      // The packed stride, as the pipeline declares it. Vulkan takes the
+      // stride from the pipeline and ignores this; D3D12 takes it from the
+      // binding, and with the full layout's every vertex after the first was
+      // read from the wrong place - meshes stretched to a corner.
+      const plume::RenderInputSlot packed_slot(
+          0, std::max(uint32_t(std::popcount(rec.layout_mask)), 1u) * 16,
+          plume::RenderInputSlotClassification::PER_VERTEX_DATA);
+      list->setVertexBuffers(0, &view, 1, &packed_slot);
+      st.bound_vertex_buffer = 0;
+      static const bool pack_check = std::getenv("XERENGE_PACK_CHECK") != nullptr;
+      if (pack_check && rec.packed_dst) {
+        const float* bound = (cached ? cache_mapped_ : vb_mapped_) + size_t(first) * kFloatsPerVert;
+        if (bound != rec.packed_dst) {
+          static std::atomic<uint32_t> shown{0};
+          if (shown.fetch_add(1, std::memory_order_relaxed) < 16) {
+            REXLOG_WARN("plume: pack check: draw bound at {} +{} but its vertices went to +{} "
+                        "(vs={:016X})",
+                        cached ? "cache" : "frame buffer",
+                        size_t(bound - (cached ? cache_mapped_ : vb_mapped_)),
+                        size_t(rec.packed_dst - (cached ? cache_mapped_ : vb_mapped_)),
+                        snap.vs_hash);
+          }
+        }
+      }
+      list->drawInstanced(vertex_count, 1, 0, 0);
+    } else if (rec.from_cache) {
+      if (st.bound_vertex_buffer != 2) {
+        list->setVertexBuffers(0, &cache_view_, 1, &input_slots_[0]);
+        st.bound_vertex_buffer = 2;
+      }
+      list->drawInstanced(vertex_count, 1, rec.first, 0);
+    } else {
+      if (st.bound_vertex_buffer != 1) {
+        list->setVertexBuffers(0, &vb_view_, 1, &input_slots_[0]);
+        st.bound_vertex_buffer = 1;
+      }
+      list->drawInstanced(vertex_count, 1, rec.first, 0);
+    }
+    if (fragment_query != ~0u) {
+      pass->end_fragment_count(pass->context, fragment_query);
+    }
+  };
+  // Where encode_one hands a planned draw: recorded at once into the frame's
+  // list.
+  std::function<void(const DrawRecord&)> emit_draw = [&](const DrawRecord& rec) {
+    record_draw(rec, main_rs);
+    segment_binds += std::exchange(main_rs.binds, 0u);
+  };
   auto encode_one = [&](const GuestDrawSnapshot& snap) {
     EncodeStage("draw setup", &snap);
     ++fate.entered;
@@ -8748,13 +9082,22 @@ void PlumeDrawContext::EncodeDraws(plume::RenderCommandList* list,
       return;
     }
 
-    // Each block goes into this draw's slot unless it is the same as the one
-    // the last draw wrote, which is then used again: neighbouring draws often
-    // share their pixel constants, and every block written is 4 KB going into
-    // memory the GPU reads.
-    uint32_t vs_slot = slot_base + encoded;
-    uint32_t ps_slot = slot_base + encoded;
-    uint32_t shared_slot = slot_base + encoded;
+    // The rest of the draw that depends on the draws before it - the constant
+    // masks (a cache), the copies it shrinks, where its picture goes on screen
+    // (the HUD's anchoring follows the draws before) and where its vertices are
+    // - is settled here, in draw order. record_draw does the rest, which
+    // depends on nothing another draw did: a run of draws can be recorded on
+    // several threads at once, each into its own command list.
+    DrawRecord rec;
+    rec.snap = &snap;
+    rec.pipeline = pipeline;
+    rec.passthrough = passthrough;
+    rec.video_pipeline = video_pipeline;
+    rec.reads_copy = reads_copy;
+    rec.is_video = is_video;
+    rec.vertex_count = vertex_count;
+    rec.slot = slot_base + encoded;
+    rec.segment_index = segment_index;
     // Snapshots share their constant words (SharedWords), and the title's
     // thread already gives a draw the last one's block when the words are the
     // same (AssignShared): another block is all but always different, and
@@ -8764,167 +9107,20 @@ void PlumeDrawContext::EncodeDraws(plume::RenderCommandList* list,
     // the upload heap - 7 ms on the Xbox One. Its own shaders' draws
     // (passthrough) take the whole block.
     static const std::array<uint64_t, 4> kAllRegisters = {~0ull, ~0ull, ~0ull, ~0ull};
-    const std::array<uint64_t, 4>& vs_read = passthrough ? kAllRegisters : ConstantMaskFor(0, snap.vs_hash);
-    const std::array<uint64_t, 4>& ps_read = passthrough ? kAllRegisters : ConstantMaskFor(1, snap.ps_hash);
-    const auto covers = [](const std::array<uint64_t, 4>& written, const std::array<uint64_t, 4>& read) {
-      return ((read[0] & ~written[0]) | (read[1] & ~written[1]) | (read[2] & ~written[2]) |
-              (read[3] & ~written[3])) == 0;
-    };
-    if (last_vs && last_vs == snap.vs_constants.data() && covers(last_vs_written, vs_read)) {
-      vs_slot = last_vs_slot;
-    } else {
-      CopyRegisters(static_cast<uint8_t*>(vs_constants_mapped_) + vs_slot * kVsSlotBytes,
-                    snap.vs_constants.data(), vs_read);
-      last_vs = snap.vs_constants.data();
-      last_vs_slot = vs_slot;
-      last_vs_written = vs_read;
-    }
-    if (last_ps && last_ps == snap.ps_constants.data() && covers(last_ps_written, ps_read)) {
-      ps_slot = last_ps_slot;
-    } else {
-      CopyRegisters(static_cast<uint8_t*>(ps_constants_mapped_) + ps_slot * kPsSlotBytes,
-                    snap.ps_constants.data(), ps_read);
-      last_ps = snap.ps_constants.data();
-      last_ps_slot = ps_slot;
-      last_ps_written = ps_read;
-    }
-    EncodeStage("binding textures (creating and uploading them)");
-    alignas(16) uint8_t shared[kSharedConstantBytes];
+    rec.vs_read = passthrough ? &kAllRegisters : &ConstantMaskFor(0, snap.vs_hash);
+    rec.ps_read = passthrough ? &kAllRegisters : &ConstantMaskFor(1, snap.ps_hash);
     NoteShrinkingReads(snap);
-    {
-      // The half-pixel offset against what the draw is drawn into: a smaller
-      // target's own size, in its corner (native_extent), as its viewport is.
-      // Against the whole frame it came out at 0.5 - 0.1 x 12 = -0.7 of a
-      // 3840-wide frame's pixels rather than half of one of the bloom's 320,
-      // and the bloom's fifty-odd blur passes, each over the last, walked
-      // the glare some 40 pixels up and to the left: a faint copy of every
-      // pole beside it, sliding as the pole moved across the screen.
-      uint32_t grid_w = width;
-      uint32_t grid_h = height;
-      if (snap.d3d_vertex_buffer != 0) {
-        native_extent(snap.d3d_target_width, snap.d3d_target_height, grid_w, grid_h);
-      }
-      FillSharedConstants(shared, snap, grid_w, grid_h);
-      // XERENGE_COMPOSITE_SHIFT=<pixels>: another half-pixel offset for the
-      // pass that draws the frame's copy over the whole frame - the composite
-      // of the 3D picture - in the frame's own pixels. The title gives that
-      // pass texture coordinates from 0 to 1 and no half texel (its bloom's
-      // blur adds one where it wants a pixel as it is), so Direct3D 9's pixel
-      // centres put every sample on the corner between four of the copy's
-      // pixels: on the console the composite is also a 2x2 average of the
-      // scene. The copy is kept at the frame's size here, and the offset above
-      // - chosen for the interface, which is laid out on the guest's grid -
-      // leaves each sample 0.5 - 0.1 f of a pixel off its own: 0.35 at 1080p,
-      // 0.3 at 1440p, 0.2 at 2160p, a faint soft focus over the whole scene
-      // that is neither the console's nor none. 0 reads every pixel of the
-      // copy on its centre, the sharpest; 0.5 is the console's 2x2 average at
-      // the frame's resolution. Unset it is 0: above 720p the picture is
-      // wanted sharp, and the soft focus was nobody's choice. "old" leaves the
-      // offset above as it is; at 720p and below nothing changes either way.
-      static const float composite_shift = [] {
-        const char* v = std::getenv("XERENGE_COMPOSITE_SHIFT");
-        if (!v || !*v) {
-          return 0.0f;
-        }
-        return std::strcmp(v, "old") == 0 ? -1.0f : std::strtof(v, nullptr);
-      }();
-      if (composite_shift >= 0.0f && reads_copy && !is_video && grid_w == width &&
-          grid_h == height) {
-        const auto fetch = TextureFetchAt(snap, 0);
-        const auto copy = resolved_targets_.find(fetch.base_address << 12);
-        if (copy != resolved_targets_.end() && copy->second.width == width &&
-            copy->second.height == height && width > fetch.size_2d.width + 1u) {
-          const float half_x = 2.0f * composite_shift / float(width);
-          const float half_y = 2.0f * composite_shift / float(height);
-          std::memcpy(shared + 280, &half_x, 4);
-          std::memcpy(shared + 284, &half_y, 4);
-        }
-      }
-    }
-    if (have_last_shared && std::memcmp(last_shared, shared, kSharedConstantBytes) == 0) {
-      shared_slot = last_shared_slot;
-    } else {
-      std::memcpy(static_cast<uint8_t*>(shared_constants_mapped_) + shared_slot * kSharedSlotBytes,
-                  shared, kSharedConstantBytes);
-      std::memcpy(last_shared, shared, kSharedConstantBytes);
-      have_last_shared = true;
-      last_shared_slot = shared_slot;
-    }
-    EncodeStage("recording the draw");
-
-    const uint32_t constant_offsets[3] = {vs_slot * kVsSlotBytes, ps_slot * kPsSlotBytes,
-                                          shared_slot * kSharedSlotBytes};
-    // The draw's sampler slots. The title's shaders read slot n for their sampler
-    // register n (the indices FillSharedConstants worked out); the passthrough
-    // shader reads its one texture from slot 0, the video shader its planes from
-    // slots 0-2.
-    DrawBindings bindings;
-    if (video_pipeline) {
-      const uint32_t u = VideoPlaneSlot(snap.video_u_key);
-      bindings.tex2d[0] = VideoPlaneSlot(snap.video_key);
-      bindings.tex2d[1] = u;
-      bindings.tex2d[2] = snap.video_packed_uv ? u : VideoPlaneSlot(snap.video_v_key);
-    } else if (passthrough) {
-      bindings.tex2d[0] = BindlessForTexture(snap);
-    } else {
-      const auto* words = reinterpret_cast<const uint32_t*>(shared);
-      for (uint32_t s = 0; s < kDrawSlots; ++s) {
-        bindings.tex2d[s] = words[s];
-        bindings.layered[s] = words[16 + s];
-        bindings.cube[s] = words[32 + s];
-        bindings.sampler[s] = words[48 + s];
-      }
-    }
-    if (!PlumeUsesVulkan()) {
-      // D3D12: the bindless sets are bound for the frame; the shaders find
-      // their textures through the indices in the shared constants, and the
-      // constants come through root CBVs at this draw's offsets.
-      if (std::memcmp(constant_offsets, bound_offsets, sizeof(bound_offsets)) != 0 ||
-          bound_draw_set == nullptr) {
-        list->setGraphicsRootDescriptor(
-            plume::RenderBufferReference(vs_constants_.get(), constant_offsets[0]), 0);
-        list->setGraphicsRootDescriptor(
-            plume::RenderBufferReference(ps_constants_.get(), constant_offsets[1]), 1);
-        list->setGraphicsRootDescriptor(
-            plume::RenderBufferReference(shared_constants_.get(), constant_offsets[2]), 2);
-        std::memcpy(bound_offsets, constant_offsets, sizeof(bound_offsets));
-        bound_draw_set = d3d_sets_[0].get();
-      }
-    }
-    const uint64_t changes_now = tables_changes();
-    plume::RenderDescriptorSet* draw_set = nullptr;
-    if (!PlumeUsesVulkan()) {
-      draw_set = d3d_sets_[0].get();
-    } else if (last_draw_set && changes_now == last_tables_changes &&
-        std::memcmp(&bindings, &last_bindings, sizeof(bindings)) == 0) {
-      draw_set = last_draw_set;
-    } else {
-      draw_set = DrawSetFor(bindings);
-      last_bindings = bindings;
-      last_draw_set = draw_set;
-      last_tables_changes = changes_now;
-    }
-    if (!draw_set) {
-      note_skip("no descriptor set");
-      return;
-    }
-    if (draw_set != bound_draw_set || std::memcmp(constant_offsets, bound_offsets, sizeof(bound_offsets)) != 0) {
-      list->setGraphicsDescriptorSetDynamic(draw_set, 0, constant_offsets, 3);
-      bound_draw_set = draw_set;
-      std::memcpy(bound_offsets, constant_offsets, sizeof(bound_offsets));
-    }
-    if (pipeline != bound_pipeline) {
-      list->setPipeline(pipeline);
-      bound_pipeline = pipeline;
-      ++segment_binds;
-    }
-    if (!passthrough && snap.poly_offset) {
-      // Xenos keeps the slope term in 1/16 subpixel units and the constant in
-      // depth range units; Vulkan wants the slope as is and the constant in
-      // steps of the depth format - 2^-24 around the near end, where the
-      // reversed depth of the road under the car sits.
-      list->setDepthBias(snap.poly_offset_offset * 16777216.0f, 0.0f,
-                         snap.poly_offset_scale * (1.0f / 16.0f));
+    // The half-pixel offset against what the draw is drawn into: a smaller
+    // target's own size, in its corner (native_extent), as its viewport is.
+    // Against the whole frame it came out at 0.5 - 0.1 x 12 = -0.7 of a
+    // 3840-wide frame's pixels rather than half of one of the bloom's 320,
+    // and the bloom's fifty-odd blur passes, each over the last, walked
+    // the glare some 40 pixels up and to the left: a faint copy of every
+    // pole beside it, sliding as the pole moved across the screen.
+    rec.grid_w = width;
+    rec.grid_h = height;
+    if (snap.d3d_vertex_buffer != 0) {
+      native_extent(snap.d3d_target_width, snap.d3d_target_height, rec.grid_w, rec.grid_h);
     }
     {
       uint32_t vw = width;
@@ -9100,7 +9296,11 @@ void PlumeDrawContext::EncodeDraws(plume::RenderCommandList* list,
           view_h = std::max(1u, uint32_t(uint64_t(vp[3]) * view_h / th));
         }
       }
-      use_viewport(snap.d3d_vertex_buffer != 0, view_x, view_y, view_w, view_h);
+      rec.view_flipped = snap.d3d_vertex_buffer != 0;
+      rec.view_x = view_x;
+      rec.view_y = view_y;
+      rec.view_w = view_w;
+      rec.view_h = view_h;
       // The title's scissor, scaled from its render target's pixels to the
       // area that target is drawn over here.
       int32_t sx0 = int32_t(vx), sy0 = int32_t(vy), sx1 = int32_t(vx + vw), sy1 = int32_t(vy + vh);
@@ -9137,90 +9337,23 @@ void PlumeDrawContext::EncodeDraws(plume::RenderCommandList* list,
           sy1 = int32_t(vy + vh);
         }
       }
-      if (sx0 != scissor_now[0] || sy0 != scissor_now[1] || sx1 != scissor_now[2] ||
-          sy1 != scissor_now[3]) {
-        list->setScissors(plume::RenderRect(sx0, sy0, sx1, sy1));
-        scissor_now[0] = sx0;
-        scissor_now[1] = sy0;
-        scissor_now[2] = sx1;
-        scissor_now[3] = sy1;
-      }
+      rec.scissor[0] = sx0;
+      rec.scissor[1] = sy0;
+      rec.scissor[2] = sx1;
+      rec.scissor[3] = sy1;
     }
-    // Debug mode: the fragments this draw shades, counted on the GPU.
-    uint32_t fragment_query = ~0u;
-    if (pass && pass->begin_fragment_count) {
-      FragmentCountLabel label;
-      label.vs_hash = snap.vs_hash;
-      label.ps_hash = snap.ps_hash;
-      label.pass = segment_index;
-      label.vertices = vertex_count;
-      label.depth_control = snap.depth_control;
-      label.blend_control = snap.blend_control;
-      label.target_width = snap.d3d_target_width;
-      label.target_height = snap.d3d_target_height;
-      fragment_query = pass->begin_fragment_count(pass->context, label);
-    }
-    if (fill_layout_mask_ != kFullLayoutMask) {
-      // Packed: the draw's vertices start at the front of its room, and the
-      // stride is the pipeline's, so the buffer is bound at that room.
-      const bool cached = last_fill_cache_offset_ != ~0u;
-      // Finished ahead: in the frame's buffer already, in room of its own.
-      const bool placed = last_fill_vb_offset_ != ~0u;
-      const uint32_t first =
-          cached ? last_fill_cache_offset_ : (placed ? last_fill_vb_offset_ : vb_used);
-      const plume::RenderVertexBufferView view(
-          plume::RenderBufferReference(cached ? cache_vb_.get() : dummy_vb_.get(),
-                                       uint64_t(first) * kVertexStrideBytes),
-          (cached ? kCacheVertexCount : kDummyVertexCount) * kVertexStrideBytes -
-              first * kVertexStrideBytes);
-      // The packed stride, as the pipeline declares it. Vulkan takes the
-      // stride from the pipeline and ignores this; D3D12 takes it from the
-      // binding, and with the full layout's every vertex after the first was
-      // read from the wrong place - meshes stretched to a corner.
-      const plume::RenderInputSlot packed_slot(
-          0, std::max(uint32_t(std::popcount(fill_layout_mask_)), 1u) * 16,
-          plume::RenderInputSlotClassification::PER_VERTEX_DATA);
-      list->setVertexBuffers(0, &view, 1, &packed_slot);
-      bound_vertex_buffer = 0;
-      static const bool pack_check = std::getenv("XERENGE_PACK_CHECK") != nullptr;
-      if (pack_check && last_packed_dst_) {
-        const float* bound = (cached ? cache_mapped_ : vb_mapped_) + size_t(first) * kFloatsPerVert;
-        if (bound != last_packed_dst_) {
-          static std::atomic<uint32_t> shown{0};
-          if (shown.fetch_add(1, std::memory_order_relaxed) < 16) {
-            REXLOG_WARN("plume: pack check: draw bound at {} +{} but its vertices went to +{} "
-                        "(vs={:016X})",
-                        cached ? "cache" : "frame buffer",
-                        size_t(bound - (cached ? cache_mapped_ : vb_mapped_)),
-                        size_t(last_packed_dst_ - (cached ? cache_mapped_ : vb_mapped_)),
-                        snap.vs_hash);
-          }
-        }
-      }
-      list->drawInstanced(vertex_count, 1, 0, 0);
-      if (!cached && !placed) {
-        vb_used += vertex_count;
-      }
-    } else if (last_fill_cache_offset_ != ~0u) {
-      if (bound_vertex_buffer != 2) {
-        list->setVertexBuffers(0, &cache_view_, 1, &input_slots_[0]);
-        bound_vertex_buffer = 2;
-      }
-      list->drawInstanced(vertex_count, 1, last_fill_cache_offset_, 0);
+    // Where the vertices are: the vertex cache, room of their own in the
+    // frame's buffer (finished ahead), or the frame's buffer from vb_used on.
+    rec.layout_mask = fill_layout_mask_;
+    rec.packed_dst = last_packed_dst_;
+    if (last_fill_cache_offset_ != ~0u) {
+      rec.from_cache = true;
+      rec.first = last_fill_cache_offset_;
+    } else if (last_fill_vb_offset_ != ~0u) {
+      rec.first = last_fill_vb_offset_;
     } else {
-      if (bound_vertex_buffer != 1) {
-        list->setVertexBuffers(0, &vb_view_, 1, &input_slots_[0]);
-        bound_vertex_buffer = 1;
-      }
-      if (last_fill_vb_offset_ != ~0u) {
-        list->drawInstanced(vertex_count, 1, last_fill_vb_offset_, 0);
-      } else {
-        list->drawInstanced(vertex_count, 1, vb_used, 0);
-        vb_used += vertex_count;
-      }
-    }
-    if (fragment_query != ~0u) {
-      pass->end_fragment_count(pass->context, fragment_query);
+      rec.first = vb_used;
+      vb_used += vertex_count;
     }
     ++encoded;
     segment_vertices += vertex_count;
@@ -9228,6 +9361,7 @@ void PlumeDrawContext::EncodeDraws(plume::RenderCommandList* list,
     if (snap.d3d_vertex_buffer != 0) {
       ++fate.d3d_drawn;
     }
+    emit_draw(rec);
   };
   // What each pass need not load or store. Every pass loaded and stored all
   // three attachments over its area - colour, the second target, depth - and
