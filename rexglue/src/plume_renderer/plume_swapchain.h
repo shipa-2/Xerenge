@@ -120,6 +120,23 @@ class PlumeSwapchain {
   // written while the GPU draws the one before, and what is waited for at a
   // frame's start is the frame before that, which used this set.
   std::unique_ptr<plume::RenderCommandList> spare_command_list_;
+  // The lists a frame's runs of draws are recorded into on several threads
+  // (RenderPassBreak::split), and the lists the frame went on in after each
+  // run: reused once the frame that used them is known done, as the frame's
+  // own list is. One pool per set; `chunk_lists_used_` this frame.
+  std::vector<std::unique_ptr<plume::RenderCommandList>> chunk_lists_;
+  std::vector<std::unique_ptr<plume::RenderCommandList>> spare_chunk_lists_;
+  size_t chunk_lists_used_ = 0;
+  // The frame's lists ended so far, in their order: submitted together with
+  // the list the frame ends in - a submission at every split cost more than
+  // the threads saved.
+  std::vector<const plume::RenderCommandList*> frame_lists_;
+  plume::RenderCommandList* TakeChunkList();
+  void SplitList(const plume::RenderFramebuffer* framebuffer, uint32_t width, uint32_t height,
+                 uint32_t count, plume::RenderCommandList** lists);
+  plume::RenderCommandList* RejoinList(const plume::RenderFramebuffer* framebuffer, uint32_t width,
+                                       uint32_t height, uint32_t count,
+                                       plume::RenderCommandList** lists);
   // The copy onto the swap chain image and the present, recorded once the
   // image is acquired (see ClearAndPresent), one per set as well.
   std::unique_ptr<plume::RenderCommandList> present_list_;

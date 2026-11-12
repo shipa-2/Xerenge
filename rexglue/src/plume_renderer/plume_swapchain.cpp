@@ -486,6 +486,52 @@ void PlumeSwapchain::ReadGpuTime() {
   }
 }
 
+plume::RenderCommandList* PlumeSwapchain::TakeChunkList() {
+  if (chunk_lists_used_ == chunk_lists_.size()) {
+    chunk_lists_.push_back(command_queue_->createCommandList());
+  }
+  return chunk_lists_[chunk_lists_used_++].get();
+}
+
+void PlumeSwapchain::SplitList(const plume::RenderFramebuffer* framebuffer, uint32_t width,
+                               uint32_t height, uint32_t count,
+                               plume::RenderCommandList** lists) {
+  // The frame so far goes first, the runs' lists after it.
+  command_list_->end();
+  frame_lists_.push_back(command_list_.get());
+  for (uint32_t i = 0; i < count; ++i) {
+    plume::RenderCommandList* list = TakeChunkList();
+    list->begin();
+    list->setFramebuffer(framebuffer);
+    list->setViewports(plume::RenderViewport(0.0f, 0.0f, float(width), float(height)));
+    list->setScissors(plume::RenderRect(0, 0, width, height));
+    lists[i] = list;
+  }
+}
+
+plume::RenderCommandList* PlumeSwapchain::RejoinList(const plume::RenderFramebuffer* framebuffer,
+                                                     uint32_t width, uint32_t height,
+                                                     uint32_t count,
+                                                     plume::RenderCommandList** lists) {
+  for (uint32_t i = 0; i < count; ++i) {
+    lists[i]->end();
+    frame_lists_.push_back(lists[i]);
+  }
+  // The frame goes on in a list of the pool; the one it was in until the split
+  // takes that list's place there, still on the GPU until this set comes round
+  // again - when the frame's own list is known done, so are the lists
+  // submitted before it.
+  if (chunk_lists_used_ == chunk_lists_.size()) {
+    chunk_lists_.push_back(command_queue_->createCommandList());
+  }
+  std::swap(command_list_, chunk_lists_[chunk_lists_used_++]);
+  command_list_->begin();
+  command_list_->setFramebuffer(framebuffer);
+  command_list_->setViewports(plume::RenderViewport(0.0f, 0.0f, float(width), float(height)));
+  command_list_->setScissors(plume::RenderRect(0, 0, width, height));
+  return command_list_.get();
+}
+
 void PlumeSwapchain::MarkPass(plume::RenderCommandList* list, uint32_t dest, uint32_t draws,
                               uint32_t vertices, uint32_t binds) {
   if (dest == 0) {
@@ -632,6 +678,8 @@ void PlumeSwapchain::Shutdown() {
   spare_acquire_semaphore_.reset();
   spare_submit_fence_.reset();
   spare_command_list_.reset();
+  chunk_lists_.clear();
+  spare_chunk_lists_.clear();
   present_list_.reset();
   spare_present_list_.reset();
   scene_fence_.reset();
@@ -991,6 +1039,7 @@ void PlumeSwapchain::ClearAndPresent(float r, float g, float b, float a, DrawEnc
   static const bool frames_overlap = std::getenv("XERENGE_ASYNC_PRESENT") != nullptr;
   if (frames_overlap) {
     std::swap(command_list_, spare_command_list_);
+    std::swap(chunk_lists_, spare_chunk_lists_);
     std::swap(submit_fence_, spare_submit_fence_);
     std::swap(acquire_semaphore_, spare_acquire_semaphore_);
     std::swap(submit_pending_, spare_submit_pending_);
@@ -1015,6 +1064,9 @@ void PlumeSwapchain::ClearAndPresent(float r, float g, float b, float a, DrawEnc
     submit_pending_ = false;
     ReadGpuTime();
   }
+  // This set's frame is done: its runs' lists can be begun again.
+  chunk_lists_used_ = 0;
+  frame_lists_.clear();
   const auto previous_wait_done = std::chrono::steady_clock::now();
   CheckProbe();
   SaveSnapshot();
@@ -1151,6 +1203,25 @@ void PlumeSwapchain::ClearAndPresent(float r, float g, float b, float a, DrawEnc
               plume::RenderViewport(0.0f, 0.0f, float(state->width), float(state->height)));
           state->list->setScissors(plume::RenderRect(0, 0, state->width, state->height));
         }};
+    // Runs of draws on several threads: D3D12, where a list starts with no
+    // render pass to begin (XERENGE_PARALLEL_RECORD=0 keeps one list).
+    static const bool parallel_record = [] {
+      const char* v = std::getenv("XERENGE_PARALLEL_RECORD");
+      return !(v && *v == '0');
+    }();
+    if (parallel_record && !PlumeUsesVulkan()) {
+      pass.split = [](void* raw, uint32_t count, plume::RenderCommandList** lists) {
+        auto* state = static_cast<PassState*>(raw);
+        state->swapchain->SplitList(state->framebuffer, state->width, state->height, count, lists);
+      };
+      pass.rejoin = [](void* raw, uint32_t count,
+                       plume::RenderCommandList** lists) -> plume::RenderCommandList* {
+        auto* state = static_cast<PassState*>(raw);
+        state->list = state->swapchain->RejoinList(state->framebuffer, state->width, state->height,
+                                                   count, lists);
+        return state->list;
+      };
+    }
     pass.second_target = second_target;
     pass.has_depth = depth_texture_ != nullptr;
     pass.clear_first = !hold;
@@ -1208,8 +1279,10 @@ void PlumeSwapchain::ClearAndPresent(float r, float g, float b, float a, DrawEnc
         plume::RenderBarrierStage::COPY,
         plume::RenderTextureBarrier(shown, plume::RenderTextureLayout::COPY_SOURCE));
     command_list_->end();
-    const plume::RenderCommandList* scene_list = command_list_.get();
-    command_queue_->executeCommandLists(&scene_list, 1, nullptr, 0, nullptr, 0, scene_fence_.get());
+    frame_lists_.push_back(command_list_.get());
+    command_queue_->executeCommandLists(frame_lists_.data(), uint32_t(frame_lists_.size()), nullptr, 0,
+                                        nullptr, 0, scene_fence_.get());
+    frame_lists_.clear();
     scene_pending_ = true;
     if (!acquire()) {
       return;
@@ -1383,10 +1456,11 @@ void PlumeSwapchain::ClearAndPresent(float r, float g, float b, float a, DrawEnc
   }
   out->end();
 
-  const plume::RenderCommandList* cmd_list = out;
+  frame_lists_.push_back(out);
   plume::RenderCommandSemaphore* wait_semaphore = acquire_semaphore_.get();
-  command_queue_->executeCommandLists(&cmd_list, 1, &wait_semaphore, 1, &release_semaphore, 1,
-                                      submit_fence_.get());
+  command_queue_->executeCommandLists(frame_lists_.data(), uint32_t(frame_lists_.size()), &wait_semaphore,
+                                      1, &release_semaphore, 1, submit_fence_.get());
+  frame_lists_.clear();
   const auto submit_started = std::chrono::steady_clock::now();
 #if REX_PLATFORM_UWP
   if (run_on_ui_) {

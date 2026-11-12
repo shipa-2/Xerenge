@@ -345,6 +345,14 @@ struct RenderPassBreak {
   // begin returns the query to end, ~0u when none is left this frame.
   uint32_t (*begin_fragment_count)(void*, const FragmentCountLabel&) = nullptr;
   void (*end_fragment_count)(void*, uint32_t query) = nullptr;
+  // A run of draws recorded on several threads, each into a list of its own.
+  // split ends the list recorded so far and submits it, and gives `count`
+  // lists begun inside the pass (target, viewport and scissor the frame's);
+  // rejoin ends and submits them in their order and returns the list the
+  // frame goes on in, begun the same way. Null where it is not offered.
+  void (*split)(void*, uint32_t count, plume::RenderCommandList** lists) = nullptr;
+  plume::RenderCommandList* (*rejoin)(void*, uint32_t count, plume::RenderCommandList** lists) =
+      nullptr;
 };
 
 // Whether scene passes carry a second colour attachment - render target 1,

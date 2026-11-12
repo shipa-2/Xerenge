@@ -8737,11 +8737,107 @@ void PlumeDrawContext::EncodeDraws(plume::RenderCommandList* list,
       pass->end_fragment_count(pass->context, fragment_query);
     }
   };
-  // Where encode_one hands a planned draw: recorded at once into the frame's
-  // list.
+  // Where encode_one hands a planned draw. With the pass able to split
+  // (D3D12), the draws wait until something that is not a draw - a clear, a
+  // copy, the frame's end - and a long run of them is then recorded on the
+  // worker threads too, a list each: one thread recording every draw of a
+  // busy race frame was most of what held the Xbox One at 25-45 fps.
+  const bool can_split = pass && pass->split && pass->rejoin && !pass->begin_fragment_count &&
+                         !PlumeUsesVulkan() && WorkerPool::Get().threads() > 1;
+  std::vector<DrawRecord> pending;
   std::function<void(const DrawRecord&)> emit_draw = [&](const DrawRecord& rec) {
+    if (can_split) {
+      pending.push_back(rec);
+      return;
+    }
     record_draw(rec, main_rs);
     segment_binds += std::exchange(main_rs.binds, 0u);
+  };
+  // The frame-wide bindings every list starts from (set above for the first).
+  const auto bind_frame_sets = [&](plume::RenderCommandList* l) {
+    l->setGraphicsPipelineLayout(pipeline_layout_.get());
+    for (uint32_t i = 0; i < 4; ++i) {
+      l->setGraphicsDescriptorSet(d3d_sets_[i].get(), i);
+    }
+  };
+  auto flush_draws = [&] {
+    if (pending.empty()) {
+      return;
+    }
+    // Shorter runs stay in the frame's list: a split costs two submissions
+    // and the lists' setup, and fewer draws than this are recorded sooner
+    // than the workers wake.
+    constexpr size_t kSplitDraws = 160;
+    constexpr uint32_t kMaxParts = 3;
+    const uint32_t parts = uint32_t(std::min<size_t>(WorkerPool::Get().threads(), kMaxParts));
+    static std::atomic<uint64_t> short_runs{0}, short_draws{0};
+    if (pending.size() < kSplitDraws || parts < 2) {
+      short_runs.fetch_add(1, std::memory_order_relaxed);
+      short_draws.fetch_add(pending.size(), std::memory_order_relaxed);
+      for (const DrawRecord& rec : pending) {
+        record_draw(rec, main_rs);
+      }
+      segment_binds += std::exchange(main_rs.binds, 0u);
+      pending.clear();
+      return;
+    }
+    EncodeStage("recording: split");
+    std::array<plume::RenderCommandList*, kMaxParts> lists{};
+    pass->split(pass->context, parts, lists.data());
+    std::array<RecordState, kMaxParts> states;
+    for (uint32_t i = 0; i < parts; ++i) {
+      states[i].list = lists[i];
+      states[i].main = false;
+      states[i].Reset(width, height);
+      bind_frame_sets(lists[i]);
+    }
+    const size_t n = pending.size();
+    EncodeStage("recording: threads");
+    // Each part's time and the whole wall time, for telling a part that waits
+    // for a thread from one that works.
+    std::array<uint64_t, kMaxParts> part_ns{};
+    const auto threads_started = std::chrono::steady_clock::now();
+    WorkerPool::Get().ParallelFor(parts, [&](size_t i) {
+      const auto started = std::chrono::steady_clock::now();
+      for (size_t k = n * i / parts, end = n * (i + 1) / parts; k < end; ++k) {
+        record_draw(pending[k], states[i]);
+      }
+      part_ns[i] = uint64_t(std::chrono::duration_cast<std::chrono::nanoseconds>(
+                                std::chrono::steady_clock::now() - started)
+                                .count());
+    });
+    static std::atomic<uint64_t> wall_ns{0}, busy_ns{0}, longest_ns{0};
+    wall_ns.fetch_add(uint64_t(std::chrono::duration_cast<std::chrono::nanoseconds>(
+                                   std::chrono::steady_clock::now() - threads_started)
+                                   .count()),
+                      std::memory_order_relaxed);
+    uint64_t longest = 0;
+    for (uint32_t i = 0; i < parts; ++i) {
+      busy_ns.fetch_add(part_ns[i], std::memory_order_relaxed);
+      longest = std::max(longest, part_ns[i]);
+    }
+    longest_ns.fetch_add(longest, std::memory_order_relaxed);
+    EncodeStage("recording: rejoin");
+    list = pass->rejoin(pass->context, parts, lists.data());
+    bind_frame_sets(list);
+    main_rs.list = list;
+    main_rs.Reset(width, height);
+    for (uint32_t i = 0; i < parts; ++i) {
+      segment_binds += states[i].binds;
+    }
+    pending.clear();
+    static std::atomic<uint64_t> runs{0}, run_draws{0};
+    static std::atomic<uint64_t> last_ms{0};
+    runs.fetch_add(1, std::memory_order_relaxed);
+    run_draws.fetch_add(n, std::memory_order_relaxed);
+    const uint64_t now = CoarseMs();
+    uint64_t was = last_ms.load(std::memory_order_relaxed);
+    if (now - was >= 10000 && last_ms.compare_exchange_strong(was, now)) {
+      REXLOG_INFO("plume: shorter runs kept in one list: {}, {} draws", short_runs.load(), short_draws.load());
+      REXLOG_INFO("plume: runs recorded {} ways: {}, {} draws; {} ms on the threads ({} ms in parts, the longest part {} ms)",
+                  parts, runs.load(), run_draws.load(), wall_ns.load() / 1000000, busy_ns.load() / 1000000,
+                  longest_ns.load() / 1000000);
+    }
   };
   auto encode_one = [&](const GuestDrawSnapshot& snap) {
     EncodeStage("draw setup", &snap);
@@ -9663,6 +9759,20 @@ void PlumeDrawContext::EncodeDraws(plume::RenderCommandList* list,
       continue;
     }
     const GuestDrawSnapshot& snap = draws[snap_index];
+    // A clear or a copy goes into the frame's list after the draws before it.
+    if (snap.is_clear || snap.is_resolve) {
+      static std::atomic<uint64_t> ended_by[2];
+      if (!pending.empty()) {
+        ended_by[snap.is_clear ? 0 : 1].fetch_add(1, std::memory_order_relaxed);
+        static std::atomic<uint64_t> last_ms{0};
+        const uint64_t now = CoarseMs();
+        uint64_t was = last_ms.load(std::memory_order_relaxed);
+        if (now - was >= 10000 && last_ms.compare_exchange_strong(was, now)) {
+          REXLOG_INFO("plume: runs ended by a clear {}, by a copy {}", ended_by[0].load(), ended_by[1].load());
+        }
+      }
+      flush_draws();
+    }
     if (!snap.is_resolve) {
       // Any draw or clear, made or refused, counts as a write: so the first copy
       // after the pass reopens is never taken for a repeat, which the area
@@ -9911,6 +10021,7 @@ void PlumeDrawContext::EncodeDraws(plume::RenderCommandList* list,
       }
     }
   }
+  flush_draws();
   if (last_resolve_dest_ != 0 && drawn_since_copy) {
     // If the frame cleared the target after resolve and drew ONLY tiny secondary effects
     // (sparks, collision flash, debris <= 8 draws), draw_target cannot restore the scene.
