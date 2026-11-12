@@ -11,8 +11,10 @@ out_directory_path = "generated/default"
 includes = ["functions.toml"]
 # Kept in locals instead of PPCContext: the counter, XER, the reservation and
 # the condition registers (each tested alone on the race replay, 2026-11-12).
-# Not non_argument_as_local: with it the race froze at its start.
+# And non_argument_as_local (r0, r2, r11, r12, f0, v32-v63), since the save/restore
+# helpers are given their frame address in r12 through PPCContext (SDK fix).
 ctr_as_local = true
 xer_as_local = true
 reserved_as_local = true
 cr_as_local = true
+non_argument_as_local = true
