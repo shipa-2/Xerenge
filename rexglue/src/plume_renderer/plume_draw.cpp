@@ -7720,52 +7720,76 @@ void AccountEncodeStage(const char* next) {
   if (!PlumeTiming()) {
     return;
   }
+  // A few times a draw: a flat table found by the stage's address, not two
+  // maps, and each stage's place kept, so a switch costs a clock read and
+  // two additions.
+  struct StageTime {
+    const char* name;
+    bool idle;
+    uint64_t total_ns;
+    uint64_t frame_ns;
+  };
   static std::mutex stage_mutex;
   std::lock_guard stage_lock(stage_mutex);
-  static const char* current = nullptr;
+  static std::array<StageTime, 64> stages{};
+  static size_t stage_count = 0;
+  static StageTime* current = nullptr;
   static auto since = std::chrono::steady_clock::now();
-  static std::map<const char*, uint64_t> totals;
   static auto last_report = since;
   static uint64_t frames = 0;
-  static std::map<const char*, uint64_t> frame_totals;
+  const auto slot_of = [](const char* name) -> StageTime* {
+    for (size_t i = 0; i < stage_count; ++i) {
+      if (stages[i].name == name) {
+        return &stages[i];
+      }
+    }
+    if (stage_count == stages.size()) {
+      return nullptr;
+    }
+    stages[stage_count] = {name, std::strcmp(name, "idle") == 0, 0, 0};
+    return &stages[stage_count++];
+  };
   const auto now = std::chrono::steady_clock::now();
   if (current) {
     const uint64_t ns =
         uint64_t(std::chrono::duration_cast<std::chrono::nanoseconds>(now - since).count());
-    totals[current] += ns;
-    if (std::strcmp(current, "idle") != 0) {
-      frame_totals[current] += ns;
+    current->total_ns += ns;
+    if (!current->idle) {
+      current->frame_ns += ns;
     }
   }
-  if (std::strcmp(next, "idle") == 0) {
+  StageTime* const next_slot = slot_of(next);
+  if (next_slot && next_slot->idle) {
     ++frames;
     // One slow frame on its own: an average over two seconds hides it.
     uint64_t frame_ns = 0;
-    for (const auto& [stage, ns] : frame_totals) {
-      frame_ns += ns;
+    for (size_t i = 0; i < stage_count; ++i) {
+      frame_ns += stages[i].frame_ns;
     }
     if (frame_ns >= 100000000ull) {
       std::string out;
-      for (const auto& [stage, ns] : frame_totals) {
-        if (ns >= 1000000ull) {
-          out += fmt::format(" {}={}ms", stage, ns / 1000000);
+      for (size_t i = 0; i < stage_count; ++i) {
+        if (stages[i].frame_ns >= 1000000ull) {
+          out += fmt::format(" {}={}ms", stages[i].name, stages[i].frame_ns / 1000000);
         }
       }
       REXLOG_WARN("plume: slow encode {} ms:{}", frame_ns / 1000000, out);
     }
-    frame_totals.clear();
+    for (size_t i = 0; i < stage_count; ++i) {
+      stages[i].frame_ns = 0;
+    }
   }
-  current = next;
+  current = next_slot;
   since = now;
   if (now - last_report >= std::chrono::seconds(2) && frames != 0) {
     std::string out;
-    for (const auto& [stage, ns] : totals) {
-      if (std::strcmp(stage, "idle") != 0) {
-        out += fmt::format(" {}={}us", stage, ns / 1000 / frames);
+    for (size_t i = 0; i < stage_count; ++i) {
+      if (!stages[i].idle && stages[i].total_ns != 0) {
+        out += fmt::format(" {}={}us", stages[i].name, stages[i].total_ns / 1000 / frames);
       }
+      stages[i].total_ns = 0;
     }
     REXLOG_INFO("plume: encode stages per frame ({} frames):{}", frames, out);
-    totals.clear();
     frames = 0;
     last_report = now;
   }
