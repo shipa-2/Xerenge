@@ -264,6 +264,7 @@ void UseAndroidCustomVulkanDriver() {
 
 PlumeGraphicsSystem::PlumeGraphicsSystem() {
   draw_ring_.resize(kDrawRingSize);
+  deferred_constants_ = std::make_unique<uint8_t[]>(kDeferredConstantBytes);
 }
 
 PlumeGraphicsSystem::~PlumeGraphicsSystem() {
@@ -940,7 +941,88 @@ bool CopyDeviceRegistersChanged(memory::Memory* memory, uint32_t* dst, uint32_t 
   return differ;
 }
 
+// CopyDeviceRegistersChanged from a deferred-constant record: the registers
+// set in mask packed one after another from *from, as the title left them;
+// *from is moved past them.
+bool CopyPackedRegistersChanged(const uint8_t*& from, uint32_t* dst,
+                                const std::array<uint64_t, 4>& mask) {
+  bool differ = false;
+#if defined(__SSSE3__)
+  const __m128i swap = _mm_setr_epi8(3, 2, 1, 0, 7, 6, 5, 4, 11, 10, 9, 8, 15, 14, 13, 12);
+  __m128i any = _mm_setzero_si128();
+#endif
+  for (uint32_t word = 0; word < 4; ++word) {
+    uint64_t bits = mask[word];
+    while (bits != 0) {
+      const uint32_t first = uint32_t(__builtin_ctzll(bits));
+      const uint64_t rest = bits >> first;
+      const uint32_t length = ~rest == 0 ? 64 - first : uint32_t(__builtin_ctzll(~rest));
+      bits = first + length >= 64 ? 0 : bits & ~(((uint64_t(1) << length) - 1) << first);
+      for (uint32_t reg = word * 64 + first, end = reg + length; reg < end; ++reg, from += 16) {
+#if defined(__SSSE3__)
+        const __m128i value =
+            _mm_shuffle_epi8(_mm_loadu_si128(reinterpret_cast<const __m128i*>(from)), swap);
+        __m128i* out = reinterpret_cast<__m128i*>(dst + reg * 4);
+        const __m128i diff = _mm_xor_si128(value, _mm_loadu_si128(out));
+        if (_mm_movemask_epi8(_mm_cmpeq_epi8(diff, _mm_setzero_si128())) != 0xFFFF) {
+          any = _mm_or_si128(any, diff);
+          _mm_storeu_si128(out, value);
+        }
+#else
+        for (uint32_t c = 0; c < 4; ++c) {
+          const uint32_t value = rex::memory::load_and_swap<uint32_t>(from + c * 4);
+          if (dst[reg * 4 + c] != value) {
+            dst[reg * 4 + c] = value;
+            differ = true;
+          }
+        }
+#endif
+      }
+    }
+  }
+#if defined(__SSSE3__)
+  differ = _mm_movemask_epi8(_mm_cmpeq_epi8(any, _mm_setzero_si128())) != 0xFFFF;
+#endif
+  return differ;
+}
+
 }  // namespace
+
+// The float constant blocks of a draw whose registers went into the deferred
+// ring: compared with the maker's last ones and shared when they hold the
+// same words, as PublishDrawSnapshot did itself. In draw order on the present
+// thread, which then frees the record's space (free_space); at once on the
+// title's thread for a video frame.
+void PlumeGraphicsSystem::MakeDeferredConstants(GuestDrawSnapshot& snap, ConstantMaker& maker,
+                                                bool free_space) {
+  if (snap.deferred_constants_bytes == 0 || !deferred_constants_) {
+    return;
+  }
+  const uint8_t* record =
+      deferred_constants_.get() + snap.deferred_constants_at % kDeferredConstantBytes;
+  std::array<uint64_t, 4> mask[2];
+  std::memcpy(mask[0].data(), record, 32);
+  std::memcpy(mask[1].data(), record + 32, 32);
+  const uint8_t* from = record + 64;
+  SharedWords<1024>* blocks[2] = {&snap.vs_constants, &snap.ps_constants};
+  for (int stage = 0; stage < 2; ++stage) {
+    const std::array<uint64_t, 4>& need = mask[stage];
+    const std::array<uint64_t, 4>& held = maker.written[stage];
+    const bool covered = ((need[0] & ~held[0]) | (need[1] & ~held[1]) | (need[2] & ~held[2]) |
+                          (need[3] & ~held[3])) == 0;
+    if (CopyPackedRegistersChanged(from, maker.scratch[stage].data(), need) || !covered) {
+      blocks[stage]->AssignFreshMasked(maker.scratch[stage].data(), maker.last[stage], need);
+      maker.written[stage] = need;
+    } else {
+      blocks[stage]->ShareWith(maker.last[stage]);
+    }
+  }
+  if (free_space) {
+    deferred_tail_.store(snap.deferred_constants_at + snap.deferred_constants_bytes,
+                         std::memory_order_release);
+  }
+  snap.deferred_constants_bytes = 0;
+}
 
 const std::array<uint64_t, 4>& PlumeGraphicsSystem::ConstantMask(int stage, uint64_t hash) {
   if (constant_mask_hash_[stage] == hash && constant_mask_valid_[stage]) {
@@ -1262,23 +1344,68 @@ void PlumeGraphicsSystem::PublishDrawSnapshot(uint32_t prim_type, uint32_t sourc
         };
         const std::array<uint64_t, 4> vs_mask = ConstantMask(0, snap.vs_hash);
         const std::array<uint64_t, 4> ps_mask = ConstantMask(1, snap.ps_hash);
-        if (CopyDeviceRegistersChanged(memory_, device_vs_scratch_.data(), d3d_device,
-                                       kD3DVsFloatOffset, vs_mask) ||
-            !covers(last_device_vs_written_, vs_mask)) {
-          snap.vs_constants.AssignFreshMasked(device_vs_scratch_.data(), last_device_vs_constants_,
-                                              vs_mask);
-          last_device_vs_written_ = vs_mask;
-        } else {
-          snap.vs_constants.ShareWith(last_device_vs_constants_);
+        // Copied as they stand for the present thread to make the blocks from
+        // (deferred_constants_), when the ring has room.
+        static const bool deferred = std::getenv("XERENGE_SYNC_CONSTANTS") == nullptr;
+        bool taken = false;
+        if (deferred && deferred_constants_ && kD3DVsFloatOffset + 4096 <= kD3DDeviceMinBytes &&
+            kD3DPsFloatOffset + 4096 <= kD3DDeviceMinBytes) {
+          uint32_t regs = 0;
+          for (int w = 0; w < 4; ++w) {
+            regs += uint32_t(__builtin_popcountll(vs_mask[w]) + __builtin_popcountll(ps_mask[w]));
+          }
+          const uint64_t bytes = 64 + uint64_t(regs) * 16;
+          uint64_t at = deferred_head_;
+          // A record is never split across the ring's end.
+          if (at % kDeferredConstantBytes + bytes > kDeferredConstantBytes) {
+            at += kDeferredConstantBytes - at % kDeferredConstantBytes;
+          }
+          if (at + bytes - deferred_tail_.load(std::memory_order_acquire) <= kDeferredConstantBytes) {
+            uint8_t* out = deferred_constants_.get() + at % kDeferredConstantBytes;
+            std::memcpy(out, vs_mask.data(), 32);
+            std::memcpy(out + 32, ps_mask.data(), 32);
+            uint8_t* to = out + 64;
+            const uint8_t* device_bytes = memory_->TranslateVirtual<const uint8_t*>(d3d_device);
+            const auto copy_runs = [&to](const uint8_t* from, const std::array<uint64_t, 4>& mask) {
+              for (uint32_t word = 0; word < 4; ++word) {
+                uint64_t bits = mask[word];
+                while (bits != 0) {
+                  const uint32_t first = uint32_t(__builtin_ctzll(bits));
+                  const uint64_t rest = bits >> first;
+                  const uint32_t length = ~rest == 0 ? 64 - first : uint32_t(__builtin_ctzll(~rest));
+                  bits = first + length >= 64 ? 0 : bits & ~(((uint64_t(1) << length) - 1) << first);
+                  std::memcpy(to, from + (word * 64 + first) * 16, size_t(length) * 16);
+                  to += size_t(length) * 16;
+                }
+              }
+            };
+            copy_runs(device_bytes + kD3DVsFloatOffset, vs_mask);
+            copy_runs(device_bytes + kD3DPsFloatOffset, ps_mask);
+            snap.deferred_constants_at = at;
+            snap.deferred_constants_bytes = uint32_t(bytes);
+            deferred_head_ = at + bytes;
+            taken = true;
+          }
         }
-        if (CopyDeviceRegistersChanged(memory_, device_ps_scratch_.data(), d3d_device,
-                                       kD3DPsFloatOffset, ps_mask) ||
-            !covers(last_device_ps_written_, ps_mask)) {
-          snap.ps_constants.AssignFreshMasked(device_ps_scratch_.data(), last_device_ps_constants_,
-                                              ps_mask);
-          last_device_ps_written_ = ps_mask;
-        } else {
-          snap.ps_constants.ShareWith(last_device_ps_constants_);
+        if (!taken) {
+          if (CopyDeviceRegistersChanged(memory_, device_vs_scratch_.data(), d3d_device,
+                                         kD3DVsFloatOffset, vs_mask) ||
+              !covers(last_device_vs_written_, vs_mask)) {
+            snap.vs_constants.AssignFreshMasked(device_vs_scratch_.data(), last_device_vs_constants_,
+                                                vs_mask);
+            last_device_vs_written_ = vs_mask;
+          } else {
+            snap.vs_constants.ShareWith(last_device_vs_constants_);
+          }
+          if (CopyDeviceRegistersChanged(memory_, device_ps_scratch_.data(), d3d_device,
+                                         kD3DPsFloatOffset, ps_mask) ||
+              !covers(last_device_ps_written_, ps_mask)) {
+            snap.ps_constants.AssignFreshMasked(device_ps_scratch_.data(), last_device_ps_constants_,
+                                                ps_mask);
+            last_device_ps_written_ = ps_mask;
+          } else {
+            snap.ps_constants.ShareWith(last_device_ps_constants_);
+          }
         }
       }
       // The boolean constants steer the shaders' branches, and the ring's
@@ -1525,6 +1652,10 @@ void PlumeGraphicsSystem::PublishDrawSnapshot(uint32_t prim_type, uint32_t sourc
     snapshot_fill_ns_.fetch_add(
         16 * std::chrono::duration_cast<std::chrono::nanoseconds>(fill_done - pull_done).count(),
         std::memory_order_relaxed);
+  }
+  if (is_video) {
+    // Read on this thread (the capture, the frame kept): made now.
+    MakeDeferredConstants(snap, title_constants_, false);
   }
   if (is_video && memory_) {
     const auto now = std::chrono::steady_clock::now();
@@ -2425,6 +2556,10 @@ void PlumeGraphicsSystem::PresentClearColorOnUiThread(uint32_t guest_width,
       g_video_classified_since_present = 0;
       saw_video = video_seen_;
       video_seen_ = false;
+    }
+    // The float constants the title's thread left as they were, in draw order.
+    for (GuestDrawSnapshot& entry : overlays) {
+      MakeDeferredConstants(entry, present_constants_, true);
     }
     {
       // Capped at the first handful this only ever described the opening

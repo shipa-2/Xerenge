@@ -401,6 +401,12 @@ struct GuestDrawSnapshot {
   SharedWords<1024> vs_constants;
   SharedWords<1024> ps_constants;
   SharedWords<192> fetch_constants;
+  // vs_constants and ps_constants still to be made, by the present thread:
+  // the registers the draw's shaders read, copied as the title left them into
+  // PlumeGraphicsSystem's deferred-constant ring at this position. 0 bytes:
+  // already made.
+  uint64_t deferred_constants_at = 0;
+  uint32_t deferred_constants_bytes = 0;
   // Set when the draw came from the title's Direct3D call rather than from a
   // packet: then the buffers are named outright and there is nothing to infer
   // from the fetch constants, which at that moment describe a different draw.

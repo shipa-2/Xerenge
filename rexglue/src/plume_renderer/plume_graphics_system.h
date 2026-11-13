@@ -249,6 +249,25 @@ class PlumeGraphicsSystem final : public system::IGraphicsSystem {
   // a draw shares one only if it holds every register that draw reads.
   std::array<uint64_t, 4> last_device_vs_written_ = {};
   std::array<uint64_t, 4> last_device_ps_written_ = {};
+  // Deferred float constants: the title's thread copies the registers a draw's
+  // shaders read, unswapped and uncompared, into this ring (two masks, then the
+  // vertex shader's registers, then the pixel shader's); the present thread
+  // makes the snapshot's blocks from them, in draw order, and frees the space.
+  // Byte-swapping, comparing with the last draw and copying into a block were
+  // a tenth of the title's thread in a race. A draw that finds the ring full,
+  // or a video frame, has its blocks made at once as before.
+  struct ConstantMaker {
+    std::array<uint32_t, 1024> scratch[2] = {};
+    SharedWords<1024> last[2];
+    std::array<uint64_t, 4> written[2] = {};
+  };
+  static constexpr uint64_t kDeferredConstantBytes = 16u << 20;
+  std::unique_ptr<uint8_t[]> deferred_constants_;
+  uint64_t deferred_head_ = 0;              // title's thread
+  std::atomic<uint64_t> deferred_tail_{0};  // advanced by the present thread
+  ConstantMaker present_constants_;         // present thread, under present_mutex_
+  ConstantMaker title_constants_;           // the title's thread, for the fallbacks
+  void MakeDeferredConstants(GuestDrawSnapshot& snap, ConstantMaker& maker, bool free_space);
   // The float constant registers the last vertex (0) and pixel (1) shader read.
   const std::array<uint64_t, 4>& ConstantMask(int stage, uint64_t hash);
   uint64_t constant_mask_hash_[2] = {0, 0};
