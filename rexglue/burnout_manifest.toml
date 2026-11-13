@@ -21,3 +21,11 @@ non_argument_as_local = true
 # non_volatile_as_local: its Xbox One hang (the title's thread spinning for a job
 # worker) was SEH funclets reading r12 from a zeroed local, fixed in the SDK.
 non_volatile_as_local = true
+# volatile_as_local: r3-r10, f1-f13 and v0-v13 in locals too; a liveness analysis
+# says what a function reads from PPCContext at entry and writes there around
+# calls. hook_sources: where hooks are defined - calls to a function those
+# sources name pass every argument register. Off until it has run on the Xbox One:
+# on a Zen 3 the race replay gave the recompiled code ~2% and the audio worker ~5%
+# (2026-11-13), and it has only been run through that replay.
+volatile_as_local = false
+hook_sources = ["src"]

@@ -18,6 +18,7 @@ include(generated/rexglue.cmake)
 # Sources
 set(BURNOUT_SOURCES
     src/main.cpp
+    src/pgo_dump.cpp
     src/movie_trace.cpp
     src/menu_trace.cpp
     src/xerenge_menu.cpp
@@ -400,4 +401,24 @@ if(CAPSTONE_LIBRARY AND CAPSTONE_INCLUDE_DIR)
     add_executable(xdis tools/xdis/main.cpp)
     target_include_directories(xdis PRIVATE "${CAPSTONE_INCLUDE_DIR}")
     target_link_libraries(xdis PRIVATE "${CAPSTONE_LIBRARY}")
+endif()
+
+# Profile-guided optimization of the recompiled code. A build with
+# -DXERENGE_PGO_GENERATE=ON counts what a run executes (set LLVM_PROFILE_FILE,
+# play, quit; then llvm-profdata merge -o burnout.profdata the file); a build
+# with -DXERENGE_PGO_PROFILE=<burnout.profdata> lays the code out by it. The
+# counts follow the generated source: a profile of another disc or of other
+# codegen options still applies where the functions match.
+set(XERENGE_PGO_GENERATE OFF CACHE BOOL "Instrument the recompiled code to collect a profile")
+set(XERENGE_PGO_PROFILE "" CACHE FILEPATH "Profile (llvm-profdata) to optimize the recompiled code by")
+if(TARGET burnout_recomp)
+    if(XERENGE_PGO_GENERATE)
+        target_compile_options(burnout_recomp PRIVATE -fprofile-instr-generate)
+        target_link_options(burnout PRIVATE -fprofile-instr-generate)
+        target_compile_definitions(burnout PRIVATE XERENGE_PGO_GENERATE)
+    elseif(XERENGE_PGO_PROFILE)
+        target_compile_options(burnout_recomp PRIVATE
+            "-fprofile-instr-use=${XERENGE_PGO_PROFILE}"
+            -Wno-profile-instr-unprofiled -Wno-profile-instr-out-of-date)
+    endif()
 endif()
