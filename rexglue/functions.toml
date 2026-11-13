@@ -92,3 +92,18 @@
 # RenderObjects keeps its non-volatile registers in PPCContext (non_volatile_as_local):
 # widescreen.cpp's element hooks read its r31 - the list node being drawn - there.
 0x82353218 = { size = 0x150, share_registers = true }
+
+# The reflection cube's faces drawn a few a frame (src/reflection_faces.cpp):
+# asked at the top of the title's loop over the six faces, and a face left out
+# goes to the loop's increment.
+[[midasm_hook]]
+name = "ReflectionFaceSkipped"
+address = 0x8216A93C
+registers = ["r26"]
+jump_address_on_true = 0x8216AAEC
+
+[[midasm_hook]]
+name = "ReflectionFaceSkipped"
+address = 0x8216A5F8
+registers = ["r26"]
+jump_address_on_true = 0x8216A76C

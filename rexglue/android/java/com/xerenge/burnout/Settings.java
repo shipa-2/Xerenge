@@ -407,7 +407,7 @@ final class Settings {
         if ("false".equals(value("early_submit"))) env("XERENGE_ACQUIRE_FIRST", "1");
         if ("false".equals(value("packed_vertices"))) env("XERENGE_FULL_VERTICES", "1");
         if ("true".equals(value("culling"))) env("XERENGE_CULL", "1");
-        if ("true".equals(value("reflection_split"))) env("XERENGE_REFLECTION_SPLIT", "1");
+        if ("true".equals(value("reflection_split"))) env("XERENGE_REFLECTION_FACES", "2");
         if ("true".equals(value("etc2_textures"))) env("XERENGE_NO_BC", "1");
         if (!value("render_resolution").isEmpty()) env("XERENGE_RENDER_RESOLUTION", value("render_resolution"));
         if ("off".equals(value("anisotropy"))) env("XERENGE_MAX_ANISOTROPY", "1");

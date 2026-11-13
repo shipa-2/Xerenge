@@ -185,7 +185,7 @@ std::vector<std::string> Prepare(const std::filesystem::path& dir, const Config&
   if (conf.Is("early_submit", "false")) Env("XERENGE_ACQUIRE_FIRST", "1");
   if (conf.Is("packed_vertices", "false")) Env("XERENGE_FULL_VERTICES", "1");
   if (conf.Is("culling", "true")) Env("XERENGE_CULL", "1");
-  if (conf.Is("reflection_split", "true")) Env("XERENGE_REFLECTION_SPLIT", "1");
+  if (conf.Is("reflection_split", "true")) Env("XERENGE_REFLECTION_FACES", "2");
   if (conf.Has("render_resolution")) Env("XERENGE_RENDER_RESOLUTION", conf.Get("render_resolution"));
   if (conf.Is("anisotropy", "off")) {
     Env("XERENGE_MAX_ANISOTROPY", "1");

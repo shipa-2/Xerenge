@@ -19,6 +19,7 @@ include(generated/rexglue.cmake)
 set(BURNOUT_SOURCES
     src/main.cpp
     src/pgo_dump.cpp
+    src/reflection_faces.cpp
     src/movie_trace.cpp
     src/menu_trace.cpp
     src/xerenge_menu.cpp
