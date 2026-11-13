@@ -29,6 +29,28 @@ namespace {
 
 using namespace xerenge::plume_d3d;
 
+// The lock around what the Direct3D hooks remember of the title's state, held
+// for a few loads or stores at a time and almost never contended (the title
+// draws from one thread). A std::mutex here was 2.7% of the title's thread in
+// a race on the Xbox One: several a draw, each a call into the C++ runtime's
+// DLL and on into ntdll. This one is an exchange and a store, inline.
+class HookLock {
+ public:
+  void lock() {
+    for (uint32_t spins = 0; held_.exchange(true, std::memory_order_acquire); ++spins) {
+      while (held_.load(std::memory_order_relaxed)) {
+        if (++spins > 64) {
+          std::this_thread::yield();
+        }
+      }
+    }
+  }
+  void unlock() { held_.store(false, std::memory_order_release); }
+
+ private:
+  std::atomic<bool> held_{false};
+};
+
 rex::system::IGraphicsSystem* ActiveGraphicsSystem() {
   auto* kernel_state = REX_KERNEL_STATE();
   if (!kernel_state || !kernel_state->emulator()) {
@@ -776,7 +798,7 @@ struct D3DRenderState {
   uint32_t textures[16] = {};
 };
 
-std::mutex g_state_mutex;
+HookLock g_state_mutex;
 D3DRenderState g_state;
 
 
@@ -1137,7 +1159,7 @@ REX_HOOK_RAW(D3DDevice_DrawIndexedVertices) {
   // known. One sample says little; several with different strides pin down how
   // the words are framed, because the stride bounds every offset in them.
   {
-    static std::mutex mutex;
+    static HookLock mutex;
     static std::set<uint32_t> strides_seen;
     uint32_t decl = 0;
     uint32_t stride = 0;
@@ -1273,11 +1295,20 @@ void RegisterShaderObject(uint32_t object, bool pixel_shader) {
   if (object < 0x10000000u || object >= 0x80000000u) {
     return;
   }
-  static std::mutex mutex;
+  // The objects seen lately, by a few bits of their address: the title binds
+  // the same few dozen shaders thousands of times a frame, and the search of
+  // the set below, under its lock, was 0.6% of its thread in a race.
+  static std::atomic<uint32_t> recent[256];
+  auto& slot = recent[(object >> 4) & 255u];
+  if (slot.load(std::memory_order_relaxed) == object) {
+    return;
+  }
+  static HookLock mutex;
   static std::set<uint32_t> seen;
   {
     std::lock_guard lock(mutex);
     if (!seen.insert(object).second) {
+      slot.store(object, std::memory_order_relaxed);
       return;
     }
   }
@@ -1434,7 +1465,7 @@ REX_HOOK_RAW(D3DDevice_SetRenderTarget) {
   // shadows, reflections and glow - and drawing all of them straight into the
   // window is what covers the screen in blue planes.
   {
-    static std::mutex seen_mutex;
+    static HookLock seen_mutex;
     static std::set<uint32_t> seen;
     const uint32_t surface = ctx.r5.u32;
     bool fresh = false;
