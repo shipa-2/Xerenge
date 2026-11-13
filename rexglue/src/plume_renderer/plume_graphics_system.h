@@ -271,6 +271,18 @@ class PlumeGraphicsSystem final : public system::IGraphicsSystem {
   };
   std::mutex guest_shader_mutex_;
   std::unordered_map<uint32_t, GuestShaderSlot> guest_shaders_;
+  // What NoteShaderLoad last filed, by object: the title loads the same shader
+  // on every draw, and the same bytes into the same object file the same
+  // thing. guest_shader_writes_ counts every write of guest_shaders_ by
+  // anyone, so a memo made before another path's write is not believed.
+  struct ShaderLoadMemo {
+    uint32_t object = 0;
+    uint32_t writes = 0;
+    uint64_t hash = 0;
+    bool pixel_shader = false;
+  };
+  std::array<ShaderLoadMemo, 256> shader_load_memo_{};
+  std::atomic<uint32_t> guest_shader_writes_{0};
   // Every microcode load seen at one physical address. The title reuses these
   // buffers, so an address alone names whichever shader happened to be loaded
   // there last - which is how scene geometry came to be unpacked with the

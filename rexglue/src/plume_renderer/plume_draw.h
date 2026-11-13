@@ -171,20 +171,24 @@ class SharedWords {
     return std::allocate_shared<Words>(PooledAllocator<Words>{}, std::forward<Args>(args)...);
   }
 
-  SharedWords() : words_(Zeroes()) {}
+  // No block at all stands for all zeroes: a snapshot starts with three of
+  // these, and taking a shared block of zeroes for each was three counts up
+  // and three down per draw on one cache line both the title's thread and the
+  // present thread write - 2% of the title's thread in a race on the Xbox One.
+  SharedWords() = default;
   SharedWords(const Words& words) : words_(MakeWords(words)) {}
   SharedWords& operator=(const Words& words) {
     words_ = MakeWords(words);
     return *this;
   }
-  operator Words() const { return *words_; }
+  operator Words() const { return words_ ? *words_ : kZeroes; }
 
   // The words at src - as last's block when they are the same, which they
   // mostly are from one draw to the next; last then follows the new block.
   // A fresh 9 KB copy per draw was a quarter of the title's thread on the
   // Pixel, the allocator returning the memory included.
   void AssignShared(const uint32_t* src, SharedWords& last) {
-    if (last.words_ != Zeroes() && std::memcmp(last.words_->data(), src, sizeof(Words)) == 0) {
+    if (last.words_ && std::memcmp(last.words_->data(), src, sizeof(Words)) == 0) {
       words_ = last.words_;
       return;
     }
@@ -232,19 +236,19 @@ class SharedWords {
   void ShareWith(const SharedWords& last) { words_ = last.words_; }
 
   static constexpr size_t size() { return N; }
-  const uint32_t* data() const { return words_->data(); }
+  const uint32_t* data() const { return words_ ? words_->data() : kZeroes.data(); }
   uint32_t* data() {
     Detach();
     return words_->data();
   }
-  const uint32_t& operator[](size_t i) const { return (*words_)[i]; }
+  const uint32_t& operator[](size_t i) const { return words_ ? (*words_)[i] : kZeroes[i]; }
   uint32_t& operator[](size_t i) {
     Detach();
     return (*words_)[i];
   }
   void fill(uint32_t value) {
     if (value == 0) {
-      words_ = Zeroes();
+      words_.reset();
       return;
     }
     Detach();
@@ -252,14 +256,13 @@ class SharedWords {
   }
 
  private:
-  static const std::shared_ptr<Words>& Zeroes() {
-    static const std::shared_ptr<Words> zeroes = MakeWords();
-    return zeroes;
-  }
+  static inline const Words kZeroes{};
   // Every snapshot starts on the shared zeroes, so the first write always
   // copies, and a fresh one is written by the thread that owns it alone.
   void Detach() {
-    if (words_ == Zeroes() || words_.use_count() != 1) {
+    if (!words_) {
+      words_ = MakeWords();
+    } else if (words_.use_count() != 1) {
       words_ = MakeWords(*words_);
     }
   }

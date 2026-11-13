@@ -490,6 +490,7 @@ uint32_t PlumeGraphicsSystem::CreateGuestShader(const void* shader_container, bo
   {
     std::lock_guard lock(guest_shader_mutex_);
     guest_shaders_[guest_object] = GuestShaderSlot{hash, pixel_shader};
+    guest_shader_writes_.fetch_add(1, std::memory_order_relaxed);
   }
 
   static std::atomic<uint32_t> log_count{0};
@@ -619,6 +620,7 @@ bool PlumeGraphicsSystem::ResolveShaderObject(uint32_t object_guest, bool pixel_
             PlumeShaderCache::Instance().FindByMicrocode(load.hash);
         const uint64_t resolved = micro && micro->shaderHash ? micro->shaderHash : load.hash;
         guest_shaders_[object_guest] = GuestShaderSlot{resolved, pixel_shader};
+        guest_shader_writes_.fetch_add(1, std::memory_order_relaxed);
         const uint32_t n = shader_object_log_count_.fetch_add(1);
         if (n < 8) {
           REXLOG_INFO("plume: shader object {:08X} names {} {:016X} at {:08X} ({} bytes)",
@@ -1656,6 +1658,16 @@ void PlumeGraphicsSystem::NoteShaderLoad(uint32_t object, bool pixel_shader, uin
     return;
   }
   const uint64_t hash = XXH3_64bits(bytes, size);
+  // The same bytes into the same object as last time, and nobody else has
+  // written the table since: it already says what this load would. The
+  // lookup of the microcode, the lock and the table's write were 1.8% of the
+  // title's thread in a race on the Xbox One, a load a draw.
+  ShaderLoadMemo& memo = shader_load_memo_[((object >> 4) ^ (pixel_shader ? 0x80u : 0u)) & 255u];
+  const uint32_t table_writes = guest_shader_writes_.load(std::memory_order_relaxed);
+  if (memo.object == object && memo.hash == hash && memo.pixel_shader == pixel_shader &&
+      memo.writes == table_writes) {
+    return;
+  }
   const ShaderMicrocodeEntry* micro = PlumeShaderCache::Instance().FindByMicrocode(hash);
   // The cache records the stage each microcode was translated as (0 vertex,
   // 1 pixel). A match of the other stage is not this shader.
@@ -1703,6 +1715,7 @@ void PlumeGraphicsSystem::NoteShaderLoad(uint32_t object, bool pixel_shader, uin
       fresh_layout = layouts_from_loads_.insert(resolved).second;
     }
   }
+  memo = ShaderLoadMemo{object, table_writes, hash, pixel_shader};
   // A shader first loaded while the scene is up never went through the ring,
   // so its vertex fetch layout was never read. Read it from the same bytes.
   if (fresh_layout && draw_context_) {
@@ -3717,6 +3730,7 @@ void PlumeGraphicsSystem::BindLoadedShader(uint32_t shader_type, uint64_t microc
       queue.pop_front();
       const uint64_t resolved = shader_hash ? shader_hash : microcode_hash;
       guest_shaders_[object] = GuestShaderSlot{resolved, shader_type != 0};
+      guest_shader_writes_.fetch_add(1, std::memory_order_relaxed);
       const uint32_t n = shader_object_log_count_.fetch_add(1);
       if (n < 8) {
         REXLOG_INFO("plume: shader object {:08X} is {} {:016X}", object,
