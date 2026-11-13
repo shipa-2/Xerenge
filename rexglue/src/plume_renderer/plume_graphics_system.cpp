@@ -1389,7 +1389,12 @@ void PlumeGraphicsSystem::PublishDrawSnapshot(uint32_t prim_type, uint32_t sourc
       uint32_t colorcontrol = 0;
       CopyBeDwords(memory_, &colorcontrol, device + kD3DRenderStateOffset + 8, 1);
       const uint32_t alpha_func = colorcontrol & 0x7u;
-      {
+      // A value logged already is known by a small table first: the set and its
+      // lock, every Direct3D draw, were a tenth of this function.
+      static std::atomic<uint32_t> known[64] = {};
+      std::atomic<uint32_t>& slot = known[(colorcontrol * 0x9E3779B1u) >> 26];
+      if (slot.load(std::memory_order_relaxed) != colorcontrol + 1) {
+        slot.store(colorcontrol + 1, std::memory_order_relaxed);
         static std::mutex seen_mutex;
         static std::set<uint32_t> seen;
         std::lock_guard lock(seen_mutex);
