@@ -8475,6 +8475,7 @@ void PlumeDrawContext::EncodeDraws(plume::RenderCommandList* list,
     const uint32_t vertex_count = rec.vertex_count;
     const std::array<uint64_t, 4>& vs_read = *rec.vs_read;
     const std::array<uint64_t, 4>& ps_read = *rec.ps_read;
+    const bool vulkan = PlumeUsesVulkan();
     // Each block goes into this draw's slot unless it is the same as the one
     // the last draw wrote, which is then used again: neighbouring draws often
     // share their pixel constants, and every block written is 4 KB going into
@@ -8570,28 +8571,7 @@ void PlumeDrawContext::EncodeDraws(plume::RenderCommandList* list,
 
     const uint32_t constant_offsets[3] = {vs_slot * kVsSlotBytes, ps_slot * kPsSlotBytes,
                                           shared_slot * kSharedSlotBytes};
-    // The draw's sampler slots. The title's shaders read slot n for their sampler
-    // register n (the indices FillSharedConstants worked out); the passthrough
-    // shader reads its one texture from slot 0, the video shader its planes from
-    // slots 0-2.
-    DrawBindings bindings;
-    if (video_pipeline) {
-      const uint32_t u = VideoPlaneSlot(snap.video_u_key);
-      bindings.tex2d[0] = VideoPlaneSlot(snap.video_key);
-      bindings.tex2d[1] = u;
-      bindings.tex2d[2] = snap.video_packed_uv ? u : VideoPlaneSlot(snap.video_v_key);
-    } else if (passthrough) {
-      bindings.tex2d[0] = BindlessForTexture(snap);
-    } else {
-      const auto* words = reinterpret_cast<const uint32_t*>(shared);
-      for (uint32_t s = 0; s < kDrawSlots; ++s) {
-        bindings.tex2d[s] = words[s];
-        bindings.layered[s] = words[16 + s];
-        bindings.cube[s] = words[32 + s];
-        bindings.sampler[s] = words[48 + s];
-      }
-    }
-    if (!PlumeUsesVulkan()) {
+    if (!vulkan) {
       // D3D12: the bindless sets are bound for the frame; the shaders find
       // their textures through the indices in the shared constants, and the
       // constants come through root CBVs at this draw's offsets.
@@ -8607,18 +8587,39 @@ void PlumeDrawContext::EncodeDraws(plume::RenderCommandList* list,
         st.bound_draw_set = d3d_sets_[0].get();
       }
     }
-    const uint64_t changes_now = tables_changes();
-    plume::RenderDescriptorSet* draw_set = nullptr;
-    if (!PlumeUsesVulkan()) {
-      draw_set = d3d_sets_[0].get();
-    } else if (st.last_draw_set && changes_now == st.last_tables_changes &&
-        std::memcmp(&bindings, &st.last_bindings, sizeof(bindings)) == 0) {
-      draw_set = st.last_draw_set;
-    } else {
-      draw_set = DrawSetFor(bindings);
-      st.last_bindings = bindings;
-      st.last_draw_set = draw_set;
-      st.last_tables_changes = changes_now;
+    plume::RenderDescriptorSet* draw_set = vulkan ? nullptr : d3d_sets_[0].get();
+    if (vulkan) {
+      // The draw's sampler slots. The title's shaders read slot n for their sampler
+      // register n (the indices FillSharedConstants worked out); the passthrough
+      // shader reads its one texture from slot 0, the video shader its planes from
+      // slots 0-2.
+      DrawBindings bindings;
+      if (video_pipeline) {
+        const uint32_t u = VideoPlaneSlot(snap.video_u_key);
+        bindings.tex2d[0] = VideoPlaneSlot(snap.video_key);
+        bindings.tex2d[1] = u;
+        bindings.tex2d[2] = snap.video_packed_uv ? u : VideoPlaneSlot(snap.video_v_key);
+      } else if (passthrough) {
+        bindings.tex2d[0] = BindlessForTexture(snap);
+      } else {
+        const auto* words = reinterpret_cast<const uint32_t*>(shared);
+        for (uint32_t s = 0; s < kDrawSlots; ++s) {
+          bindings.tex2d[s] = words[s];
+          bindings.layered[s] = words[16 + s];
+          bindings.cube[s] = words[32 + s];
+          bindings.sampler[s] = words[48 + s];
+        }
+      }
+      const uint64_t changes_now = tables_changes();
+      if (st.last_draw_set && changes_now == st.last_tables_changes &&
+          std::memcmp(&bindings, &st.last_bindings, sizeof(bindings)) == 0) {
+        draw_set = st.last_draw_set;
+      } else {
+        draw_set = DrawSetFor(bindings);
+        st.last_bindings = bindings;
+        st.last_draw_set = draw_set;
+        st.last_tables_changes = changes_now;
+      }
     }
     if (!draw_set) {
       static std::atomic<uint32_t> shown{0};
@@ -8628,7 +8629,8 @@ void PlumeDrawContext::EncodeDraws(plume::RenderCommandList* list,
       }
       return;
     }
-    if (draw_set != st.bound_draw_set || std::memcmp(constant_offsets, st.bound_offsets, sizeof(st.bound_offsets)) != 0) {
+    if (vulkan && (draw_set != st.bound_draw_set ||
+                   std::memcmp(constant_offsets, st.bound_offsets, sizeof(st.bound_offsets)) != 0)) {
       list->setGraphicsDescriptorSetDynamic(draw_set, 0, constant_offsets, 3);
       st.bound_draw_set = draw_set;
       std::memcpy(st.bound_offsets, constant_offsets, sizeof(st.bound_offsets));
