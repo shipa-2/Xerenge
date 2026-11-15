@@ -806,6 +806,10 @@ class PlumeDrawContext {
     // The frame this texture was last bound in, for evicting the stalest one
     // when the bindless slots run out.
     uint64_t last_used = 0;
+    // The frame this texture was last processed in by BindGuestTextures: a
+    // draw rebinding it later in the same frame is skipped by this stamp
+    // alone, not by a scan of every texture the frame has seen.
+    uint64_t done_frame = 0;
     // The frame its staging buffers were last filled in: unused for a while,
     // they are let go (TrimGuestTextures).
     uint64_t last_upload = 0;
@@ -860,6 +864,20 @@ class PlumeDrawContext {
   // The same atlas is bound by many draws in a frame, and without this each
   // of them repeats the whole untile-convert-upload for identical bytes.
   std::vector<uint64_t> textures_done_this_frame_;
+
+  // Fetch constants (a hash of their raw bytes) already handled during
+  // the current BindGuestTextures call. A mention byte-identical to an
+  // earlier one is the same texture with the same sampler state, so it
+  // is skipped on one hash probe instead of two map lookups.
+  std::unordered_set<uint64_t> fetch_seen_this_frame_;
+
+  // UsedTextureSlots is a pure function of the draw's shader hashes;
+  // consecutive draws usually share the pair, so the last few pairs'
+  // answers are kept. Never cached while the VS info is unresolved.
+  mutable bool usedslots_cache_valid_[4] = {};
+  mutable uint64_t usedslots_cache_ps_[4] = {};
+  mutable uint64_t usedslots_cache_vs_[4] = {};
+  mutable uint32_t usedslots_cache_result_[4] = {};
 
   plume::RenderDevice* device_ = nullptr;
   bool ready_ = false;

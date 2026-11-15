@@ -3925,18 +3925,94 @@ uint64_t CoarseMs() {
 #endif
 }
 
+#if defined(_WIN32) && (defined(__x86_64__) || defined(_M_X64))
+#include <intrin.h>
+#elif defined(__x86_64__)
+#include <x86intrin.h>
+#endif
+
+// The instrumentation's own clock. QueryPerformanceCounter crosses the
+// Xbox hypervisor and costs microseconds a call; the stage timers read it
+// thousands of times a frame, and a tenth of the measured encode was the
+// measuring. The TSC reads in ~20 cycles; its rate is calibrated once
+// against the steady clock.
+uint64_t CheapNs() {
+#if defined(__x86_64__) || defined(_M_X64)
+  static const double ns_per_tick = [] {
+    const auto a = std::chrono::steady_clock::now();
+    const uint64_t t0 = __rdtsc();
+    std::this_thread::sleep_for(std::chrono::milliseconds(100));
+    const uint64_t t1 = __rdtsc();
+    const auto b = std::chrono::steady_clock::now();
+    const double ns =
+        double(std::chrono::duration_cast<std::chrono::nanoseconds>(b - a).count());
+    return ns > 0.0 && t1 > t0 ? ns / double(t1 - t0) : 1.0;
+  }();
+  return uint64_t(double(__rdtsc()) * ns_per_tick);
+#else
+  return uint64_t(std::chrono::duration_cast<std::chrono::nanoseconds>(
+                      std::chrono::steady_clock::now().time_since_epoch())
+                      .count());
+#endif
+}
+
 // Where FillVertices spends its time, in four parts, reported every few
 // seconds: the garage ran at twenty frames a second on unpacking alone.
 std::atomic<uint64_t> g_fill_ns[4];
-void FillPhase(int phase, std::chrono::steady_clock::time_point& mark) {
+void FillPhase(int phase, uint64_t& mark) {
   if (!PlumeTiming()) {
     return;
   }
-  const auto now = std::chrono::steady_clock::now();
-  g_fill_ns[phase].fetch_add(
-      std::chrono::duration_cast<std::chrono::nanoseconds>(now - mark).count(),
-      std::memory_order_relaxed);
+  const uint64_t now = CheapNs();
+  g_fill_ns[phase].fetch_add(now - mark, std::memory_order_relaxed);
   mark = now;
+}
+
+constexpr size_t kTextureBindPhaseCount = 8;
+std::atomic<uint64_t> g_texture_bind_ns[kTextureBindPhaseCount];
+std::atomic<uint64_t> g_bind_mentions{0};
+std::atomic<uint64_t> g_bind_first{0};
+std::atomic<uint64_t> g_bind_draws{0};
+
+void TextureBindPhase(size_t phase, uint64_t& mark) {
+  if (!PlumeTiming()) {
+    return;
+  }
+  const uint64_t now = CheapNs();
+  g_texture_bind_ns[phase].fetch_add(now - mark, std::memory_order_relaxed);
+  mark = now;
+}
+
+void ReportTextureBindPhases() {
+  if (!PlumeTiming()) {
+    return;
+  }
+  auto take = [](std::atomic<uint64_t>& c) {
+    return c.exchange(0, std::memory_order_relaxed);
+  };
+  static std::atomic<uint64_t> frames{0};
+  static std::atomic<uint64_t> last_ms{0};
+  const uint64_t n = frames.fetch_add(1, std::memory_order_relaxed) + 1;
+  const uint64_t now = CoarseMs();
+  uint64_t was = last_ms.load(std::memory_order_relaxed);
+  if (now - was < 2000 || !last_ms.compare_exchange_strong(was, now)) {
+    return;
+  }
+  const uint64_t mentions = take(g_bind_mentions);
+  const uint64_t first = take(g_bind_first);
+  const uint64_t draws_n = take(g_bind_draws);
+  static const char* const names[kTextureBindPhaseCount] = {
+      "setup", "checking", "layered", "untile", "convert", "mips", "upload", "other",
+  };
+  std::string out;
+  for (size_t i = 0; i < kTextureBindPhaseCount; ++i) {
+    const uint64_t us = g_texture_bind_ns[i].exchange(0, std::memory_order_relaxed) / 1000;
+    out += fmt::format(" {}={}us", names[i], us / n);
+  }
+  REXLOG_INFO("plume: texture binding phases per frame ({} frames):{} mentions={} first={} "
+              "draws={}",
+              n, out, mentions / n, first / n, draws_n / n);
+  frames.store(0, std::memory_order_relaxed);
 }
 
 // XERENGE_NO_FINISH_AHEAD=1: the worker threads only unpack a draw, into
@@ -4619,8 +4695,7 @@ void PlumeDrawContext::CheckPackedWrites() {
 
 uint32_t PlumeDrawContext::FillVertices(const GuestDrawSnapshot& snap, memory::Memory* memory,
                                         uint32_t base_vertex, bool passthrough) {
-  auto fill_mark = PlumeTiming() ? std::chrono::steady_clock::now()
-                                 : std::chrono::steady_clock::time_point{};
+  uint64_t fill_mark = PlumeTiming() ? CheapNs() : 0;
   last_fill_cache_offset_ = ~0u;
   last_fill_vb_offset_ = ~0u;
   last_fill_kind_ = passthrough ? 4 : 3;
@@ -5880,6 +5955,17 @@ uint32_t PlumeDrawContext::UsedTextureSlots(const GuestDrawSnapshot& snap) const
   if (snap.d3d_vertex_buffer == 0 || snap.has_video_frame() || snap.ps_hash == 0) {
     return ~0u;
   }
+  // A pure function of the two shader hashes, and a run of draws shares
+  // its shader pair: the last few pairs' answers are kept (draws
+  // alternate between more than one shader). Not cached while the VS
+  // is unresolved (no vfetch info yet): the answer could change once
+  // the shader's declarations are known.
+  const size_t cache_idx = size_t((snap.ps_hash ^ snap.vs_hash) & 3u);
+  if (usedslots_cache_valid_[cache_idx] &&
+      usedslots_cache_ps_[cache_idx] == snap.ps_hash &&
+      usedslots_cache_vs_[cache_idx] == snap.vs_hash) {
+    return usedslots_cache_result_[cache_idx];
+  }
   const uint32_t ps_slots = ShaderSamplerSlots(snap.ps_hash);
   if (ps_slots == ~0u) {
     return ~0u;
@@ -5893,6 +5979,12 @@ uint32_t PlumeDrawContext::UsedTextureSlots(const GuestDrawSnapshot& snap) const
       return ~0u;
     }
     used |= (vs_slots & 0xFu) << 16;
+  }
+  if (vs_info) {
+    usedslots_cache_valid_[cache_idx] = true;
+    usedslots_cache_ps_[cache_idx] = snap.ps_hash;
+    usedslots_cache_vs_[cache_idx] = snap.vs_hash;
+    usedslots_cache_result_[cache_idx] = used;
   }
   return used;
 }
@@ -6839,6 +6931,8 @@ void PlumeDrawContext::BindGuestTextures(plume::RenderCommandList* list,
   using rex::graphics::xenos::FetchConstantType;
   using rex::graphics::xenos::TextureFormat;
   textures_done_this_frame_.clear();
+  fetch_seen_this_frame_.clear();
+  fetch_seen_this_frame_.reserve(4096);
   EncodeStage("textures", nullptr);
   TrapRearm(memory);
   // The vertex cache starts over when nearly full; the previous frame has
@@ -6869,6 +6963,7 @@ void PlumeDrawContext::BindGuestTextures(plume::RenderCommandList* list,
   // this stage. Hashed here on the worker threads first, all at once; the
   // loop below takes the result.
   std::unordered_map<uint64_t, uint64_t> frame_hashes;
+  uint64_t texture_bind_mark = 0;
   {
     // Off on the Xbox One (XERENGE_WRITE_WATCH=1 turns it on): thousands of
     // page protection changes a frame on its memory views, and a fault per
@@ -7069,7 +7164,10 @@ void PlumeDrawContext::BindGuestTextures(plume::RenderCommandList* list,
     }
   }
 
+  texture_bind_mark = PlumeTiming() ? CheapNs() : 0;
   for (size_t snap_index = 0; snap_index < draws.size(); ++snap_index) {
+    TextureBindPhase(7, texture_bind_mark);
+    g_bind_draws.fetch_add(1, std::memory_order_relaxed);
     const GuestDrawSnapshot& snap = draws[snap_index];
     if (!snap.valid || Skipped(snap_index)) {
       continue;
@@ -7163,6 +7261,8 @@ void PlumeDrawContext::BindGuestTextures(plume::RenderCommandList* list,
     }
     const uint32_t used_slots = UsedTextureSlots(snap);
     for (uint32_t slot = 0; slot < rex::graphics::xenos::kTextureFetchConstantCount; ++slot) {
+      TextureBindPhase(7, texture_bind_mark);
+      TextureBindPhase(0, texture_bind_mark);
       if (captured && slot < 3) {
         continue;
       }
@@ -7173,19 +7273,37 @@ void PlumeDrawContext::BindGuestTextures(plume::RenderCommandList* list,
       if (fetch.type != FetchConstantType::kTexture || fetch.base_address == 0) {
         continue;
       }
-      EnsureSampler(snap, slot);
-      // Before Prepare, which runs for every texture slot of every draw while
-      // a frame's draws overwhelmingly rebind the same few textures.
-      const uint64_t key = TextureKey(fetch);
-      if (std::find(textures_done_this_frame_.begin(), textures_done_this_frame_.end(), key) !=
-          textures_done_this_frame_.end()) {
+      // A mention whose fetch bytes are identical to an earlier one this
+      // frame binds the same texture with the same sampler state: the
+      // first mention already ensured both, so a re-mention costs one
+      // hash probe instead of sampler and texture map lookups.
+      const uint64_t fetch_seen_key = XXH3_64bits(&fetch, sizeof(fetch));
+      if (!fetch_seen_this_frame_.insert(fetch_seen_key).second) {
         continue;
       }
-      textures_done_this_frame_.push_back(key);
+      EnsureSampler(snap, slot);
+      // Before Prepare, which runs for every texture slot of every draw while
+      // a frame's draws overwhelmingly rebind the same few textures. A texture
+      // already known is stamped with the frame and skipped on its next
+      // mention outright; only one never uploaded goes through the frame's
+      // list, which stays empty while nothing new fails.
+      const uint64_t key = TextureKey(fetch);
+      g_bind_mentions.fetch_add(1, std::memory_order_relaxed);
       if (auto used = guest_textures_.find(key); used != guest_textures_.end() && used->second) {
+        if (used->second->done_frame == frame_serial_) {
+          continue;
+        }
+        used->second->done_frame = frame_serial_;
         used->second->last_used = frame_serial_;
+      } else {
+        if (std::find(textures_done_this_frame_.begin(), textures_done_this_frame_.end(), key) !=
+            textures_done_this_frame_.end()) {
+          continue;
+        }
+        textures_done_this_frame_.push_back(key);
       }
 
+      g_bind_first.fetch_add(1, std::memory_order_relaxed);
       rex::graphics::TextureInfo info{};
       if (!rex::graphics::TextureInfo::Prepare(fetch, &info)) {
         continue;
@@ -7217,14 +7335,18 @@ void PlumeDrawContext::BindGuestTextures(plume::RenderCommandList* list,
       if (!src) {
         continue;
       }
+      TextureBindPhase(0, texture_bind_mark);
       // Every layer, for the shaders that sample it as a volume. The 2D view
       // below keeps layer 0 for those that do not.
       if (info.depth > 0 && volume_set_) {
         const TextureFormat layered_fmt = rex::graphics::GetBaseFormat(fetch.format);
+        TextureBindPhase(2, texture_bind_mark);
         UploadLayeredTexture(list, key, info, src, host_format, expand_r8,
                              layered_fmt == TextureFormat::k_8_8_8_8 ||
                                  layered_fmt == TextureFormat::k_8_8_8_8_A);
+        TextureBindPhase(2, texture_bind_mark);
       }
+      TextureBindPhase(1, texture_bind_mark);
 
       // Untiling and uploading is expensive, and between frames most guest
       // textures do not change at all - repeating it for identical bytes is
@@ -7245,12 +7367,15 @@ void PlumeDrawContext::BindGuestTextures(plume::RenderCommandList* list,
       } else if (source_size) {
         content = TextureContentHash(src, source_size, mip_src, mip_src ? mips.size : 0);
       }
+      bool unchanged = false;
       if (content != 0) {
         auto it = guest_textures_.find(key);
-        if (it != guest_textures_.end() && it->second && it->second->uploaded &&
-            it->second->content_hash == content) {
-          continue;
-        }
+        unchanged = it != guest_textures_.end() && it->second && it->second->uploaded &&
+                    it->second->content_hash == content;
+      }
+      TextureBindPhase(1, texture_bind_mark);
+      if (unchanged) {
+        continue;
       }
 
       std::vector<uint8_t> pixels;
@@ -7258,21 +7383,27 @@ void PlumeDrawContext::BindGuestTextures(plume::RenderCommandList* list,
       uint32_t row_texels = 0;
       const TextureFormat base_fmt = rex::graphics::GetBaseFormat(fetch.format);
       const bool alpha_mask = base_fmt == TextureFormat::k_8_A;
-      if (!UntileGuestTexture(info, src, &pixels, &row_bytes, &row_texels, expand_r8, alpha_mask) ||
-          pixels.empty() || row_bytes == 0) {
+      const bool untiled =
+          UntileGuestTexture(info, src, &pixels, &row_bytes, &row_texels, expand_r8, alpha_mask) &&
+          !pixels.empty() && row_bytes != 0;
+      TextureBindPhase(3, texture_bind_mark);
+      if (!untiled) {
         continue;
       }
       const bool swizzle_bgra =
           base_fmt == TextureFormat::k_8_8_8_8 || base_fmt == TextureFormat::k_8_8_8_8_A;
       bool forced_opaque = false;
+      bool converted = true;
       if (swizzle_bgra) {
         SwizzleBgraToRgba(&pixels, height, row_bytes);
         forced_opaque = ForceOpaqueIfXrgb(&pixels, width, height, row_bytes);
       } else if (base_fmt == TextureFormat::k_Cr_Y1_Cb_Y0_REP ||
                  base_fmt == TextureFormat::k_Y1_Cr_Y0_Cb_REP) {
-        if (!Convert422ToRgba(base_fmt, width, height, &pixels, &row_bytes, &row_texels)) {
-          continue;
-        }
+        converted = Convert422ToRgba(base_fmt, width, height, &pixels, &row_bytes, &row_texels);
+      }
+      if (!converted) {
+        TextureBindPhase(4, texture_bind_mark);
+        continue;
       }
       // The game's button icons, another controller's in their place when one
       // is chosen (XERENGE_PROMPTS): plain RGBA whatever the game's were (the
@@ -7342,6 +7473,7 @@ void PlumeDrawContext::BindGuestTextures(plume::RenderCommandList* list,
         }
         ++dump_count;
       }
+      TextureBindPhase(4, texture_bind_mark);
       // Without its mips a texture seen from afar is sampled at full size, and
       // the road and the buildings in the distance glitter and crawl.
       std::vector<HostMipLevel> mip_levels;
@@ -7415,8 +7547,11 @@ void PlumeDrawContext::BindGuestTextures(plume::RenderCommandList* list,
           host_format = plume::RenderFormat::R8G8B8A8_UNORM;
         }
       }
-      if (!UploadHostTexture(list, key, width, height, host_format, pixels, row_texels,
-                             &mip_levels)) {
+      TextureBindPhase(5, texture_bind_mark);
+      const bool uploaded = UploadHostTexture(list, key, width, height, host_format, pixels,
+                                              row_texels, &mip_levels);
+      TextureBindPhase(6, texture_bind_mark);
+      if (!uploaded) {
         continue;
       }
       // Remember what was uploaded so the next frame can tell this texture is
@@ -7486,6 +7621,8 @@ void PlumeDrawContext::BindGuestTextures(plume::RenderCommandList* list,
       }
     }
   }
+  TextureBindPhase(7, texture_bind_mark);
+  ReportTextureBindPhases();
 }
 
 uint32_t PlumeDrawContext::BindlessForTexture(const GuestDrawSnapshot& snap) const {
@@ -7722,20 +7859,19 @@ void AccountEncodeStage(const char* next) {
   }
   // A few times a draw: a flat table found by the stage's address, not two
   // maps, and each stage's place kept, so a switch costs a clock read and
-  // two additions.
+  // two additions. Only the present thread ever calls EncodeStage (the
+  // workers time themselves into plain arrays), so no lock on the table.
   struct StageTime {
     const char* name;
     bool idle;
     uint64_t total_ns;
     uint64_t frame_ns;
   };
-  static std::mutex stage_mutex;
-  std::lock_guard stage_lock(stage_mutex);
   static std::array<StageTime, 64> stages{};
   static size_t stage_count = 0;
   static StageTime* current = nullptr;
-  static auto since = std::chrono::steady_clock::now();
-  static auto last_report = since;
+  static uint64_t since = CheapNs();
+  static uint64_t last_report = since;
   static uint64_t frames = 0;
   const auto slot_of = [](const char* name) -> StageTime* {
     for (size_t i = 0; i < stage_count; ++i) {
@@ -7749,10 +7885,9 @@ void AccountEncodeStage(const char* next) {
     stages[stage_count] = {name, std::strcmp(name, "idle") == 0, 0, 0};
     return &stages[stage_count++];
   };
-  const auto now = std::chrono::steady_clock::now();
+  const uint64_t now = CheapNs();
   if (current) {
-    const uint64_t ns =
-        uint64_t(std::chrono::duration_cast<std::chrono::nanoseconds>(now - since).count());
+    const uint64_t ns = now >= since ? now - since : 0;
     current->total_ns += ns;
     if (!current->idle) {
       current->frame_ns += ns;
@@ -7781,7 +7916,7 @@ void AccountEncodeStage(const char* next) {
   }
   current = next_slot;
   since = now;
-  if (now - last_report >= std::chrono::seconds(2) && frames != 0) {
+  if (now - last_report >= 2000000000ull && frames != 0) {
     std::string out;
     for (size_t i = 0; i < stage_count; ++i) {
       if (!stages[i].idle && stages[i].total_ns != 0) {
@@ -7797,20 +7932,25 @@ void AccountEncodeStage(const char* next) {
 
 void EncodeStage(const char* stage, const GuestDrawSnapshot* snap) {
   HeapCheck(stage);
-  // Per draw, so only in debug mode: the stage times and the stuck-encoder
-  // watchdog (which ignores a stage with no time, as here) both read the clock.
-  if (!xerenge::Diagnostics()) {
-    g_encode_stage.store(stage, std::memory_order_release);
-    return;
+  // The watchdog's clock read only where the stage changes: thousands of
+  // EncodeStage calls a frame, and QueryPerformanceCounter crosses the
+  // Xbox hypervisor - one per call slowed the release build by millis. A
+  // stuck encoder stays in a single stage, so the timestamp of its entry
+  // is the one that matters.
+  static const char* last_stage = nullptr;
+  if (stage != last_stage) {
+    last_stage = stage;
+    g_encode_stage_since_ms.store(NowMs(), std::memory_order_relaxed);
+    if (snap) {
+      g_encode_vs.store(snap->vs_hash, std::memory_order_relaxed);
+      g_encode_ps.store(snap->ps_hash, std::memory_order_relaxed);
+      g_encode_indices.store(snap->num_indices, std::memory_order_relaxed);
+    }
   }
-  AccountEncodeStage(stage);
-  if (snap) {
-    g_encode_vs.store(snap->vs_hash, std::memory_order_relaxed);
-    g_encode_ps.store(snap->ps_hash, std::memory_order_relaxed);
-    g_encode_indices.store(snap->num_indices, std::memory_order_relaxed);
-  }
-  g_encode_stage_since_ms.store(NowMs(), std::memory_order_relaxed);
   g_encode_stage.store(stage, std::memory_order_release);
+  if (xerenge::Diagnostics()) {
+    AccountEncodeStage(stage);
+  }
 }
 
 void StartEncodeWatchdog() {
