@@ -21,6 +21,9 @@
 #include <QLineEdit>
 #include <QMap>
 #include <QMessageBox>
+#include <QNetworkAccessManager>
+#include <QNetworkReply>
+#include <QNetworkRequest>
 #include <QProcess>
 #include <QProcessEnvironment>
 #include <QProgressBar>
@@ -33,8 +36,11 @@
 #include <QTabWidget>
 #include <QTextStream>
 #include <QToolButton>
+#include <QUrl>
 #include <QVBoxLayout>
 #include <QtConcurrent/QtConcurrentRun>
+
+#include <QEventLoop>
 
 #include <functional>
 
@@ -58,6 +64,14 @@ constexpr const char* kXexSha256Us =
     "5258c75d9ae649ed4fb71d4e2fe8808545db16092cfe764ea1a2504f5aae2e2d";
 
 constexpr const char* kDesktopId = "xerenge-burnout-revenge.desktop";
+
+// The game's title updates (xboxunity.net), put into the game directory at
+// the end of the installation - among the game's own files, where a build of
+// the runtime that applies them looks.
+constexpr const char* kTitleUpdates[] = {
+    "https://xboxunity.net/Resources/Lib/TitleUpdate.php?tuid=23567",
+    "https://xboxunity.net/Resources/Lib/TitleUpdate.php?tuid=20954",
+};
 
 // The launcher the shortcuts start (launcher.cpp), from the payload: it reads
 // xerenge.conf and starts the game. It replaces the script installs before
@@ -1091,6 +1105,12 @@ void InstallerWindow::StartInstall() {
   if (shortcuts_) {
     steps_.append({tr("Creating the shortcuts"), 1, [this] { StepFinished(CreateShortcuts()); }});
   }
+  // Last: the title updates, into the game directory.
+  steps_.append({tr("Downloading title updates"), 2, [this, game_dir] {
+                  RunInBackground([this, game_dir](std::function<void(double)> progress) {
+                    return DownloadTitleUpdates(game_dir, progress);
+                  });
+                }});
 
   weight_total_ = 0;
   for (const Step& step : steps_) {
@@ -1277,6 +1297,73 @@ bool InstallerWindow::IsUsGame(const QString& game_dir) {
     return false;
   }
   return hash.result().toHex() == kXexSha256Us;
+}
+
+QString InstallerWindow::DownloadTitleUpdates(const QString& game_dir,
+                                              const std::function<void(double)>& progress) const {
+  constexpr int kCount = int(sizeof(kTitleUpdates) / sizeof(kTitleUpdates[0]));
+  QNetworkAccessManager network;
+  for (int i = 0; i < kCount; ++i) {
+    const QUrl url(QString::fromLatin1(kTitleUpdates[i]));
+    QNetworkRequest request(url);
+    request.setAttribute(QNetworkRequest::RedirectPolicyAttribute,
+                         QNetworkRequest::NoLessSafeRedirectPolicy);
+    QNetworkReply* reply = network.get(request);
+    QEventLoop wait;
+    QObject::connect(reply, &QNetworkReply::finished, &wait, &QEventLoop::quit);
+    QObject::connect(reply, &QNetworkReply::downloadProgress, &wait,
+                     [this, i, progress](qint64 bytes, qint64 total) {
+                       const double part = total > 0 ? double(bytes) / total : 0.0;
+                       progress((i + part) / kCount);
+                     });
+    wait.exec();
+    const QByteArray body = reply->readAll();
+    const auto error = reply->error();
+    const QString error_text = reply->errorString();
+    // The file's name as the server names it (TU_...); a plain one otherwise.
+    QString name;
+    const QByteArray disposition = reply->rawHeader("Content-Disposition");
+    static const QRegularExpression filename("filename=([^;]+)");
+    if (const auto m = filename.match(QString::fromLatin1(disposition)); m.hasMatch()) {
+      name = m.captured(1).trimmed().remove('"');
+    }
+    if (name.isEmpty()) {
+      name = QStringLiteral("tu_%1.bin").arg(url.query());
+      name.remove(QStringLiteral("tuid="));
+    }
+    reply->deleteLater();
+    if (error != QNetworkReply::NoError) {
+      // Not failed over: the game runs without the update. Said in the log.
+      if (!log_path_.isEmpty()) {
+        QFile log(log_path_);
+        if (log.open(QIODevice::Append | QIODevice::Text)) {
+          log.write(QStringLiteral("\ntitle update %1: %2\n")
+                        .arg(url.toString(), error_text)
+                        .toUtf8());
+        }
+      }
+      continue;
+    }
+    QSaveFile out(QDir(game_dir).filePath(name));
+    if (!out.open(QIODevice::WriteOnly)) {
+      continue;
+    }
+    out.write(body);
+    if (!out.commit()) {
+      continue;
+    }
+    if (!log_path_.isEmpty()) {
+      QFile log(log_path_);
+      if (log.open(QIODevice::Append | QIODevice::Text)) {
+        log.write(QStringLiteral("\ntitle update %1 -> %2 (%3 bytes)\n")
+                      .arg(url.toString(), name)
+                      .arg(body.size())
+                      .toUtf8());
+      }
+    }
+  }
+  progress(1.0);
+  return {};
 }
 
 QString InstallerWindow::WriteSettings() const {

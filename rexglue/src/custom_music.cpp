@@ -65,6 +65,7 @@ bool g_scanned = false;
 bool g_mounted = false;
 std::filesystem::path g_dir;
 std::vector<std::filesystem::path> g_files;  // the whole folder
+size_t g_play_index = 0;  // the next song to play, across the folder's pages
 std::vector<Track> g_tracks;                 // the page on show, in the game's 41 places
 uint32_t g_page = 0;
 // The folder listed again in the background (Rescan), for the next visit.
@@ -507,6 +508,28 @@ std::vector<std::filesystem::path> ListFolder(const std::filesystem::path& dir) 
   return files;
 }
 
+// --- the soundtrack through crashes and takedowns ----------------------------
+// XERENGE_CRASH_MUSIC=1 / XERENGE_TAKEDOWN_MUSIC=1 keep the soundtrack
+// playing through the crash camera and a takedown's camera. Off - the
+// default - the game stops the music there, as it always has. The stop is a
+// pause when the camera starts; the SDK holds it for a few seconds, and the
+// continue the camera asks for on its way out arrives inside the window and
+// discards it - the music never stops. A real pause (the pause menu) has no
+// continue, and lands when the window ends.
+namespace {
+
+bool CrashMusicOn() {
+  static const bool on = std::getenv("XERENGE_CRASH_MUSIC") != nullptr;
+  return on;
+}
+
+bool TakedownMusicOn() {
+  static const bool on = std::getenv("XERENGE_TAKEDOWN_MUSIC") != nullptr;
+  return on;
+}
+
+}  // namespace
+
 void Scan() {
   if (g_scanned) {
     return;
@@ -547,18 +570,23 @@ void Scan() {
   if (device->Initialize() && REX_KERNEL_FS()->RegisterDevice(std::move(device))) {
     REX_KERNEL_FS()->RegisterSymbolicLink("xmusic:", "\\Device\\XerengeMusic");
   }
+  rex::kernel::xam::SetXmpPauseHold([] {
+    return CrashMusicOn() || TakedownMusicOn();
+  });
   rex::kernel::xam::SetXmpSongPathResolver([](const std::string& path) {
     std::lock_guard<std::mutex> lock(g_mutex);
     const std::string lower = Lower(path);
     const size_t at = lower.find("eatrax\\");
-    if (!g_custom || g_tracks.empty() || at == std::string::npos || at + 9 > lower.size() ||
+    if (!g_custom || g_files.empty() || at == std::string::npos || at + 9 > lower.size() ||
         !std::isdigit(static_cast<unsigned char>(lower[at + 7])) ||
         !std::isdigit(static_cast<unsigned char>(lower[at + 8]))) {
       return path;
     }
-    const size_t number = size_t((lower[at + 7] - '0') * 10 + (lower[at + 8] - '0'));
-    // Its path under the folder, subfolders and all (recursive_scan).
-    std::string relative = g_tracks[number % g_tracks.size()].file.lexically_relative(g_dir).string();
+    // The whole folder, across its pages: each song that starts takes the next
+    // of all the files, whatever page Song Manager shows. (The number in the
+    // path names a slot of the page on show; played across every page so the
+    // folder's songs all come round.)
+    std::string relative = g_files[g_play_index++ % g_files.size()].lexically_relative(g_dir).string();
     std::replace(relative.begin(), relative.end(), '/', '\\');
     return "xmusic:\\" + relative;
   });
@@ -642,6 +670,7 @@ void EnsureApplied(uint8_t* base) {
 }
 
 }  // namespace
+
 
 namespace xerenge::music {
 
@@ -775,3 +804,4 @@ REX_HOOK_RAW(sub_821AAB88) {
   __imp__sub_821AAB88(ctx, base);
   EnsureApplied(base);
 }
+

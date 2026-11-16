@@ -44,18 +44,19 @@ import java.util.Locale;
 final class TouchControls extends View implements InputManager.InputDeviceListener {
     // SDL_GamepadButton and SDL_GamepadAxis.
     private static final int A = 0, B = 1, X = 2, Y = 3, BACK = 4, START = 6, LB = 9, RB = 10;
+    private static final int DPAD_UP = 11, DPAD_DOWN = 12, DPAD_LEFT = 13, DPAD_RIGHT = 14;
     private static final int LEFT_X = 0, LEFT_Y = 1, LEFT_TRIGGER = 4, RIGHT_TRIGGER = 5;
 
     private static native boolean nativeAttach();
     private static native void nativeButton(int button, boolean down);
     private static native void nativeAxis(int axis, float value);
 
-    /** A round control: a button, a trigger pressed all the way, the stick's place, or the menu. */
+    /** A round control: a button, a trigger pressed all the way, the stick's place, a d-pad direction, or the menu. */
     private static final class Control {
         final String label;
         final int button;   // or -1
         final int trigger;  // or -1
-        final boolean stick, menu;
+        final boolean stick, menu, dpad;
         float x, y, radius;  // pixels; set in layout
         float fx, fy, fr;    // x of the width, y of the height, size in units; the player's layout
         final float dfx, dfy, dfr;  // the stock layout
@@ -67,6 +68,8 @@ final class TouchControls extends View implements InputManager.InputDeviceListen
             this.trigger = trigger;
             this.stick = label.equals("Stick");
             this.menu = label.equals("Menu");
+            this.dpad = label.equals("Up") || label.equals("Down")
+                    || label.equals("Left") || label.equals("Right");
             this.fx = dfx = fx;
             this.fy = dfy = fy;
             this.fr = dfr = fr;
@@ -97,8 +100,15 @@ final class TouchControls extends View implements InputManager.InputDeviceListen
         new Control("Start", START, -1, 0.52f, 0.09f, 0.38f),
         new Control("Stick", -1, -1, 0.17f, 0.66f, 1.15f),
         new Control("Menu", -1, -1, 0.96f, 0.08f, 0.32f),
+        // The d-pad cross, where the stick's place is: shown in place of the
+        // stick when the layout's D-pad switch is on (digital steering).
+        new Control("Up", DPAD_UP, -1, 0.17f, 0.55f, 0.42f),
+        new Control("Down", DPAD_DOWN, -1, 0.17f, 0.77f, 0.42f),
+        new Control("Left", DPAD_LEFT, -1, 0.06f, 0.66f, 0.42f),
+        new Control("Right", DPAD_RIGHT, -1, 0.28f, 0.66f, 0.42f),
     };
     private final Control stickControl = controls[10];
+    private boolean dpadMode;  // the stick's place holds a d-pad cross instead
 
     private boolean padVisible;  // the pad itself; the menu button is always there
     // touch_controls = auto: the pad is hidden while a gamepad is connected.
@@ -113,8 +123,8 @@ final class TouchControls extends View implements InputManager.InputDeviceListen
     private Control selected;
     private int dragPointer = -1;
     private float dragDx, dragDy;
-    private final RectF[] editButtons = {new RectF(), new RectF(), new RectF(), new RectF()};
-    private static final String[] EDIT_LABELS = {"-", "+", "Reset", "Done"};
+    private final RectF[] editButtons = {new RectF(), new RectF(), new RectF(), new RectF(), new RectF()};
+    private static final String[] EDIT_LABELS = {"-", "+", "Reset", "D-pad", "Done"};
 
     // The stick.
     private float stickRestX, stickRestY, stickRadius;
@@ -287,9 +297,15 @@ final class TouchControls extends View implements InputManager.InputDeviceListen
                 if (line.startsWith("#") || equals <= 0) {
                     continue;
                 }
+                String key = line.substring(0, equals).trim();
+                if (key.equals("Dpad")) {
+                    // The stick/d-pad switch: a d-pad cross in the stick's place.
+                    dpadMode = line.substring(equals + 1).trim().equals("true");
+                    continue;
+                }
                 String[] v = line.substring(equals + 1).trim().split("\\s+");
                 for (Control control : controls) {
-                    if (control.label.equals(line.substring(0, equals).trim()) && v.length == 3) {
+                    if (control.label.equals(key) && v.length == 3) {
                         try {
                             control.fx = clamp(Float.parseFloat(v[0]), 0f, 1f);
                             control.fy = clamp(Float.parseFloat(v[1]), 0f, 1f);
@@ -309,6 +325,7 @@ final class TouchControls extends View implements InputManager.InputDeviceListen
             out.append(control.label).append(" = ")
                .append(String.format(Locale.US, "%.4f %.4f %.3f", control.fx, control.fy, control.fr)).append('\n');
         }
+        out.append("Dpad = ").append(dpadMode).append('\n');
         try (OutputStreamWriter writer = new OutputStreamWriter(new FileOutputStream(layoutFile()), StandardCharsets.UTF_8)) {
             writer.write(out.toString());
         } catch (Exception ignored) {
@@ -333,7 +350,7 @@ final class TouchControls extends View implements InputManager.InputDeviceListen
 
     @Override
     protected void onDraw(Canvas canvas) {
-        if (padVisible || editing) {
+        if ((padVisible || editing) && !dpadMode) {
             // The stick: its base, and the knob where the thumb is.
             paintColor(false, 0.5f);
             canvas.drawCircle(stickCentreX, stickCentreY, stickRadius, fill);
@@ -342,7 +359,8 @@ final class TouchControls extends View implements InputManager.InputDeviceListen
             canvas.drawCircle(stickX, stickY, stickRadius * 0.45f, fill);
         }
         for (Control control : controls) {
-            if (control.stick || (!padVisible && !editing && !control.menu)) {
+            if ((control.stick && dpadMode) || (control.dpad && !dpadMode)
+                    || (!padVisible && !editing && !control.menu)) {
                 continue;
             }
             paintColor(control.down, 1.0f);
@@ -420,7 +438,7 @@ final class TouchControls extends View implements InputManager.InputDeviceListen
         for (int i = 0; i < editButtons.length; ++i) {
             p.setColor(Color.argb(210, 40, 40, 48));
             canvas.drawRoundRect(editButtons[i], 14f, 14f, p);
-            p.setColor(i == 3 ? Color.rgb(120, 220, 120) : Color.WHITE);
+            p.setColor(i == 4 ? Color.rgb(120, 220, 120) : Color.WHITE);
             canvas.drawText(EDIT_LABELS[i], editButtons[i].centerX(),
                     editButtons[i].centerY() - (p.ascent() + p.descent()) / 2, p);
         }
@@ -440,7 +458,7 @@ final class TouchControls extends View implements InputManager.InputDeviceListen
             if (!padVisible && !control.menu && !editing) {
                 continue;
             }
-            if (control.stick && !editing) {
+            if ((control.stick && (dpadMode || !editing)) || (control.dpad && !dpadMode)) {
                 continue;
             }
             float dx = x - control.x, dy = y - control.y;
@@ -532,6 +550,12 @@ final class TouchControls extends View implements InputManager.InputDeviceListen
             for (Control control : controls) {
                 control.reset();
             }
+        } else if (i == 3) {
+            // The stick/d-pad switch: a d-pad cross in the stick's place.
+            dpadMode = !dpadMode;
+            if (dpadMode) {
+                releaseStick();
+            }
         } else {
             editing = false;
             selected = null;
@@ -570,7 +594,7 @@ final class TouchControls extends View implements InputManager.InputDeviceListen
                 } else if (control != null) {
                     pointers.put(id, control);
                     press(control, true);
-                } else if (stickPointer < 0 && x < getWidth() * 0.5f) {
+                } else if (!dpadMode && stickPointer < 0 && x < getWidth() * 0.5f) {
                     stickPointer = id;
                     stickCentreX = x;
                     stickCentreY = y;

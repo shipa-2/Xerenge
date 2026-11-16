@@ -10,7 +10,7 @@ set(CMAKE_CXX_STANDARD 17)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
 set(CMAKE_AUTOMOC ON)
 
-find_package(Qt6 REQUIRED COMPONENTS Widgets Concurrent)
+find_package(Qt6 REQUIRED COMPONENTS Widgets Concurrent Network)
 
 add_executable(xerenge-installer
     main.cpp
@@ -19,7 +19,7 @@ add_executable(xerenge-installer
     installer_window.cpp
     installer_window.h
 )
-target_link_libraries(xerenge-installer PRIVATE Qt6::Widgets Qt6::Concurrent)
+target_link_libraries(xerenge-installer PRIVATE Qt6::Widgets Qt6::Concurrent Qt6::Network)
 # Xerenge's icon: the window's on every system (main.cpp), the stand-in for a
 # game whose disc has no logo (CreateShortcuts), and the .exe's on Windows.
 qt_add_resources(xerenge-installer "icons" PREFIX "/" FILES icons/xerenge.png)
