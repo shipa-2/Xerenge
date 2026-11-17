@@ -418,6 +418,7 @@ jobs:
             -DCMAKE_C_COMPILER=clang -DCMAKE_CXX_COMPILER=clang++ \
             -DCMAKE_C_FLAGS=-march=x86-64-v2 -DCMAKE_CXX_FLAGS=-march=x86-64-v2 \
             -DCMAKE_SYSTEM_NAME=WindowsStore -DCMAKE_SYSTEM_VERSION=10.0.26100.0 \
+            -DCMAKE_SYSTEM_PROCESSOR=AMD64 \
             -DREX_UWP=ON \
             -DREXGLUE_CODEGEN="$PWD/rexglue-sdk/out/win-amd64/Release/rexglue.exe"
           cmake --build rexglue/build-uwp -j"$(nproc)" --target burnout rexgpu-plume
