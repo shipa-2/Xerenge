@@ -27,6 +27,7 @@
 #include <memory>
 #include <map>
 #include <mutex>
+#include <random>
 #include <thread>
 #include <string>
 #include <vector>
@@ -65,7 +66,12 @@ bool g_scanned = false;
 bool g_mounted = false;
 std::filesystem::path g_dir;
 std::vector<std::filesystem::path> g_files;  // the whole folder
-size_t g_play_index = 0;  // the next song to play, across the folder's pages
+// The folder plays page after page: once everything on the page on show has
+// played, the next page loads (as LB/RB's turns load one). The game's own
+// ordering, names and LB's back keep working - what plays is what the table
+// says.
+size_t g_plays_on_page = 0;
+bool g_pending_apply = false;  // a page turned in the resolver: Apply at the next base
 std::vector<Track> g_tracks;                 // the page on show, in the game's 41 places
 uint32_t g_page = 0;
 // The folder listed again in the background (Rescan), for the next visit.
@@ -420,6 +426,35 @@ void ReadAllTags(std::vector<std::filesystem::path> files) {
   }).detach();
 }
 
+// A file's display names: "Artist - Title" of its stem split in two, the
+// file's own tags over that where it has them.
+struct Names {
+  std::string artist, title, album;
+};
+
+Names TrackNames(const std::filesystem::path& file) {
+  Names names;
+  const std::string stem = file.stem().string();
+  const size_t dash = stem.find(" - ");
+  if (dash != std::string::npos) {
+    names.artist = stem.substr(0, dash);
+    names.title = stem.substr(dash + 3);
+  } else {
+    names.title = stem;
+  }
+  names.album = file.parent_path().filename().string();
+  // Tags the background read has reached; nothing read here on the playing
+  // path - a miss waits for the background pass instead of stalling a song
+  // change on a 4 MB tag parse.
+  std::lock_guard<std::mutex> lock(g_tags_mutex);
+  if (const auto found = g_tags.find(file); found != g_tags.end()) {
+    if (!found->second.title.empty()) names.title = found->second.title;
+    if (!found->second.artist.empty()) names.artist = found->second.artist;
+    if (!found->second.album.empty()) names.album = found->second.album;
+  }
+  return names;
+}
+
 // The page's songs, their names from their files (only the page's: a folder of
 // thousands on a network share is read 41 at a time).
 void LoadPage() {
@@ -430,20 +465,10 @@ void LoadPage() {
     const auto& file = g_files[i];
     Track track;
     track.file = file;
-    const std::string stem = file.stem().string();
-    const size_t dash = stem.find(" - ");
-    if (dash != std::string::npos) {
-      track.artist = stem.substr(0, dash);
-      track.title = stem.substr(dash + 3);
-    } else {
-      track.title = stem;
-    }
-    track.album = file.parent_path().filename().string();
-    // The file's own tags, where it has them, over what its name says.
-    const Tags tags = CachedTags(file);
-    if (!tags.title.empty()) track.title = tags.title;
-    if (!tags.artist.empty()) track.artist = tags.artist;
-    if (!tags.album.empty()) track.album = tags.album;
+    const Names names = TrackNames(file);
+    track.artist = names.artist;
+    track.title = names.title;
+    track.album = names.album;
     g_tracks.push_back(std::move(track));
   }
 }
@@ -516,20 +541,6 @@ std::vector<std::filesystem::path> ListFolder(const std::filesystem::path& dir) 
 // continue the camera asks for on its way out arrives inside the window and
 // discards it - the music never stops. A real pause (the pause menu) has no
 // continue, and lands when the window ends.
-namespace {
-
-bool CrashMusicOn() {
-  static const bool on = std::getenv("XERENGE_CRASH_MUSIC") != nullptr;
-  return on;
-}
-
-bool TakedownMusicOn() {
-  static const bool on = std::getenv("XERENGE_TAKEDOWN_MUSIC") != nullptr;
-  return on;
-}
-
-}  // namespace
-
 void Scan() {
   if (g_scanned) {
     return;
@@ -570,9 +581,6 @@ void Scan() {
   if (device->Initialize() && REX_KERNEL_FS()->RegisterDevice(std::move(device))) {
     REX_KERNEL_FS()->RegisterSymbolicLink("xmusic:", "\\Device\\XerengeMusic");
   }
-  rex::kernel::xam::SetXmpPauseHold([] {
-    return CrashMusicOn() || TakedownMusicOn();
-  });
   rex::kernel::xam::SetXmpSongPathResolver([](const std::string& path) {
     std::lock_guard<std::mutex> lock(g_mutex);
     const std::string lower = Lower(path);
@@ -583,15 +591,42 @@ void Scan() {
       return path;
     }
     const size_t number = size_t((lower[at + 7] - '0') * 10 + (lower[at + 8] - '0'));
-    // Song Manager on show: the number names the track the player picked on
-    // the page - that one, as chosen. A race or the menus: each song takes
-    // the next of all the folder's files across its pages, so everything
-    // comes round whatever page Song Manager shows.
-    const std::filesystem::path file =
-        xerenge::music::SongManagerShown() && !g_tracks.empty()
-            ? g_tracks[number % g_tracks.size()].file
-            : g_files[g_play_index++ % g_files.size()];
-    std::string relative = file.lexically_relative(g_dir).string();
+    // The page's song, as the table says: names and the game's own ordering
+    // (Sequentially / Randomly, LB's back) all stay right, and nothing on
+    // show names a track other than the one playing.
+    const uint32_t mode = xerenge::music::MusicPlaybackMode();
+    // The resolver runs twice per song (a probe and the real open): the page
+    // turns once per requested number, not once per call.
+    static size_t last_flip_number = ~0u;
+    const bool new_request = number != last_flip_number;
+    last_flip_number = number;
+    if (mode == 1 && !xerenge::music::SongManagerShown()) {
+      // Random: a random page's random track. The page on show becomes the
+      // one the pick landed on - loaded whole, never mixed - and the game's
+      // own order picks the track within it.
+      static std::mt19937 random(uint32_t(std::chrono::duration_cast<std::chrono::seconds>(
+                                              std::chrono::system_clock::now().time_since_epoch())
+                                              .count()));
+      if (new_request && PageCount() > 1) {
+        const uint32_t page = std::uniform_int_distribution<uint32_t>(0, PageCount() - 1)(random);
+        if (page != g_page) {
+          g_page = page;
+          LoadPage();
+          g_pending_apply = true;  // no base here: applied at the next hook's
+          REXLOG_INFO("music: random page {} of {}", g_page + 1, PageCount());
+        }
+      }
+      g_plays_on_page = 0;
+    } else if (new_request && !g_tracks.empty() && ++g_plays_on_page >= g_tracks.size() && PageCount() > 1) {
+      // Sequential: once the page's songs have all played, the next page
+      // loads - the folder comes round page by page.
+      g_plays_on_page = 0;
+      g_page = (g_page + 1) % PageCount();
+      LoadPage();
+      g_pending_apply = true;
+      REXLOG_INFO("music: page {} of {} (played through)", g_page + 1, PageCount());
+    }
+    std::string relative = g_tracks[number % g_tracks.size()].file.lexically_relative(g_dir).string();
     std::replace(relative.begin(), relative.end(), '/', '\\');
     return "xmusic:\\" + relative;
   });
@@ -669,7 +704,8 @@ void EnsureApplied(uint8_t* base) {
   std::lock_guard<std::mutex> lock(g_mutex);
   Scan();
   const uint32_t data = SoundtrackData(base);
-  if (g_custom && (!g_applied || data != g_saved_data)) {
+  if ((g_custom && (!g_applied || data != g_saved_data)) || g_pending_apply) {
+    g_pending_apply = false;
     Apply(base);
   }
 }
@@ -775,6 +811,7 @@ REX_HOOK_RAW(sub_8212BB98) {
   // LB/RB's page turn (PadFilter), not the switch.
   if (const int turn = g_turn.exchange(0); turn != 0 && g_custom && PageCount() > 1) {
     const uint32_t pages = PageCount();
+    g_plays_on_page = 0;
     g_page = uint32_t((int64_t(g_page) + turn + pages) % pages);
     LoadPage();
     Apply(base);

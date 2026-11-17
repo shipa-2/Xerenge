@@ -26,6 +26,7 @@
 
 #include "guest_memory.h"
 #include "custom_music.h"
+#include "xerenge_settings.h"
 
 extern "C" void __imp__sub_8210F940(PPCContext& __restrict, uint8_t*);
 extern "C" void __imp__sub_822CB4F0(PPCContext& __restrict, uint8_t*);
@@ -151,7 +152,8 @@ REX_HOOK_RAW(sub_822CB4F0) {
   // song before (GitHub #55). The song is started again by the game's own skip
   // (RB's): the playing order's next place (+740, an index into the order at
   // +192 of the +736 songs on) moved back one place - the song playing - or two
-  // - the one before it.
+  // - the one before it. Not in Song Manager: there LB (and RB) turn the
+  // folder's pages (custom_music.cpp's PadFilter).
   {
     using Clock = std::chrono::steady_clock;
     static uint32_t song = ~0u;
@@ -168,9 +170,6 @@ REX_HOOK_RAW(sub_822CB4F0) {
     rex::input::X_INPUT_STATE state{};
     const bool lb = input && input->GetState(0, &state) == 0 && (uint16_t(state.gamepad.buttons) & 0x0100);
     const uint32_t count = LoadU32(base, music + 736);
-    // Not in Song Manager: there LB (and RB) turn the folder's pages
-    // (custom_music.cpp's PadFilter), and the back-skip on top of the page
-    // turn would jump songs as well.
     if (lb && !lb_was && count != 0 && LoadU32(base, music + 784) == 0 && LoadU32(base, music + 20) != 2 &&
         !xerenge::music::SongManagerShown()) {
       const bool restart = Clock::now() - started > std::chrono::seconds(3);
@@ -247,6 +246,21 @@ extern "C" void __imp__sub_822AE9F0(PPCContext& __restrict, uint8_t*);
 extern "C" void __imp__sub_822CB488(PPCContext& __restrict, uint8_t*);
 
 REX_HOOK_RAW(sub_822AE9B8) {
+  // Crash and takedown cameras both mute the soundtrack through here - the
+  // caller is always CB4Game::UpdatePreSimulation (seen in the trace of all
+  // three: a takedown dealt, one taken, a crash). XERENGE_CRASH_MUSIC /
+  // XERENGE_TAKEDOWN_MUSIC keep it playing through either; off by default,
+  // the game stops the music there as it always has.
+  // On the Xbox the vars come from env.txt; on a PC the launcher hands the
+  // game only the keys it knows, so xerenge.conf carries them too.
+  const bool keep = std::getenv("XERENGE_CRASH_MUSIC") != nullptr ||
+                    std::getenv("XERENGE_TAKEDOWN_MUSIC") != nullptr ||
+                    xerenge::settings::ConfString("crash_music", "false") == "true" ||
+                    xerenge::settings::ConfString("takedown_music", "false") == "true";
+  if (keep) {
+    REXLOG_INFO("music: mute encounter ignored (music stays on), called by {:08X}", uint32_t(ctx.lr));
+    return;
+  }
   REXLOG_INFO("music: sub_822AE9B8 (pauses) called by {:08X}", uint32_t(ctx.lr));
   __imp__sub_822AE9B8(ctx, base);
 }
