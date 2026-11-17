@@ -601,10 +601,12 @@ void PickMusicFolder() {
   if (g_picking_folder.exchange(true)) {
     return;  // one picker at a time
   }
+  REXLOG_INFO("music: choosing the music folder...");
   std::thread([] {
     const std::string dir = PlatformPickFolder();
     g_picking_folder = false;
     if (dir.empty()) {
+      REXLOG_INFO("music: no folder chosen (cancelled or the picker failed)");
       return;
     }
     xerenge::settings::SetConfString("music_dir", dir);

@@ -469,6 +469,7 @@ REX_HOOK_RAW(sub_8210FCF8) {
       {"XerengeInfo", "Info"},  // the achievements' list: A opens one's popup
       {"XerengeQuit", "Quit the game?"},  // B on the main menu
       {"XerengeQuitHint", "Quit"},  // its hint, beside Continue
+      {"XerengeChooseFolder", "Choose folder"},  // X in Song Manager: the picker's hint
   };
   static uint32_t guest[std::size(kTexts)] = {};
   const char* key = reinterpret_cast<const char*>(xerenge::GuestPointer(base, ctx.r4.u32));
