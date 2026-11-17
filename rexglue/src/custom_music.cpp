@@ -67,17 +67,49 @@ bool g_mounted = false;
 std::filesystem::path g_dir;
 std::vector<std::filesystem::path> g_files;  // the whole folder
 // crash_music, registered before the first frame: the crash/takedown mute is
-// a fade of the soundtrack's volume to 0; the fade's low values are refused
-// and the music keeps its level. XERENGE_CRASH_MUSIC (the Xbox's env.txt) or
-// crash_music in xerenge.conf - one switch on every platform. Menus PAUSE
-// the soundtrack, a different path, and stay as the game makes them.
+// a FADE of the soundtrack's volume - a stepped ramp down and back up (the
+// log shows steps near 0.055 and 0.03 on the way, so a plain low-value cut
+// leaves the music at the last step it let through). A sharp drop arms the
+// hold: every set is refused until the volume climbs back near where the
+// fade found it, and the music never moves. A lone set - the volume slider -
+// arms too but its refusal stands alone; the slider is adjusted with the
+// switch off. XERENGE_CRASH_MUSIC (the Xbox's env.txt) or crash_music in
+// xerenge.conf - one switch on every platform. Menus PAUSE the soundtrack, a
+// different path, and stay as the game makes them.
 const bool g_crash_volume_gate = [] {
   rex::kernel::xam::SetXmpVolumeGate([](float proposed) {
-    if (proposed >= 0.05f) {
-      return true;  // not a mute: volumes at or near the level apply
+    static float previous = 1.0f;
+    static float held = 1.0f;
+    static bool in_fade = false;
+    static bool on = false;
+    static auto on_read_at = std::chrono::steady_clock::time_point{};
+    if (std::chrono::steady_clock::now() - on_read_at > std::chrono::seconds(2)) {
+      on_read_at = std::chrono::steady_clock::now();
+      on = std::getenv("XERENGE_CRASH_MUSIC") != nullptr ||
+           xerenge::settings::ConfString("crash_music", "false") == "true";
     }
-    return std::getenv("XERENGE_CRASH_MUSIC") == nullptr &&
-           xerenge::settings::ConfString("crash_music", "false") != "true";
+    bool apply = true;
+    if (on) {
+      if (!in_fade && proposed < previous * 0.8f && proposed < 0.9f) {
+        in_fade = true;
+        held = previous;
+        REXLOG_INFO("music: crash fade held at {:g} (proposed {:g})", held, proposed);
+      }
+      if (in_fade) {
+        if (proposed >= held * 0.9f && proposed > previous) {
+          in_fade = false;  // climbed back: the fade is over
+          REXLOG_INFO("music: crash fade released at {:g}", proposed);
+        } else {
+          apply = false;  // hold the level through the fade
+        }
+      }
+    } else {
+      in_fade = false;
+    }
+    if (apply) {
+      previous = proposed;
+    }
+    return apply;
   });
   return true;
 }();

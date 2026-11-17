@@ -265,6 +265,12 @@ const std::vector<Setting>& Settings() {
     s.push_back({24, kHacks, "EARLY SUBMIT", "early_submit", OffOn(), 1});
     s.push_back({25, kHacks, "PACKED VERTICES", "packed_vertices", OffOn(), 1});
     s.push_back({26, kHacks, "REFLECTIONS IN TURNS", "reflection_split", OffOn(), 0});
+    // The fade that mutes the soundtrack through crash and takedown cameras
+    // is held at its level; the volume gate reads the key live, so the switch
+    // takes effect without a restart.
+    Setting crash_music{27, kHacks, "MUSIC IN CRASHES/TAKEDOWNS", "crash_music", OffOn(), 0};
+    crash_music.restart = false;
+    s.push_back(crash_music);
 
     s.push_back({30, kDebug, "DEBUG LOGS", "debug", OffOn(), 0});
     s.push_back({31, kDebug, "POWER MODE", "power_mode", {{"STOCK", "stock"}, {"PERFORMANCE", "performance"}}, 0});
