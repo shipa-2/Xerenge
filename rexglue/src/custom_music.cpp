@@ -589,7 +589,7 @@ std::string PlatformPickFolder() {
 #else
   // The stock dialogs: zenity (GNOME) or kdialog (KDE).
   std::string path =
-      PickFolderWith("zenity --file-picker --directory --title='Choose the music folder' 2>/dev/null");
+      PickFolderWith("zenity --file-selection --directory --title='Choose the music folder' 2>/dev/null");
   if (path.empty()) {
     path = PickFolderWith("kdialog --getexistingdirectory '' 2>/dev/null");
   }
