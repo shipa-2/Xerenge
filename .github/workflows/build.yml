@@ -426,8 +426,6 @@ jobs:
           cmake --build rexglue/build-uwp -j"$(nproc)" --target burnout rexgpu-plume
 
       - name: Package the .msix
-        env:
-          MSYS_NO_PATHCONV: 1
         run: |
           bash rexglue/uwp/build_package.sh --out "$RUNNER_TEMP/Xerenge-uwp.msix"
           ls -la "$RUNNER_TEMP/Xerenge-uwp.msix"
