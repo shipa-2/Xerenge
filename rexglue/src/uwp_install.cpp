@@ -34,6 +34,7 @@
 #include <winrt/Windows.Foundation.Collections.h>
 #include <winrt/Windows.Storage.h>
 #include <winrt/Windows.Storage.FileProperties.h>
+#include <winrt/Windows.ApplicationModel.Core.h>
 #include <winrt/Windows.Storage.Pickers.h>
 #include <winrt/Windows.UI.Core.h>
 #include <winrt/Windows.UI.Popups.h>
@@ -438,6 +439,37 @@ void WriteInitialSettings(const std::filesystem::path& path) {
   if (ec) {
     std::filesystem::remove(partial, ec);
   }
+}
+
+// Choosing the music folder from Song Manager (custom_music.cpp's X button;
+// the Xbox). Runs the FolderPicker on the UI thread - the calling thread (the
+// pad filter's) has no CoreWindow - and waits for it.
+std::string XerengeUwpPickMusicFolder() {
+  using namespace winrt::Windows::UI::Core;
+  using namespace winrt::Windows::Storage::Pickers;
+  std::string result;
+  HANDLE done = CreateEventW(nullptr, TRUE, FALSE, nullptr);
+  if (!done) {
+    return {};
+  }
+  CoreDispatcher dispatcher = CoreWindow::GetForCurrentThread()
+                                 ? CoreWindow::GetForCurrentThread().Dispatcher()
+                                 : CoreApplication::MainView().CoreWindow().Dispatcher();
+  dispatcher.RunAsync(CoreDispatcherPriority::Normal, [&] {
+    FolderPicker picker;
+    picker.ViewMode(PickerViewMode::List);
+    picker.SuggestedStartLocation(PickerLocationId::MusicLibrary);
+    winrt::Windows::Storage::StorageFolder folder = Wait(picker.PickSingleFolderAsync());
+    if (folder) {
+      result = winrt::to_string(folder.Path());
+    }
+    SetEvent(done);
+  });
+  while (WaitForSingleObject(done, 10) == WAIT_TIMEOUT) {
+    dispatcher.ProcessEvents(CoreProcessEventsOption::ProcessAllIfPresent);
+  }
+  CloseHandle(done);
+  return result;
 }
 
 bool InstallGame(const std::filesystem::path& game_dir) {

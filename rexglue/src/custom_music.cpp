@@ -49,6 +49,10 @@
 extern "C" void __imp__sub_821EBDF0(PPCContext& __restrict, uint8_t*);
 extern "C" void __imp__sub_821EBE28(PPCContext& __restrict, uint8_t*);
 
+// The restart popup (xerenge_menu.cpp): asked for at the next menu frame, as
+// the settings rows' changes are.
+extern void RequestRestartPopup();
+
 namespace {
 
 constexpr uint32_t kSoundtrack = 0x82A52568;  // the soundtrack's object
@@ -537,10 +541,83 @@ void LoadPage() {
   }
 }
 
+// --- choosing the music folder from Song Manager -----------------------------
+// X in Song Manager opens the system's directory picker; the choice becomes
+// music_dir in xerenge.conf and the restart popup applies it (the folder is
+// read at the start, in Scan above).
+
+std::atomic<bool> g_picking_folder{false};
+
+#if defined(_WIN32)
+#define popen _popen
+#define pclose _pclose
+#endif
+
+std::string PickFolderWith(const char* command) {
+  std::string path;
+  if (FILE* pipe = popen(command, "r")) {
+    char line[4096];
+    if (fgets(line, sizeof(line), pipe) && line[0] != '\0' && line[0] != '\n') {
+      path = line;
+      while (!path.empty() && (path.back() == '\n' || path.back() == '\r')) {
+        path.pop_back();
+      }
+    }
+    pclose(pipe);
+  }
+  return path;
+}
+
+std::string PlatformPickFolder() {
+#if defined(REX_PLATFORM_UWP)
+  // The FolderPicker bridge, on the UI thread (uwp_install.cpp; the Xbox).
+  extern std::string XerengeUwpPickMusicFolder();
+  return XerengeUwpPickMusicFolder();
+#elif defined(__ANDROID__)
+  // The document-tree picker returns content:// paths, which need the
+  // storage bridge before they can be a music folder; not in yet.
+  REXLOG_INFO("music: choosing a folder on Android is not in yet");
+  return {};
+#elif defined(_WIN32)
+  // The explorer folder picker, driven through PowerShell.
+  return PickFolderWith(
+      "powershell -NoProfile -NonInteractive -Command "
+      "\"[void][System.Reflection.Assembly]::LoadWithPartialName('System.Windows.Forms');"
+      "$d = New-Object System.Windows.Forms.FolderBrowserDialog;"
+      "$d.Description = 'Choose the music folder';"
+      "if ($d.ShowDialog() -eq [System.Windows.Forms.DialogResult]::OK) { Write-Output $d.SelectedPath }\"");
+#else
+  // The stock dialogs: zenity (GNOME) or kdialog (KDE).
+  std::string path =
+      PickFolderWith("zenity --file-picker --directory --title='Choose the music folder' 2>/dev/null");
+  if (path.empty()) {
+    path = PickFolderWith("kdialog --getexistingdirectory '' 2>/dev/null");
+  }
+  return path;
+#endif
+}
+
+void PickMusicFolder() {
+  if (g_picking_folder.exchange(true)) {
+    return;  // one picker at a time
+  }
+  std::thread([] {
+    const std::string dir = PlatformPickFolder();
+    g_picking_folder = false;
+    if (dir.empty()) {
+      return;
+    }
+    xerenge::settings::SetConfString("music_dir", dir);
+    REXLOG_INFO("music: {} chosen as the music folder; a restart applies it", dir);
+    RequestRestartPopup();
+  }).detach();
+}
+
 // LB/RB in Song Manager, with the folder's songs on show and more than a page
 // of them: LT pressed for the game for a moment - its switch, whose
 // SetNextPlaylist turns the page instead (g_turn) and whose list is built
-// again. LB and RB themselves are kept from the game there.
+// again. LB and RB themselves are kept from the game there. X opens the
+// folder picker.
 void PadFilter(uint32_t user, uint16_t& buttons, uint8_t& left_trigger, uint8_t&) {
   constexpr uint16_t kLB = 0x0100, kRB = 0x0200;
   using Clock = std::chrono::steady_clock;
@@ -549,9 +626,17 @@ void PadFilter(uint32_t user, uint16_t& buttons, uint8_t& left_trigger, uint8_t&
   if (user != 0) {
     return;
   }
+  constexpr uint16_t kX = 0x4000;
+  static uint16_t was_x = 0;
+  const uint16_t x_down = (buttons & kX) & ~was_x;
+  was_x = buttons & kX;
   const uint16_t shoulders = buttons & (kLB | kRB);
   const uint16_t down = shoulders & ~was;
   was = shoulders;
+  if (x_down && g_song_manager.load()) {
+    buttons &= uint16_t(~kX);
+    PickMusicFolder();
+  }
   if (!g_song_manager.load() || !g_custom) {
     return;
   }
@@ -841,7 +926,8 @@ bool SongManagerShown() {
 std::string Title() {
   std::lock_guard<std::mutex> lock(g_mutex);
   const uint32_t pages = PageCount();
-  return pages > 1 ? fmt::format("[MY MUSIC {}/{}]", g_page + 1, pages) : std::string("[MY MUSIC]");
+  return pages > 1 ? fmt::format("[MY MUSIC {}/{}]  X: CHOOSE FOLDER", g_page + 1, pages)
+                   : std::string("[MY MUSIC]  X: CHOOSE FOLDER");
 }
 
 }  // namespace xerenge::music

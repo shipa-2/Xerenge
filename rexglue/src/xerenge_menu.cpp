@@ -360,6 +360,12 @@ void CheckQuitButton(PPCContext& ctx, uint8_t* base) {
 
 }  // namespace
 
+// Asking for the restart popup from outside the settings rows (custom_music's
+// Song Manager folder pick): shown at the next menu frame.
+void RequestRestartPopup() {
+  g_popup_pending = true;
+}
+
 REX_HOOK_RAW(sub_821EC580) {
   const int32_t option = int32_t(ctx.r4.u32);
   REXLOG_INFO("menu: SelectedOption({:X})", uint32_t(option));
