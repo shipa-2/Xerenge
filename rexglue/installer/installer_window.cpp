@@ -1302,47 +1302,76 @@ bool InstallerWindow::IsUsGame(const QString& game_dir) {
 QString InstallerWindow::DownloadTitleUpdates(const QString& game_dir,
                                               const std::function<void(double)>& progress) const {
   constexpr int kCount = int(sizeof(kTitleUpdates) / sizeof(kTitleUpdates[0]));
-  QNetworkAccessManager network;
   for (int i = 0; i < kCount; ++i) {
     const QUrl url(QString::fromLatin1(kTitleUpdates[i]));
-    QNetworkRequest request(url);
-    request.setAttribute(QNetworkRequest::RedirectPolicyAttribute,
-                         QNetworkRequest::NoLessSafeRedirectPolicy);
-    QNetworkReply* reply = network.get(request);
-    QEventLoop wait;
-    QObject::connect(reply, &QNetworkReply::finished, &wait, &QEventLoop::quit);
-    QObject::connect(reply, &QNetworkReply::downloadProgress, &wait,
-                     [this, i, progress](qint64 bytes, qint64 total) {
-                       const double part = total > 0 ? double(bytes) / total : 0.0;
-                       progress((i + part) / kCount);
-                     });
-    wait.exec();
-    const QByteArray body = reply->readAll();
-    const auto error = reply->error();
-    const QString error_text = reply->errorString();
-    // The file's name as the server names it (TU_...); a plain one otherwise.
     QString name;
-    const QByteArray disposition = reply->rawHeader("Content-Disposition");
-    static const QRegularExpression filename("filename=([^;]+)");
-    if (const auto m = filename.match(QString::fromLatin1(disposition)); m.hasMatch()) {
-      name = m.captured(1).trimmed().remove('"');
+    QByteArray body;
+    // curl first: it ships with Windows 10 and up, macOS and the common
+    // Linuxes, and its TLS does not ride on Qt's backends - a Qt without one
+    // fails every request with "TLS initialization failed".
+    const QString tmp =
+        QDir(QDir::tempPath()).filePath(QStringLiteral("xerenge-tu-%1.bin").arg(i));
+    const QString hdr = tmp + QStringLiteral(".hdr");
+    QProcess curl;
+    curl.start(QStringLiteral("curl"),
+               {QStringLiteral("-sfL"), QStringLiteral("--retry"), QStringLiteral("2"),
+                QStringLiteral("-o"), tmp, QStringLiteral("-D"), hdr, url.toString()});
+    if (curl.waitForStarted(5000) && curl.waitForFinished(120000) && curl.exitCode() == 0) {
+      QFile file(tmp);
+      if (file.open(QIODevice::ReadOnly)) {
+        body = file.readAll();
+      }
+      QFile headers(hdr);
+      if (headers.open(QIODevice::ReadOnly)) {
+        static const QRegularExpression filename_rx(QStringLiteral("filename=([^;\r\n]+)"));
+        const auto match = filename_rx.match(QString::fromLatin1(headers.readAll()));
+        if (match.hasMatch()) {
+          name = match.captured(1).trimmed().remove('"');
+        }
+      }
+    }
+    QFile::remove(tmp);
+    QFile::remove(hdr);
+    if (body.isEmpty()) {
+      // No curl or it failed: Qt's network stack, for what TLS backend it
+      // has.
+      QNetworkAccessManager network;
+      QNetworkRequest request(url);
+      request.setAttribute(QNetworkRequest::RedirectPolicyAttribute,
+                           QNetworkRequest::NoLessSafeRedirectPolicy);
+      QNetworkReply* reply = network.get(request);
+      QEventLoop wait;
+      QObject::connect(reply, &QNetworkReply::finished, &wait, &QEventLoop::quit);
+      QObject::connect(reply, &QNetworkReply::downloadProgress, &wait,
+                       [this, i, progress](qint64 bytes, qint64 total) {
+                         const double part = total > 0 ? double(bytes) / total : 0.0;
+                         progress((i + part) / kCount);
+                       });
+      wait.exec();
+      body = reply->readAll();
+      const auto error = reply->error();
+      const QString error_text = reply->errorString();
+      const QByteArray disposition = reply->rawHeader("Content-Disposition");
+      static const QRegularExpression filename_rx2(QStringLiteral("filename=([^;]+)"));
+      if (const auto match = filename_rx2.match(QString::fromLatin1(disposition)); match.hasMatch()) {
+        name = match.captured(1).trimmed().remove('"');
+      }
+      reply->deleteLater();
+      if (error != QNetworkReply::NoError) {
+        if (!log_path_.isEmpty()) {
+          QFile log(log_path_);
+          if (log.open(QIODevice::Append | QIODevice::Text)) {
+            log.write(QStringLiteral("\ntitle update %1: %2\n")
+                          .arg(url.toString(), error_text)
+                          .toUtf8());
+          }
+        }
+        continue;
+      }
     }
     if (name.isEmpty()) {
       name = QStringLiteral("tu_%1.bin").arg(url.query());
       name.remove(QStringLiteral("tuid="));
-    }
-    reply->deleteLater();
-    if (error != QNetworkReply::NoError) {
-      // Not failed over: the game runs without the update. Said in the log.
-      if (!log_path_.isEmpty()) {
-        QFile log(log_path_);
-        if (log.open(QIODevice::Append | QIODevice::Text)) {
-          log.write(QStringLiteral("\ntitle update %1: %2\n")
-                        .arg(url.toString(), error_text)
-                        .toUtf8());
-        }
-      }
-      continue;
     }
     QSaveFile out(QDir(game_dir).filePath(name));
     if (!out.open(QIODevice::WriteOnly)) {
@@ -1361,6 +1390,7 @@ QString InstallerWindow::DownloadTitleUpdates(const QString& game_dir,
                       .toUtf8());
       }
     }
+    progress(double(i + 1) / kCount);
   }
   progress(1.0);
   return {};

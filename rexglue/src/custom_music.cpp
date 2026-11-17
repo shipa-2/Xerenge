@@ -452,6 +452,12 @@ Names TrackNames(const std::filesystem::path& file) {
     if (!found->second.artist.empty()) names.artist = found->second.artist;
     if (!found->second.album.empty()) names.album = found->second.album;
   }
+  if (names.artist.empty()) {
+    // The artist line is always shown: a folder named "Artist - ..." gives
+    // one, else the folder itself stands in - never an empty line.
+    const size_t dash = names.album.find(" - ");
+    names.artist = dash != std::string::npos ? names.album.substr(0, dash) : names.album;
+  }
   return names;
 }
 

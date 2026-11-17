@@ -20,7 +20,7 @@ on:
       job:
         description: Run only this job (a manual dispatch only; a push always builds everything)
         type: choice
-        options: [all, linux-amd64, win-amd64, android-arm64, macos-arm64, lobby-server, mods]
+        options: [all, linux-amd64, win-amd64, uwp-amd64, android-arm64, macos-arm64, lobby-server, mods]
         default: all
 
 permissions:
@@ -320,6 +320,121 @@ jobs:
         with:
           name: burnout-revenge-installer-win-amd64
           path: ${{ runner.temp }}/setup/Burnout_Revenge_Installer-win-amd64.exe
+          retention-days: 7
+          if-no-files-found: error
+
+  # The Xbox One (Dev Mode) package: the game built as a UWP app (REX_UWP,
+  # clang against the Windows Store) and packed by uwp/build_package.sh into a
+  # signed .msix with the Windows SDK's makeappx/signtool and a self-signed
+  # CN=Xerenge certificate the pack step makes. The code generator runs on the
+  # host: REXGLUE_CODEGEN names the host SDK build's, the way a cross build
+  # does (generated/rexglue.cmake).
+  uwp-amd64:
+    if: github.event_name != 'workflow_dispatch' || inputs.job == 'all' || inputs.job == 'uwp-amd64'
+    runs-on: windows-latest
+    defaults:
+      run:
+        shell: bash
+    env:
+      CC: clang
+      CXX: clang++
+      CMAKE_C_COMPILER_LAUNCHER: sccache
+      CMAKE_CXX_COMPILER_LAUNCHER: sccache
+    steps:
+      - uses: actions/checkout@v6
+
+      - name: etcpak
+        run: git submodule update --init --depth 1 rexglue/thirdparty/etcpak
+
+      - name: Install LLVM, CMake, Ninja
+        shell: pwsh
+        run: |
+          $missing = @(@{llvm = "clang"; cmake = "cmake"; ninja = "ninja"}.GetEnumerator() |
+            Where-Object { -not (Get-Command $_.Value -ErrorAction SilentlyContinue) } | ForEach-Object { $_.Key })
+          if ($missing) { choco install @missing -y }
+
+      - name: Exclude the workspace from Windows Defender
+        shell: pwsh
+        run: |
+          Add-MpPreference -ExclusionPath "${{ github.workspace }}"
+          Add-MpPreference -ExclusionPath "$env:RUNNER_TEMP"
+
+      - name: Set up sccache
+        uses: hendrikmuhs/ccache-action@v1.2.22
+        with:
+          variant: sccache
+          key: uwp-amd64
+
+      - name: Fetch the build inputs (private)
+        env:
+          ASSETS_TOKEN: ${{ secrets.ASSETS_TOKEN }}
+        run: |
+          if [ -z "$ASSETS_TOKEN" ]; then
+            echo "::error::ASSETS_TOKEN is not set"; exit 1
+          fi
+          git clone --depth 1 "https://x-access-token:${ASSETS_TOKEN}@github.com/shipa-2/xerenge-assets.git" ../xerenge-assets
+          git -C ../xerenge-assets remote set-url origin https://github.com/shipa-2/xerenge-assets.git
+          [ -d ../xerenge-assets/game_eu ] || mv ../xerenge-assets/game ../xerenge-assets/game_eu
+
+      - name: Resolve SDK/plume/XenosRecomp commits
+        id: pins
+        run: |
+          echo "sdk=$(git ls-remote https://github.com/shipa-2/rexglue-xerenge.git HEAD | cut -f1)" >> "$GITHUB_OUTPUT"
+          echo "plume=$(git ls-remote https://github.com/shipa-2/plume-xerenge.git HEAD | cut -f1)" >> "$GITHUB_OUTPUT"
+          echo "xenos=$(git ls-remote https://github.com/shipa-2/XenosRecomp-xerenge.git HEAD | cut -f1)" >> "$GITHUB_OUTPUT"
+          echo "image=${ImageVersion:-none}" >> "$GITHUB_OUTPUT"
+
+      # The host SDK build: the code generator this cross build runs, and the
+      # libraries a host run would take. Same key as win-amd64, so the two
+      # jobs share one checkout/build when they land on the same commit.
+      - name: Cache the SDK checkout and build
+        uses: actions/cache@v4
+        with:
+          path: rexglue-sdk
+          key: sdk-win-amd64-${{ steps.pins.outputs.image }}-${{ steps.pins.outputs.sdk }}
+
+      - name: SDK
+        run: ./scripts/setup-sdk.sh
+
+      - name: Cache plume and XenosRecomp
+        uses: actions/cache@v4
+        with:
+          path: |
+            plume
+            XenosRecomp
+          key: deps-win-amd64-${{ steps.pins.outputs.image }}-${{ steps.pins.outputs.plume }}-${{ steps.pins.outputs.xenos }}
+
+      - name: plume and XenosRecomp
+        run: ./scripts/setup-deps.sh
+
+      - name: Generate the code and the shaders
+        run: ./scripts/build.sh --game ../xerenge-assets/game_eu --generate-only
+
+      - name: Build the UWP game
+        run: |
+          cmake -S rexglue -B rexglue/build-uwp -G Ninja \
+            -DREXSDK_DIR="$PWD/rexglue-sdk" \
+            -DCMAKE_BUILD_TYPE=Release \
+            -DCMAKE_C_COMPILER=clang -DCMAKE_CXX_COMPILER=clang++ \
+            -DCMAKE_C_FLAGS=-march=x86-64-v2 -DCMAKE_CXX_FLAGS=-march=x86-64-v2 \
+            -DCMAKE_SYSTEM_NAME=WindowsStore -DCMAKE_SYSTEM_VERSION=10.0.26100.0 \
+            -DREX_UWP=ON \
+            -DREXGLUE_CODEGEN="$PWD/rexglue-sdk/out/win-amd64/Release/rexglue.exe"
+          cmake --build rexglue/build-uwp -j"$(nproc)" --target burnout rexgpu-plume
+
+      - name: Package the .msix
+        env:
+          MSYS_NO_PATHCONV: 1
+        run: |
+          bash rexglue/uwp/build_package.sh --out "$RUNNER_TEMP/Xerenge-uwp.msix"
+          ls -la "$RUNNER_TEMP/Xerenge-uwp.msix"
+
+      - uses: actions/upload-artifact@v6
+        with:
+          name: xerenge-uwp-amd64
+          path: |
+            ${{ runner.temp }}/Xerenge-uwp.msix
+            ${{ runner.temp }}/xerenge.cer
           retention-days: 7
           if-no-files-found: error
 
