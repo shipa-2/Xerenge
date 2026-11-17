@@ -335,9 +335,19 @@ bool FontsHaveCyrillic() {
 // written in Latin letters, the rest of what they lack as '?' - unless a
 // localisation mod's fonts are in use.
 std::string ForGameFont(const std::vector<uint32_t>& points) {
+  // Ё/ё are missing from the game fonts' Cyrillic: fold them to Е/е, which
+  // every Cyrillic face has (the transliteration table below has no entry
+  // for them either, and spells "Yo" where Russian readers expect Е).
+  std::vector<uint32_t> folded;
+  folded.reserve(points.size());
+  for (uint32_t point : points) {
+    if (point == 0x401) point = 0x415;
+    if (point == 0x451) point = 0x435;
+    folded.push_back(point);
+  }
   if (FontsHaveCyrillic()) {
     std::string out;
-    for (uint32_t point : points) PutUtf8(out, point);
+    for (uint32_t point : folded) PutUtf8(out, point);
     return out;
   }
   static const char* const kCyrillic[64] = {
@@ -346,7 +356,7 @@ std::string ForGameFont(const std::vector<uint32_t>& points) {
       "a", "b", "v", "g", "d", "e", "zh", "z", "i", "y", "k", "l", "m", "n", "o", "p",
       "r", "s", "t", "u", "f", "kh", "ts", "ch", "sh", "shch", "", "y", "", "e", "yu", "ya"};
   std::string out;
-  for (uint32_t point : points) {
+  for (uint32_t point : folded) {
     if (point >= 0x410 && point <= 0x44F) {
       out += kCyrillic[point - 0x410];
     } else if (point == 0x401) {
