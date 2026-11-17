@@ -25,6 +25,7 @@
 #include <rex/ppc.h>
 
 #include "guest_memory.h"
+#include "custom_music.h"
 
 extern "C" void __imp__sub_8210F940(PPCContext& __restrict, uint8_t*);
 extern "C" void __imp__sub_822CB4F0(PPCContext& __restrict, uint8_t*);
@@ -53,7 +54,24 @@ bool Room() {
   return g_lines < 400 && ++g_lines;
 }
 
+// The manager's object and the playback order the player chose, for
+// custom_music's folder-wide play (custom_music.h).
+uint32_t g_music_object = 0;
+uint32_t g_playback_mode = 0;
+
 }  // namespace
+
+namespace xerenge::music {
+
+uint32_t MusicObject() {
+  return g_music_object;
+}
+
+uint32_t MusicPlaybackMode() {
+  return g_playback_mode;
+}
+
+}  // namespace xerenge::music
 
 REX_HOOK_RAW(sub_8210F940) {
   const uint32_t action = ctx.r3.u32;
@@ -150,7 +168,11 @@ REX_HOOK_RAW(sub_822CB4F0) {
     rex::input::X_INPUT_STATE state{};
     const bool lb = input && input->GetState(0, &state) == 0 && (uint16_t(state.gamepad.buttons) & 0x0100);
     const uint32_t count = LoadU32(base, music + 736);
-    if (lb && !lb_was && count != 0 && LoadU32(base, music + 784) == 0 && LoadU32(base, music + 20) != 2) {
+    // Not in Song Manager: there LB (and RB) turn the folder's pages
+    // (custom_music.cpp's PadFilter), and the back-skip on top of the page
+    // turn would jump songs as well.
+    if (lb && !lb_was && count != 0 && LoadU32(base, music + 784) == 0 && LoadU32(base, music + 20) != 2 &&
+        !xerenge::music::SongManagerShown()) {
       const bool restart = Clock::now() - started > std::chrono::seconds(3);
       const uint32_t back = restart || count == 1 ? 1 : 2;
       const uint32_t next = LoadU32(base, music + 740) % count;
@@ -180,6 +202,8 @@ REX_HOOK_RAW(sub_822CB4F0) {
                 music, now.mode, now.next_song, now.skipping, now.playing, now.blocked);
   }
   last = now;
+  g_music_object = music;
+  g_playback_mode = LoadU32(base, music + 20);
   // What sub_822ADEE8 (called from this update) waits for before resuming the
   // soundtrack after a movie: this word at 4.
   static uint32_t last_gate = ~0u;

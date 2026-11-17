@@ -27,6 +27,11 @@ namespace xerenge::music {
 
 // Song Manager on show (xerenge_menu.cpp): LB/RB turn the music folder's pages.
 void SetSongManagerShown(bool shown);
+bool SongManagerShown();
+// The soundtrack manager's object and its playback mode (Sequentially /
+// Randomly), cached each frame by music_trace's update hook.
+uint32_t MusicObject();
+uint32_t MusicPlaybackMode();
 
 // Song Manager's subtitle with the folder's songs: [MY MUSIC], and the page,
 // [MY MUSIC 3/35], when there is more than one.

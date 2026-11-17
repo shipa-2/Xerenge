@@ -582,11 +582,16 @@ void Scan() {
         !std::isdigit(static_cast<unsigned char>(lower[at + 8]))) {
       return path;
     }
-    // The whole folder, across its pages: each song that starts takes the next
-    // of all the files, whatever page Song Manager shows. (The number in the
-    // path names a slot of the page on show; played across every page so the
-    // folder's songs all come round.)
-    std::string relative = g_files[g_play_index++ % g_files.size()].lexically_relative(g_dir).string();
+    const size_t number = size_t((lower[at + 7] - '0') * 10 + (lower[at + 8] - '0'));
+    // Song Manager on show: the number names the track the player picked on
+    // the page - that one, as chosen. A race or the menus: each song takes
+    // the next of all the folder's files across its pages, so everything
+    // comes round whatever page Song Manager shows.
+    const std::filesystem::path file =
+        xerenge::music::SongManagerShown() && !g_tracks.empty()
+            ? g_tracks[number % g_tracks.size()].file
+            : g_files[g_play_index++ % g_files.size()];
+    std::string relative = file.lexically_relative(g_dir).string();
     std::replace(relative.begin(), relative.end(), '/', '\\');
     return "xmusic:\\" + relative;
   });
@@ -727,6 +732,10 @@ bool Custom() {
 
 void SetSongManagerShown(bool shown) {
   g_song_manager = shown;
+}
+
+bool SongManagerShown() {
+  return g_song_manager.load();
 }
 
 std::string Title() {
