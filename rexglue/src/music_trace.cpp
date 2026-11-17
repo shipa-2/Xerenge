@@ -246,19 +246,6 @@ extern "C" void __imp__sub_822AE9F0(PPCContext& __restrict, uint8_t*);
 extern "C" void __imp__sub_822CB488(PPCContext& __restrict, uint8_t*);
 
 REX_HOOK_RAW(sub_822AE9B8) {
-  // Crash and takedown cameras both mute the soundtrack through here - the
-  // caller is always CB4Game::UpdatePreSimulation (seen in the trace of all
-  // three: a takedown dealt, one taken, a crash), one mechanism, gated by
-  // XERENGE_CRASH_MUSIC / crash_music alone. Off by default, the game stops
-  // the music there as it always has.
-  // On the Xbox the var comes from env.txt; on a PC the launcher hands the
-  // game only the keys it knows, so xerenge.conf carries it too.
-  const bool keep = std::getenv("XERENGE_CRASH_MUSIC") != nullptr ||
-                    xerenge::settings::ConfString("crash_music", "false") == "true";
-  if (keep) {
-    REXLOG_INFO("music: crash mute ignored (music stays on), called by {:08X}", uint32_t(ctx.lr));
-    return;
-  }
   REXLOG_INFO("music: sub_822AE9B8 (pauses) called by {:08X}", uint32_t(ctx.lr));
   __imp__sub_822AE9B8(ctx, base);
 }

@@ -66,6 +66,22 @@ bool g_scanned = false;
 bool g_mounted = false;
 std::filesystem::path g_dir;
 std::vector<std::filesystem::path> g_files;  // the whole folder
+// crash_music, registered before the first frame: the crash/takedown mute is
+// a fade of the soundtrack's volume to 0; the fade's low values are refused
+// and the music keeps its level. XERENGE_CRASH_MUSIC (the Xbox's env.txt) or
+// crash_music in xerenge.conf - one switch on every platform. Menus PAUSE
+// the soundtrack, a different path, and stay as the game makes them.
+const bool g_crash_volume_gate = [] {
+  rex::kernel::xam::SetXmpVolumeGate([](float proposed) {
+    if (proposed >= 0.05f) {
+      return true;  // not a mute: volumes at or near the level apply
+    }
+    return std::getenv("XERENGE_CRASH_MUSIC") == nullptr &&
+           xerenge::settings::ConfString("crash_music", "false") != "true";
+  });
+  return true;
+}();
+
 // The folder plays page after page: once everything on the page on show has
 // played, the next page loads (as LB/RB's turns load one). The game's own
 // ordering, names and LB's back keep working - what plays is what the table
