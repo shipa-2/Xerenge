@@ -79,6 +79,13 @@ struct FrameClock {
   uint32_t overlay_height = 0;
   uint32_t overlay_generation = 0;
   float overlay_opacity = 0.0f;
+  // And a second one, anchored at the bottom (achievement_toast.cpp's Song
+  // Manager prompt).
+  const uint8_t* overlay2_pixels = nullptr;
+  uint32_t overlay2_width = 0;
+  uint32_t overlay2_height = 0;
+  uint32_t overlay2_generation = 0;
+  float overlay2_opacity = 0.0f;
 };
 FrameClock g_clock;
 uint32_t g_clock_timer = 0;
@@ -313,6 +320,8 @@ extern "C" REX_HOST_EXPORT RexFrameClockProviderFn rex_frame_clock_provider = nu
 // The notice shown now, if any (achievement_toast.cpp).
 void XerengeOverlayFrame(const uint8_t** pixels, uint32_t* width, uint32_t* height,
                          uint32_t* generation, float* opacity);
+void XerengeOverlayPromptFrame(const uint8_t** pixels, uint32_t* width, uint32_t* height,
+                               uint32_t* generation, float* opacity);
 
 namespace {
 void CopyFrameClock(void* out, size_t size) {
@@ -320,6 +329,9 @@ void CopyFrameClock(void* out, size_t size) {
   if (out) {
     XerengeOverlayFrame(&g_clock.overlay_pixels, &g_clock.overlay_width, &g_clock.overlay_height,
                         &g_clock.overlay_generation, &g_clock.overlay_opacity);
+    XerengeOverlayPromptFrame(&g_clock.overlay2_pixels, &g_clock.overlay2_width,
+                              &g_clock.overlay2_height, &g_clock.overlay2_generation,
+                              &g_clock.overlay2_opacity);
     std::memcpy(out, &g_clock, std::min(size, sizeof(FrameClock)));
   }
 }

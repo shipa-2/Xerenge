@@ -1624,43 +1624,6 @@ bool RebuildSongManager(const uint8_t* data, size_t data_size, const uint8_t* co
   if (!blanked) {
     REXLOG_WARN("menu: song manager movie: its PLAYLIST key not found");
   }
-  // The bottom button hints: X chooses the music folder beside Back and
-  // Preview Track (custom_music.cpp's PadFilter opens the picker's dialog).
-  bool hinted = false;
-  {
-    const uint32_t frame_hints = b.U32(c.root + 12);
-    const uint32_t item_count = b.U32(frame_hints), item_list = b.U32(frame_hints + 4);
-    for (uint32_t i = 0; i < item_count; ++i) {
-      const uint32_t item = b.U32(item_list + i * 4);
-      if (b.U32(item) != 3 || !(b.U32(item + 4) & 0x80) || !b.U32(item + 60) ||
-          b.U32(item + 32) != FloatBits(591.0f) || b.U32(item + 36) != FloatBits(423.0f)) {
-        continue;
-      }
-      Code code(b);
-      const uint32_t hints = code.Start();
-      for (const auto& [name, values] :
-           {std::pair<const char*, std::vector<const char*>>{"displayOptions", {"$FEBACK", "$FEPREVIEWTRACK", "$XerengeChooseFolder"}},
-            std::pair<const char*, std::vector<const char*>>{"XBoxIcons", {"B-Button", "A-Button", "X-Button"}}}) {
-        code.Push({c.String(name), c.Int(0)});
-        code.Op(0x42);  // InitArray
-        code.Op(0x1D);  // SetVariable
-        for (size_t v = 0; v < values.size(); ++v) {
-          code.Push({c.String(name)});
-          code.Op(0x1C);
-          code.Push({c.Int(int32_t(v)), c.String(values[v])});
-          code.Op(0x4F);  // SetMember
-        }
-      }
-      code.Op(0x00);
-      code.Finish();
-      b.Set32(b.U32(b.U32(item + 60) + 4) + 8, hints);
-      hinted = true;
-      break;
-    }
-  }
-  if (!hinted) {
-    REXLOG_WARN("menu: song manager movie: no button hints at 591.0, 423.0");
-  }
   b.Align(16);
   out_constants = c.Write();
   return true;

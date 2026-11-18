@@ -23,7 +23,7 @@ class PlumeOverlay {
  public:
   explicit PlumeOverlay(plume::RenderDevice* device) : device_(device) {}
 
-  // Outside a render pass: takes the game's picture and, when it is a new one,
+  // Outside a render pass: takes the game's pictures and, when one is new,
   // uploads it. False when there is nothing to show.
   bool Prepare(plume::RenderCommandList* list, plume::RenderFormat format);
   // Into the framebuffer bound, the window's image of window_width x
@@ -34,6 +34,28 @@ class PlumeOverlay {
  private:
   bool EnsurePipeline(plume::RenderFormat format);
 
+  // One picture's GPU state: the texture of the current generation, the
+  // previous kept until the next (frames still in flight read it), and how
+  // opaque it is now.
+  struct Picture {
+    std::unique_ptr<plume::RenderTexture> texture;
+    std::unique_ptr<plume::RenderTextureView> view;
+    std::unique_ptr<plume::RenderDescriptorSet> set;
+    std::unique_ptr<plume::RenderBuffer> staging;
+    std::unique_ptr<plume::RenderTexture> old_texture;
+    std::unique_ptr<plume::RenderTextureView> old_view;
+    std::unique_ptr<plume::RenderDescriptorSet> old_set;
+    std::unique_ptr<plume::RenderBuffer> old_staging;
+    uint32_t generation = 0;
+    uint32_t width = 0;
+    uint32_t height = 0;
+    float opacity = 0.0f;
+  };
+  // The game's picture into `picture`; false when there is nothing to show.
+  bool PreparePicture(plume::RenderCommandList* list, plume::RenderFormat format,
+                      const uint8_t* pixels, uint32_t width, uint32_t height,
+                      uint32_t generation, float opacity, Picture& picture);
+
   plume::RenderDevice* device_;
   bool failed_ = false;
   std::unique_ptr<plume::RenderShader> vertex_shader_;
@@ -43,19 +65,8 @@ class PlumeOverlay {
   std::unique_ptr<plume::RenderPipelineLayout> layout_;
   std::unique_ptr<plume::RenderPipeline> pipeline_;
 
-  std::unique_ptr<plume::RenderTexture> texture_;
-  std::unique_ptr<plume::RenderTextureView> view_;
-  std::unique_ptr<plume::RenderDescriptorSet> set_;
-  std::unique_ptr<plume::RenderBuffer> staging_;
-  // The picture before, kept until the next: frames still in flight read it.
-  std::unique_ptr<plume::RenderTexture> old_texture_;
-  std::unique_ptr<plume::RenderTextureView> old_view_;
-  std::unique_ptr<plume::RenderDescriptorSet> old_set_;
-  std::unique_ptr<plume::RenderBuffer> old_staging_;
-  uint32_t generation_ = 0;
-  uint32_t width_ = 0;
-  uint32_t height_ = 0;
-  float opacity_ = 0.0f;
+  Picture toast_;   // the achievements' notice, anchored at the top
+  Picture prompt_;  // the Song Manager's X prompt, anchored at the bottom
 };
 
 }  // namespace rex::plume_renderer

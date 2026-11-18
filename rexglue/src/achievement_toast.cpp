@@ -22,6 +22,8 @@
 #include <rex/system/kernel_state.h>
 #include <rex/system/util/xdbf_utils.h>
 
+#include "custom_music.h"
+
 #define STBTT_STATIC
 #define STB_TRUETYPE_IMPLEMENTATION
 #include <imstb_truetype.h>
@@ -274,6 +276,106 @@ void Notify(const rex::system::AchievementEvent& event) {
 }
 
 }  // namespace
+
+// --- the Song Manager's X prompt -------------------------------------------
+// A pill at the bottom (the renderer anchors it), an X badge and the words,
+// while Song Manager is on show (custom_music.cpp's PadFilter opens the
+// picker on X). Drawn like the toast, laid over by plume_overlay's second
+// picture.
+namespace {
+
+struct Prompt {
+  std::vector<float> pixels;
+  int width = 0;
+  int height = 0;
+};
+
+Prompt g_prompt;
+bool g_prompt_built = false;
+bool g_prompt_visible = false;
+uint32_t g_prompt_generation = 0;
+
+void BuildPrompt() {
+  const std::string text = "CHOOSE FOLDER";
+  const float kText = 30.0f;
+  const float kPadX = 26.0f;
+  const float kGap = 14.0f;   // badge to text
+  const float kBadge = 34.0f;
+  Font font;
+  const float text_w = font.Width(text, kText);
+  const int width = int(std::ceil(kPadX + kBadge + kGap + text_w + kPadX));
+  const int height = 64;
+  Canvas canvas(width, height);
+  // The pill: dark, translucent, rounded.
+  const float kRadius = height / 2.0f;
+  for (int y = 0; y < height; ++y) {
+    for (int x = 0; x < width; ++x) {
+      const float dx = std::min({float(x) + 0.5f, float(width - x) - 0.5f});
+      const float dy = std::min({float(y) + 0.5f, float(height - y) - 0.5f});
+      float a = 0.0f;
+      if (dx >= kRadius || dy >= kRadius) {
+        a = (dx > 0.0f && dy > 0.0f) ? 0.72f : 0.0f;
+        const float cx = dx < kRadius ? kRadius : dx;
+        const float cy = dy < kRadius ? kRadius : dy;
+        if (dx < kRadius || dy < kRadius) {
+          const float corner = std::hypot((dx < kRadius ? kRadius - dx : 0.0f),
+                                          (dy < kRadius ? kRadius - dy : 0.0f));
+          a = corner <= kRadius ? 0.72f : 0.0f;
+        }
+        (void)cx; (void)cy;
+      } else {
+        a = 0.72f;
+      }
+      if (a > 0.0f) {
+        canvas.Blend(x, y, 0.04f, 0.04f, 0.05f, a);
+      }
+    }
+  }
+  // The badge: a ring with X.
+  const float bcx = kPadX + kBadge / 2.0f;
+  const float bcy = height / 2.0f;
+  for (int y = 0; y < height; ++y) {
+    for (int x = 0; x < int(kPadX + kBadge + 4); ++x) {
+      const float d = std::hypot(float(x) + 0.5f - bcx, float(y) + 0.5f - bcy);
+      const float ring = (kBadge / 2.0f) - d;
+      if (ring > -1.5f && ring < 0.0f) {
+        canvas.Blend(x, y, 0.9f, 0.9f, 0.92f, std::min(1.0f, -ring / 1.5f) * 0.9f);
+      }
+    }
+  }
+  font.Draw(canvas, "X", kPadX + kBadge / 2.0f - font.Width("X", kText * 0.8f) / 2.0f,
+            bcy + kText * 0.8f * 0.35f, kText * 0.8f, 0.9f, 0.9f, 0.92f);
+  font.Draw(canvas, text, kPadX + kBadge + kGap, height / 2.0f + kText * 0.35f, kText, 0.95f,
+            0.95f, 0.96f);
+  g_prompt.pixels = std::move(canvas.pixels);
+  g_prompt.width = width;
+  g_prompt.height = height;
+  g_prompt_built = true;
+}
+
+}  // namespace
+
+void XerengeOverlayPromptFrame(const uint8_t** pixels, uint32_t* width, uint32_t* height,
+                               uint32_t* generation, float* opacity) {
+  const bool visible = xerenge::music::SongManagerShown();
+  if (visible && !g_prompt_built) {
+    BuildPrompt();
+    ++g_prompt_generation;
+  }
+  if (visible != g_prompt_visible) {
+    g_prompt_visible = visible;
+    ++g_prompt_generation;
+  }
+  if (!g_prompt_visible || !g_prompt_built) {
+    *opacity = 0.0f;
+    return;
+  }
+  *pixels = reinterpret_cast<const uint8_t*>(g_prompt.pixels.data());
+  *width = uint32_t(g_prompt.width);
+  *height = uint32_t(g_prompt.height);
+  *generation = g_prompt_generation;
+  *opacity = 1.0f;
+}
 
 void XerengeAchievementToastStart() {
   auto* kernel_state = REX_KERNEL_STATE();
