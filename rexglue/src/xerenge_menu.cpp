@@ -428,8 +428,12 @@ REX_HOOK_RAW(sub_821E6BA8) {
     const std::string next = GuestString(base, requested);
     g_on_settings = IsSettings(next);
     g_on_main_menu = next.size() >= 14 && next.compare(next.size() - 14, 14, "/Main/MainMenu") == 0;
-    xerenge::music::SetSongManagerShown(next.size() >= 19 &&
-                                        next.compare(next.size() - 19, 19, "DriverDetailsEATrax") == 0);
+    const bool song_manager_now =
+        next.size() >= 19 && next.compare(next.size() - 19, 19, "DriverDetailsEATrax") == 0;
+    xerenge::music::SetSongManagerShown(song_manager_now);
+    if (song_manager_now) {
+      REXLOG_INFO("menu: song manager shown");
+    }
     constexpr uint32_t kMusic = 0x8268748C;  // the soundtrack's state; +780: paused for a video
     const bool left_video = on_show.size() > 5 && on_show.compare(on_show.size() - 5, 5, "Video") == 0 &&
                             next != on_show;

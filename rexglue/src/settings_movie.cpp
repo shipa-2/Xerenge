@@ -1569,6 +1569,80 @@ bool RetitleOnSwitch(Blob& b, Constants& c) {
   return false;
 }
 
+// The replay's Clip Creator: Camera moves from LB (WHITE) to X, leaving LB
+// for the custom soundtrack's previous-song control. Its button takes the
+// icon from the input code, so both the prompt and the handler change here.
+bool RebuildCreateClip(const uint8_t* data, size_t data_size, const uint8_t* constants,
+                       size_t constants_size, Blob& out_data, Blob& out_constants) {
+  Constants c;
+  if (!c.Read(constants, constants_size)) {
+    return false;
+  }
+  Blob& b = out_data;
+  b.bytes.assign(data, data + data_size);
+  const uint32_t root = c.root;
+  if (b.U32(root) != 9 || b.U32(root + 4) != 0x09876543) {
+    return false;
+  }
+  SwapConstant(b, c.String("CHANGETEAMS"), c.String("XBUTTON"));
+  SwapConstant(b, c.String("WHITE"), c.String("XBUTTON"));
+  b.Align(16);
+  out_constants = c.Write();
+  return true;
+}
+
+// Song Manager's onUpdate refreshes Back and Preview Track every frame. With
+// Choose Folder at slot 0, those refreshes belong at slots 1 and 2; otherwise
+// they overwrite the new button and duplicate Preview Track.
+bool FixSongManagerButtonUpdates(Blob& b, Constants& c) {
+  std::vector<uint32_t> pool;
+  const auto resolve = [&](uint32_t index) {
+    if (index < c.entries.size() && c.entries[index].type == 8 && c.entries[index].value < pool.size() &&
+        pool[c.entries[index].value] != index) {
+      return pool[c.entries[index].value];
+    }
+    return index;
+  };
+  const auto text = [&](uint32_t index, const char* expected) {
+    index = resolve(index);
+    return index < c.entries.size() && c.entries[index].type == 1 && c.entries[index].text == expected;
+  };
+  const auto none = [&](uint32_t index) {
+    index = resolve(index);
+    return index < c.entries.size() && c.entries[index].type == 3;
+  };
+  int patched = 0;
+  for (uint32_t op = 0; op + 12 < b.bytes.size(); ++op) {
+    if (b.bytes[op] != 0x88 && b.bytes[op] != 0x96) {
+      continue;
+    }
+    const uint32_t at = (op + 4) & ~3u;
+    const uint32_t count = b.U32(at), list = b.U32(at + 4);
+    if (b.bytes[op] == 0x88) {
+      if (count < 0x1000 && list + count * 4 <= b.bytes.size()) {
+        pool.clear();
+        for (uint32_t i = 0; i < count; ++i) {
+          pool.push_back(b.U32(list + i * 4));
+        }
+      }
+      continue;
+    }
+    if (count != 6 || list + 24 > b.bytes.size() || !text(b.U32(list + 20), "mo_screen")) {
+      continue;
+    }
+    const uint32_t first = b.U32(list), second = b.U32(list + 4);
+    const bool back = text(first, "MENUPAGEBACK") && text(second, "$FEBACK");
+    const bool preview = text(first, "MENUPAGEFORWARD") && text(second, "$FEPREVIEWTRACK");
+    const bool clear = none(first) && none(second);
+    if (!back && !preview && !clear) {
+      continue;
+    }
+    b.Set32(list + 8, c.Value(6, FloatBits(back ? 1.0f : 2.0f)));
+    ++patched;
+  }
+  return patched == 4;
+}
+
 // Driver Details > Song Manager (custom_music.cpp): its playlist switch shown
 // (by HasCustomPlaylists) on LT, and the playing order on RT in place of LT.
 // What the screen's input handler compares the key with, INPUTCODE.CYCLESONG
@@ -1625,6 +1699,47 @@ bool RebuildSongManager(const uint8_t* data, size_t data_size, const uint8_t* co
   if (!blanked) {
     REXLOG_WARN("menu: song manager movie: its PLAYLIST key not found");
   }
+  if (!FixSongManagerButtonUpdates(b, c)) {
+    REXLOG_WARN("menu: song manager movie: its four button refreshes not found");
+  }
+  // The stock button bar (b4IconOptionDisplay, at 591, 423): X chooses the
+  // music folder beside Back and Preview Track. The component reads all three
+  // arrays for every entry, so the third button needs a label, an input code
+  // and an icon; leaving InputCodes out breaks the bar as a whole.
+  bool hinted = false;
+  const uint32_t frame_hints = b.U32(root + 12);
+  const uint32_t item_count = b.U32(frame_hints), item_list = b.U32(frame_hints + 4);
+  Code code(b);
+  for (uint32_t i = 0; i < item_count; ++i) {
+    const uint32_t item = b.U32(item_list + i * 4);
+    if (b.U32(item) != 3 || !(b.U32(item + 4) & 0x80) || !b.U32(item + 60) ||
+        b.U32(item + 32) != FloatBits(591.0f) || b.U32(item + 36) != FloatBits(423.0f)) {
+      continue;
+    }
+    const uint32_t hints = code.Start();
+    for (const auto& [name, values] :
+         {std::pair<const char*, std::vector<const char*>>{"displayOptions", {"$XerengeChooseFolder", "$FEBACK", "$FEPREVIEWTRACK"}},
+          std::pair<const char*, std::vector<const char*>>{"InputCodes", {"XBUTTON", "MENUPAGEBACK", "MENUPAGEFORWARD"}},
+          std::pair<const char*, std::vector<const char*>>{"XBoxIcons", {"X-Button", "B-Button", "A-Button"}}}) {
+      code.Push({c.String(name), c.Int(0)});
+      code.Op(0x42);  // InitArray
+      code.Op(0x1D);  // SetVariable
+      for (size_t v = 0; v < values.size(); ++v) {
+        code.Push({c.String(name)});
+        code.Op(0x1C);  // GetVariable
+        code.Push({c.Int(int32_t(v)), c.String(values[v])});
+        code.Op(0x4F);  // SetMember
+      }
+    }
+    code.Op(0x00);
+    code.Finish();
+    b.Set32(b.U32(b.U32(item + 60) + 4) + 8, hints);
+    hinted = true;
+    break;
+  }
+  if (!hinted) {
+    REXLOG_WARN("menu: song manager movie: no button hints at 591, 423");
+  }
   b.Align(16);
   out_constants = c.Write();
   return true;
@@ -1673,6 +1788,17 @@ REX_HOOK_RAW(sub_824277A0) {
         ctx.r4.u64 = ToGuest(base, new_data);
         ctx.r5.u64 = ToGuest(base, new_constants);
         REXLOG_INFO("menu: main menu movie rebuilt");
+      }
+    }
+    // The replay's Clip Creator: Camera on X instead of LB.
+    if (!settings && !pause && Holds(raw_data, data_size, "__Packages.CreateClip")) {
+      const uint8_t* raw_constants = xerenge::GuestPointer(base, constants);
+      Blob new_data, new_constants;
+      if (RebuildCreateClip(raw_data, data_size, raw_constants, ConstantsSize(raw_constants), new_data,
+                            new_constants)) {
+        ctx.r4.u64 = ToGuest(base, new_data);
+        ctx.r5.u64 = ToGuest(base, new_constants);
+        REXLOG_INFO("menu: clip creator movie rebuilt: Camera on X");
       }
     }
     // Driver Details > Song Manager: LT switches to the music folder, RT the order.

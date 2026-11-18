@@ -928,8 +928,7 @@ bool SongManagerShown() {
 std::string Title() {
   std::lock_guard<std::mutex> lock(g_mutex);
   const uint32_t pages = PageCount();
-  return pages > 1 ? fmt::format("[MY MUSIC {}/{}]  X: CHOOSE FOLDER", g_page + 1, pages)
-                   : std::string("[MY MUSIC]  X: CHOOSE FOLDER");
+  return pages > 1 ? fmt::format("[MY MUSIC {}/{}]", g_page + 1, pages) : std::string("[MY MUSIC]");
 }
 
 }  // namespace xerenge::music
