@@ -357,7 +357,12 @@ void BuildPrompt() {
 
 void XerengeOverlayPromptFrame(const uint8_t** pixels, uint32_t* width, uint32_t* height,
                                uint32_t* generation, float* opacity) {
-  const bool visible = xerenge::music::SongManagerShown();
+  // Disabled: a drawn pill over the screen read as foreign (the game's own
+  // chrome is the right place; the movie that owns the button bar is being
+  // hunted via dump_movies).
+  (void)pixels; (void)width; (void)height; (void)generation;
+  *opacity = 0.0f;
+  const bool visible = false && xerenge::music::SongManagerShown();
   if (visible && !g_prompt_built) {
     BuildPrompt();
     ++g_prompt_generation;

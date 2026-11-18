@@ -26,6 +26,7 @@
 #include <cstdio>
 #include <cstdlib>
 #include <cstring>
+#include <filesystem>
 #include <iterator>
 #include <string>
 #include <vector>
@@ -1680,16 +1681,6 @@ REX_HOOK_RAW(sub_824277A0) {
         Holds(song_constants, ConstantsSize(song_constants), "changeCustomPlaylist")) {
       const uint8_t* raw_constants = song_constants;
       Blob new_data, new_constants;
-      if (const char* dump = std::getenv("XERENGE_DUMP_MOVIES")) {
-        if (FILE* file = std::fopen((std::string(dump) + "/songmanager.data.bin").c_str(), "wb")) {
-          std::fwrite(raw_data, 1, data_size, file);
-          std::fclose(file);
-        }
-        if (FILE* file = std::fopen((std::string(dump) + "/songmanager.constants.bin").c_str(), "wb")) {
-          std::fwrite(raw_constants, 1, ConstantsSize(raw_constants), file);
-          std::fclose(file);
-        }
-      }
       if (RebuildSongManager(raw_data, data_size, raw_constants, ConstantsSize(raw_constants), new_data,
                              new_constants)) {
         ctx.r4.u64 = ToGuest(base, new_data);
