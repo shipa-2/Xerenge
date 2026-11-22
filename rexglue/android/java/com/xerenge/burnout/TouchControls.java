@@ -4,6 +4,7 @@ import android.content.Context;
 import android.graphics.Canvas;
 import android.graphics.Color;
 import android.graphics.Paint;
+import android.graphics.Path;
 import android.graphics.RectF;
 import android.hardware.input.InputManager;
 import android.os.Handler;
@@ -51,7 +52,7 @@ final class TouchControls extends View implements InputManager.InputDeviceListen
     private static native void nativeButton(int button, boolean down);
     private static native void nativeAxis(int axis, float value);
 
-    /** A round control: a button, a trigger pressed all the way, the stick's place, a d-pad direction, or the menu. */
+    /** A placed control: a button, a trigger, the stick, a d-pad direction, or the menu. */
     private static final class Control {
         final String label;
         final int button;   // or -1
@@ -131,7 +132,14 @@ final class TouchControls extends View implements InputManager.InputDeviceListen
     private float stickCentreX, stickCentreY, stickX, stickY;
     private int stickPointer = -1;
 
+    // The D-pad's geometry is in pixels: fractions of the screen's width and
+    // height must not become different horizontal and vertical arm lengths.
+    private float dpadCx, dpadCy, dpadRadius, dpadArm;
+
     private final SparseArray<Control> pointers = new SparseArray<>();
+    // D-pad fingers stay tracked even over the neutral centre, so they can
+    // slide into another direction without lifting and touching again.
+    private final SparseArray<Control> dpadPointers = new SparseArray<>();
     private final Paint fill = new Paint(Paint.ANTI_ALIAS_FLAG);
     private final Paint ring = new Paint(Paint.ANTI_ALIAS_FLAG);
     private final Paint text = new Paint(Paint.ANTI_ALIAS_FLAG);
@@ -238,6 +246,7 @@ final class TouchControls extends View implements InputManager.InputDeviceListen
             press(pointers.valueAt(i), false);
         }
         pointers.clear();
+        releaseDpadPointers();
         if (stickPointer >= 0) {
             releaseStick();
         }
@@ -269,6 +278,20 @@ final class TouchControls extends View implements InputManager.InputDeviceListen
             control.y = control.fy * getHeight();
             control.radius = control.fr * unit;
         }
+        Control up = controls[12], down = controls[13], left = controls[14], right = controls[15];
+        dpadCx = (up.x + down.x + left.x + right.x) / 4f;
+        dpadCy = (up.y + down.y + left.y + right.y) / 4f;
+        float directionRadius = (up.radius + down.radius + left.radius + right.radius) / 4f;
+        dpadRadius = directionRadius * 2.8f;
+        dpadArm = dpadRadius * 0.34f;
+        float offset = (dpadRadius + dpadArm) * 0.5f;
+        up.x = down.x = left.x = right.x = dpadCx;
+        up.y = down.y = left.y = right.y = dpadCy;
+        up.y -= offset;
+        down.y += offset;
+        left.x -= offset;
+        right.x += offset;
+        up.radius = down.radius = left.radius = right.radius = directionRadius;
         stickRestX = stickControl.x;
         stickRestY = stickControl.y;
         stickRadius = stickControl.radius;
@@ -342,6 +365,7 @@ final class TouchControls extends View implements InputManager.InputDeviceListen
             press(pointers.valueAt(i), false);
         }
         pointers.clear();
+        releaseDpadPointers();
         releaseStick();
         editing = true;
         selected = null;
@@ -358,8 +382,11 @@ final class TouchControls extends View implements InputManager.InputDeviceListen
             paintColor(stickPointer >= 0, 1.0f);
             canvas.drawCircle(stickX, stickY, stickRadius * 0.45f, fill);
         }
+        if ((padVisible || editing) && dpadMode) {
+            drawDpad(canvas);
+        }
         for (Control control : controls) {
-            if ((control.stick && dpadMode) || (control.dpad && !dpadMode)
+            if ((control.stick && dpadMode) || control.dpad
                     || (!padVisible && !editing && !control.menu)) {
                 continue;
             }
@@ -386,6 +413,96 @@ final class TouchControls extends View implements InputManager.InputDeviceListen
         if (editing) {
             drawEditor(canvas);
         }
+    }
+
+    // One symmetric, rounded cross. The direction controls still provide the
+    // hit areas and editor handles; this is their shared face.
+    private void drawDpad(Canvas canvas) {
+        float corner = dpadArm * 0.35f;
+        Path vertical = new Path();
+        vertical.addRoundRect(new RectF(dpadCx - dpadArm, dpadCy - dpadRadius,
+                dpadCx + dpadArm, dpadCy + dpadRadius), corner, corner, Path.Direction.CW);
+        Path horizontal = new Path();
+        horizontal.addRoundRect(new RectF(dpadCx - dpadRadius, dpadCy - dpadArm,
+                dpadCx + dpadRadius, dpadCy + dpadArm), corner, corner, Path.Direction.CW);
+        Path cross = new Path();
+        cross.op(vertical, horizontal, Path.Op.UNION);
+        fill.setColor(Color.argb((int) (alpha * 0.8f), 20, 20, 24));
+        ring.setColor(Color.argb(Math.min(255, alpha + 40), 255, 255, 255));
+        canvas.drawPath(cross, fill);
+        Control[] directions = {controls[12], controls[13], controls[14], controls[15]};
+        for (Control direction : directions) {
+            if (!direction.down) {
+                continue;
+            }
+            fill.setColor(Color.argb(Math.min(255, alpha + 30), 90, 90, 98));
+            canvas.save();
+            canvas.clipPath(cross);
+            if (direction.button == DPAD_UP) {
+                canvas.drawRect(dpadCx - dpadArm, dpadCy - dpadRadius, dpadCx + dpadArm, dpadCy, fill);
+            } else if (direction.button == DPAD_DOWN) {
+                canvas.drawRect(dpadCx - dpadArm, dpadCy, dpadCx + dpadArm, dpadCy + dpadRadius, fill);
+            } else if (direction.button == DPAD_LEFT) {
+                canvas.drawRect(dpadCx - dpadRadius, dpadCy - dpadArm, dpadCx, dpadCy + dpadArm, fill);
+            } else {
+                canvas.drawRect(dpadCx, dpadCy - dpadArm, dpadCx + dpadRadius, dpadCy + dpadArm, fill);
+            }
+            canvas.restore();
+        }
+        canvas.drawPath(cross, ring);
+        text.setColor(Color.argb(Math.min(255, alpha + 80), 255, 255, 255));
+        for (Control direction : directions) {
+            drawDpadArrow(canvas, direction);
+        }
+        fill.setColor(Color.argb(Math.min(255, alpha + 80), 255, 255, 255));
+        canvas.drawCircle(dpadCx, dpadCy, dpadArm * 0.52f, fill);
+    }
+
+    private void drawDpadArrow(Canvas canvas, Control c) {
+        float s = dpadRadius * 0.18f;
+        Path arrow = new Path();
+        if (c.button == DPAD_UP) {
+            arrow.moveTo(c.x, c.y - s);
+            arrow.lineTo(c.x - s * 0.85f, c.y + s * 0.55f);
+            arrow.lineTo(c.x + s * 0.85f, c.y + s * 0.55f);
+        } else if (c.button == DPAD_DOWN) {
+            arrow.moveTo(c.x, c.y + s);
+            arrow.lineTo(c.x - s * 0.85f, c.y - s * 0.55f);
+            arrow.lineTo(c.x + s * 0.85f, c.y - s * 0.55f);
+        } else if (c.button == DPAD_LEFT) {
+            arrow.moveTo(c.x - s, c.y);
+            arrow.lineTo(c.x + s * 0.55f, c.y - s * 0.85f);
+            arrow.lineTo(c.x + s * 0.55f, c.y + s * 0.85f);
+        } else {
+            arrow.moveTo(c.x + s, c.y);
+            arrow.lineTo(c.x - s * 0.55f, c.y - s * 0.85f);
+            arrow.lineTo(c.x - s * 0.55f, c.y + s * 0.85f);
+        }
+        arrow.close();
+        canvas.drawPath(arrow, text);
+    }
+
+    private Control dpadDirectionAt(float x, float y) {
+        float dx = x - dpadCx, dy = y - dpadCy;
+        float ax = Math.abs(dx), ay = Math.abs(dy);
+        if (ax > dpadRadius || ay > dpadRadius || (ax > dpadArm && ay > dpadArm)
+                || (ax < dpadArm * 0.55f && ay < dpadArm * 0.55f)) {
+            return null;
+        }
+        if (ax > ay) {
+            return controls[dx < 0 ? 14 : 15];
+        }
+        return controls[dy < 0 ? 12 : 13];
+    }
+
+    private void releaseDpadPointers() {
+        for (int i = 0; i < dpadPointers.size(); ++i) {
+            Control control = dpadPointers.valueAt(i);
+            if (control != null) {
+                press(control, false);
+            }
+        }
+        dpadPointers.clear();
     }
 
     // The Xbox View button (two overlapping rectangles, the old Back) ...
@@ -452,13 +569,19 @@ final class TouchControls extends View implements InputManager.InputDeviceListen
     }
 
     private Control hit(float x, float y) {
+        if (dpadMode && (padVisible || editing)) {
+            Control direction = dpadDirectionAt(x, y);
+            if (direction != null) {
+                return direction;
+            }
+        }
         Control best = null;
         float bestDistance = Float.MAX_VALUE;
         for (Control control : controls) {
             if (!padVisible && !control.menu && !editing) {
                 continue;
             }
-            if ((control.stick && (dpadMode || !editing)) || (control.dpad && !dpadMode)) {
+            if ((control.stick && (dpadMode || !editing)) || control.dpad) {
                 continue;
             }
             float dx = x - control.x, dy = y - control.y;
@@ -521,8 +644,20 @@ final class TouchControls extends View implements InputManager.InputDeviceListen
             case MotionEvent.ACTION_MOVE:
                 for (int i = 0; i < event.getPointerCount(); ++i) {
                     if (selected != null && event.getPointerId(i) == dragPointer) {
-                        selected.fx = clamp((event.getX(i) + dragDx) / getWidth(), 0.02f, 0.98f);
-                        selected.fy = clamp((event.getY(i) + dragDy) / getHeight(), 0.03f, 0.97f);
+                        float nx = clamp((event.getX(i) + dragDx) / getWidth(), 0.02f, 0.98f);
+                        float ny = clamp((event.getY(i) + dragDy) / getHeight(), 0.03f, 0.97f);
+                        if (selected.dpad) {
+                            float dx = nx - selected.fx, dy = ny - selected.fy;
+                            for (Control dpadControl : controls) {
+                                if (dpadControl.dpad) {
+                                    dpadControl.fx = clamp(dpadControl.fx + dx, 0.02f, 0.98f);
+                                    dpadControl.fy = clamp(dpadControl.fy + dy, 0.03f, 0.97f);
+                                }
+                            }
+                        } else {
+                            selected.fx = nx;
+                            selected.fy = ny;
+                        }
                         layout();
                     }
                 }
@@ -544,7 +679,16 @@ final class TouchControls extends View implements InputManager.InputDeviceListen
     private void editButton(int i) {
         if (i == 0 || i == 1) {
             if (selected != null) {
-                selected.fr = clamp(selected.fr * (i == 1 ? 1.12f : 1f / 1.12f), selected.dfr * 0.4f, selected.dfr * 2.5f);
+                float size = clamp(selected.fr * (i == 1 ? 1.12f : 1f / 1.12f), selected.dfr * 0.4f, selected.dfr * 2.5f);
+                if (selected.dpad) {
+                    for (Control control : controls) {
+                        if (control.dpad) {
+                            control.fr = size;
+                        }
+                    }
+                } else {
+                    selected.fr = size;
+                }
             }
         } else if (i == 2) {
             for (Control control : controls) {
@@ -592,7 +736,11 @@ final class TouchControls extends View implements InputManager.InputDeviceListen
                 if (control != null && control.menu) {
                     menuListener.onMenu();
                 } else if (control != null) {
-                    pointers.put(id, control);
+                    if (control.dpad) {
+                        dpadPointers.put(id, control);
+                    } else {
+                        pointers.put(id, control);
+                    }
                     press(control, true);
                 } else if (!dpadMode && stickPointer < 0 && x < getWidth() * 0.5f) {
                     stickPointer = id;
@@ -604,8 +752,21 @@ final class TouchControls extends View implements InputManager.InputDeviceListen
             }
             case MotionEvent.ACTION_MOVE:
                 for (int i = 0; i < event.getPointerCount(); ++i) {
-                    if (event.getPointerId(i) == stickPointer) {
+                    int id = event.getPointerId(i);
+                    if (id == stickPointer) {
                         moveStick(event.getX(i), event.getY(i));
+                    } else if (dpadPointers.indexOfKey(id) >= 0) {
+                        Control previous = dpadPointers.get(id);
+                        Control next = dpadDirectionAt(event.getX(i), event.getY(i));
+                        if (next != previous) {
+                            if (previous != null) {
+                                press(previous, false);
+                            }
+                            dpadPointers.put(id, next);
+                            if (next != null) {
+                                press(next, true);
+                            }
+                        }
                     }
                 }
                 break;
@@ -617,6 +778,7 @@ final class TouchControls extends View implements InputManager.InputDeviceListen
                         press(pointers.valueAt(i), false);
                     }
                     pointers.clear();
+                    releaseDpadPointers();
                     releaseStick();
                     break;
                 }
@@ -625,6 +787,13 @@ final class TouchControls extends View implements InputManager.InputDeviceListen
                 if (control != null) {
                     pointers.remove(id);
                     press(control, false);
+                }
+                if (dpadPointers.indexOfKey(id) >= 0) {
+                    Control direction = dpadPointers.get(id);
+                    if (direction != null) {
+                        press(direction, false);
+                    }
+                    dpadPointers.remove(id);
                 }
                 if (id == stickPointer) {
                     releaseStick();

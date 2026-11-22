@@ -66,7 +66,7 @@ constexpr const char* kXexSha256Us =
 constexpr const char* kDesktopId = "xerenge-burnout-revenge.desktop";
 
 // The game's title updates (xboxunity.net), put into the game directory at
-// the end of the installation - among the game's own files, where a build of
+// the end of Install and Update - among the game's own files, where a build of
 // the runtime that applies them looks.
 constexpr const char* kTitleUpdates[] = {
     "https://xboxunity.net/Resources/Lib/TitleUpdate.php?tuid=23567",
@@ -760,8 +760,8 @@ void InstallerWindow::RefreshInstallState() {
   }
   install_button_->setText(installed ? tr("Update") : tr("Install"));
   image_edit_->setEnabled(!installed);
-  SetStatus(installed ? tr("The game is installed here: Update replaces the program and keeps "
-                           "the game files and these settings. No disc image is needed.")
+  SetStatus(installed ? tr("The game is installed here: Update replaces the program, downloads any missing "
+                           "title updates, and keeps the game files and these settings. No disc image is needed.")
                       : tr("Ready."));
 }
 
@@ -1302,8 +1302,36 @@ bool InstallerWindow::IsUsGame(const QString& game_dir) {
 QString InstallerWindow::DownloadTitleUpdates(const QString& game_dir,
                                               const std::function<void(double)>& progress) const {
   constexpr int kCount = int(sizeof(kTitleUpdates) / sizeof(kTitleUpdates[0]));
+  const QString record_path = QDir(game_dir).filePath(".xerenge-title-updates");
+  QMap<QString, QString> installed;
+  QFile record(record_path);
+  if (record.open(QIODevice::ReadOnly | QIODevice::Text)) {
+    while (!record.atEnd()) {
+      const QString line = QString::fromUtf8(record.readLine()).trimmed();
+      const int tab = line.indexOf('\t');
+      if (tab > 0) {
+        installed.insert(line.left(tab), line.mid(tab + 1));
+      }
+    }
+  }
+  const auto save_record = [&] {
+    QSaveFile out(record_path);
+    if (!out.open(QIODevice::WriteOnly | QIODevice::Text)) {
+      return;
+    }
+    for (auto it = installed.constBegin(); it != installed.constEnd(); ++it) {
+      out.write(QStringLiteral("%1\t%2\n").arg(it.key(), it.value()).toUtf8());
+    }
+    out.commit();
+  };
   for (int i = 0; i < kCount; ++i) {
     const QUrl url(QString::fromLatin1(kTitleUpdates[i]));
+    const QString id = url.query();
+    const QString existing = installed.value(id);
+    if (!existing.isEmpty() && QFileInfo(QDir(game_dir).filePath(existing)).size() > 0) {
+      progress(double(i + 1) / kCount);
+      continue;
+    }
     QString name;
     QByteArray body;
     // curl first: it ships with Windows 10 and up, macOS and the common
@@ -1381,6 +1409,8 @@ QString InstallerWindow::DownloadTitleUpdates(const QString& game_dir,
     if (!out.commit()) {
       continue;
     }
+    installed.insert(id, name);
+    save_record();
     if (!log_path_.isEmpty()) {
       QFile log(log_path_);
       if (log.open(QIODevice::Append | QIODevice::Text)) {

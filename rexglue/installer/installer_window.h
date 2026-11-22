@@ -64,9 +64,10 @@ class InstallerWindow : public QWidget {
 
   bool LocatePayload(QString* error);
   QString CopyRuntime(const std::function<void(double)>& progress) const;
-  // The title updates, downloaded at the end of the installation into the
-  // game directory among the game's own files. A failure is written to the
-  // install log, not failed over: the game runs without the update.
+  // The title updates, downloaded at the end of Install and Update into the
+  // game directory among the game's own files. A package recorded here and
+  // still present is skipped. A failure is written to the install log, not
+  // failed over: the game runs without the update.
   QString DownloadTitleUpdates(const QString& game_dir,
                                const std::function<void(double)>& progress) const;
   static bool IsUsGame(const QString& game_dir);

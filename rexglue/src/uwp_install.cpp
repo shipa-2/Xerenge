@@ -454,7 +454,9 @@ std::string XerengeUwpPickMusicFolder() {
   }
   CoreDispatcher dispatcher = CoreWindow::GetForCurrentThread()
                                  ? CoreWindow::GetForCurrentThread().Dispatcher()
-                                 : CoreApplication::MainView().CoreWindow().Dispatcher();
+                                 : winrt::Windows::ApplicationModel::Core::CoreApplication::MainView()
+                                       .CoreWindow()
+                                       .Dispatcher();
   dispatcher.RunAsync(CoreDispatcherPriority::Normal, [&] {
     FolderPicker picker;
     picker.ViewMode(PickerViewMode::List);

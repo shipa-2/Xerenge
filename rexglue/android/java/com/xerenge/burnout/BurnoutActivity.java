@@ -1,5 +1,6 @@
 package com.xerenge.burnout;
 
+import android.content.Intent;
 import android.os.Bundle;
 import android.os.Process;
 import android.os.SystemClock;
@@ -64,6 +65,18 @@ public class BurnoutActivity extends SDLActivity {
         // The device's own vibrator, for the game's rumble when the pad has
         // no motors (vibration in xerenge.conf).
         DeviceVibration.start(getApplicationContext());
+    }
+
+    public void pickMusicFolder() {
+        MusicFolderPicker.pick(this);
+    }
+
+    @Override
+    protected void onActivityResult(int request, int result, Intent data) {
+        if (MusicFolderPicker.onActivityResult(this, request, result, data)) {
+            return;
+        }
+        super.onActivityResult(request, result, data);
     }
 
     // The device does not go on vibrating once the game is left: Android

@@ -24,6 +24,7 @@
 #include <filesystem>
 #include <atomic>
 #include <chrono>
+#include <condition_variable>
 #include <memory>
 #include <map>
 #include <mutex>
@@ -31,6 +32,11 @@
 #include <thread>
 #include <string>
 #include <vector>
+
+#if defined(__ANDROID__)
+#include <jni.h>
+#include <SDL3/SDL.h>
+#endif
 
 #include <rex/filesystem/devices/host_path_device.h>
 #include <rex/hook.h>
@@ -548,6 +554,13 @@ void LoadPage() {
 
 std::atomic<bool> g_picking_folder{false};
 
+#if defined(__ANDROID__)
+std::mutex g_android_picker_mutex;
+std::condition_variable g_android_picker_ready;
+bool g_android_picker_done = false;
+std::string g_android_picker_result;
+#endif
+
 #if defined(_WIN32)
 #define popen _popen
 #define pclose _pclose
@@ -574,10 +587,33 @@ std::string PlatformPickFolder() {
   extern std::string XerengeUwpPickMusicFolder();
   return XerengeUwpPickMusicFolder();
 #elif defined(__ANDROID__)
-  // The document-tree picker returns content:// paths, which need the
-  // storage bridge before they can be a music folder; not in yet.
-  REXLOG_INFO("music: choosing a folder on Android is not in yet");
-  return {};
+  // BurnoutActivity opens ACTION_OPEN_DOCUMENT_TREE; MusicFolderPicker imports
+  // the tree and answers with its real path in the app's files directory.
+  {
+    std::lock_guard lock(g_android_picker_mutex);
+    g_android_picker_done = false;
+    g_android_picker_result.clear();
+  }
+  JNIEnv* env = static_cast<JNIEnv*>(SDL_GetAndroidJNIEnv());
+  jobject activity = static_cast<jobject>(SDL_GetAndroidActivity());
+  if (!env || !activity) {
+    return {};
+  }
+  jclass activity_class = env->GetObjectClass(activity);
+  jmethodID pick = env->GetMethodID(activity_class, "pickMusicFolder", "()V");
+  if (!pick) {
+    env->ExceptionClear();
+    return {};
+  }
+  env->CallVoidMethod(activity, pick);
+  if (env->ExceptionCheck()) {
+    env->ExceptionDescribe();
+    env->ExceptionClear();
+    return {};
+  }
+  std::unique_lock lock(g_android_picker_mutex);
+  g_android_picker_ready.wait(lock, [] { return g_android_picker_done; });
+  return g_android_picker_result;
 #elif defined(_WIN32)
   // The explorer folder picker, driven through PowerShell.
   return PickFolderWith(
@@ -863,6 +899,21 @@ void EnsureApplied(uint8_t* base) {
 
 }  // namespace
 
+#if defined(__ANDROID__)
+extern "C" JNIEXPORT void JNICALL Java_com_xerenge_burnout_MusicFolderPicker_nativeResult(JNIEnv* env, jclass,
+                                                                                          jstring path) {
+  const char* utf = path ? env->GetStringUTFChars(path, nullptr) : nullptr;
+  {
+    std::lock_guard lock(g_android_picker_mutex);
+    g_android_picker_result = utf ? utf : "";
+    g_android_picker_done = true;
+  }
+  if (utf) {
+    env->ReleaseStringUTFChars(path, utf);
+  }
+  g_android_picker_ready.notify_one();
+}
+#endif
 
 namespace xerenge::music {
 
