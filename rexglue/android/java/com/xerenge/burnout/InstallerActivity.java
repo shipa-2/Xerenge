@@ -801,11 +801,11 @@ public class InstallerActivity extends Activity {
         } else {
             descriptor = null;
         }
-        // Step weights as on the desktop: extraction 30, the settings 1; the
-        // textures prepared as ETC2 20, when asked for.
+        // Step weights as on the desktop: extraction 30, the settings 1, title
+        // updates 2; the textures prepared as ETC2 20, when asked for.
         final int extractWeight = extracted ? 0 : 30;
         final int etc2Weight = chosen.etc2Textures ? 20 : 0;
-        final int total = extractWeight + etc2Weight + 1;
+        final int total = extractWeight + etc2Weight + 3;
         progress.setProgress(0);
         setBusy(true);
         new Thread(() -> {
@@ -881,11 +881,17 @@ public class InstallerActivity extends Activity {
                         getString(R.string.cannot_write, Settings.file(this).getAbsolutePath())));
                 return;
             }
+            post(getString(R.string.step_title_updates) + "...",
+                    1000 * (extractWeight + etc2Weight + 1) / total);
+            String updateError = TitleUpdates.installMissing(game, completed -> {
+                post(getString(R.string.step_title_updates) + " (" + completed + "/2)",
+                        (int) (1000 * (extractWeight + etc2Weight + 1 + completed) / (double) total));
+            });
             ui.post(() -> {
                 progress.setProgress(1000);
                 settings = Settings.load(this);
             });
-            finishInstall(null);
+            finishInstall(updateError == null ? null : getString(R.string.title_updates_failed, updateError));
         }, "installer").start();
     }
 

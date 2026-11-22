@@ -91,10 +91,11 @@
     <string name="ready">Ready.</string>
     <string name="install">Install</string>
     <string name="update">Update</string>
-    <string name="installed_here">The game is installed here: Update keeps the game files and writes these settings. No disc image is needed.</string>
+    <string name="installed_here">The game is installed here: Update keeps the game files, writes these settings, and downloads missing title updates. No disc image is needed.</string>
     <string name="select_image_first">Select the game\'s disc image first.</string>
     <string name="step_extract">Extracting the disc image</string>
     <string name="step_settings">Writing the settings</string>
+    <string name="step_title_updates">Downloading title updates</string>
     <string name="step_etc2">Preparing the textures as ETC2</string>
     <string name="preparing_etc2">Preparing the textures: %1$d of %2$d files</string>
     <string name="step_failed">%1$s failed: %2$s</string>
@@ -103,6 +104,7 @@
     <string name="checking">Checking the disc image: %1$d%%</string>
     <string name="extracting">Extracting: %1$d of %2$d files</string>
     <string name="installed">Installed. Opening the app now starts the game; a long press on its icon (Setup) brings this back.</string>
+    <string name="title_updates_failed">Installed, but a title update could not be downloaded: %1$s</string>
     <string name="installed_needs_driver">Installed. The game still needs a graphics driver: load a Turnip package above.</string>
     <string name="start_game">Start the game</string>
 </resources>

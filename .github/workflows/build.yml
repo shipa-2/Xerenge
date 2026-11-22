@@ -198,6 +198,12 @@ jobs:
           $missing = @(@{llvm = "clang"; cmake = "cmake"; ninja = "ninja"}.GetEnumerator() |
             Where-Object { -not (Get-Command $_.Value -ErrorAction SilentlyContinue) } | ForEach-Object { $_.Key })
           if ($missing) { choco install @missing -y }
+          # MSVC 14.52's STL rejects Clang 20 and 21 (STL1000). The runner's
+          # preinstalled LLVM can be older than the one the project needs.
+          $clangVersion = clang --version | Select-String 'clang version ([0-9]+)'
+          if (-not $clangVersion -or [int]$clangVersion.Matches[0].Groups[1].Value -lt 22) {
+            choco upgrade llvm -y
+          }
 
       - name: Install Qt
         uses: jurplel/install-qt-action@v4
@@ -352,6 +358,12 @@ jobs:
           $missing = @(@{llvm = "clang"; cmake = "cmake"; ninja = "ninja"}.GetEnumerator() |
             Where-Object { -not (Get-Command $_.Value -ErrorAction SilentlyContinue) } | ForEach-Object { $_.Key })
           if ($missing) { choco install @missing -y }
+          # MSVC 14.52's STL rejects Clang 20 and 21 (STL1000). The runner's
+          # preinstalled LLVM can be older than the one the project needs.
+          $clangVersion = clang --version | Select-String 'clang version ([0-9]+)'
+          if (-not $clangVersion -or [int]$clangVersion.Matches[0].Groups[1].Value -lt 22) {
+            choco upgrade llvm -y
+          }
 
       - name: Exclude the workspace from Windows Defender
         shell: pwsh

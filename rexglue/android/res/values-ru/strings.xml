@@ -90,10 +90,11 @@
     <string name="ready">Готово к установке.</string>
     <string name="install">Установить</string>
     <string name="update">Обновить</string>
-    <string name="installed_here">Игра уже установлена: «Обновить» сохранит файлы игры и запишет эти настройки. Образ диска не нужен.</string>
+    <string name="installed_here">Игра уже установлена: «Обновить» сохранит файлы игры, запишет эти настройки и скачает недостающие обновления игры. Образ диска не нужен.</string>
     <string name="select_image_first">Сначала выберите образ диска игры.</string>
     <string name="step_extract">Распаковка образа диска</string>
     <string name="step_settings">Запись настроек</string>
+    <string name="step_title_updates">Загрузка обновлений игры</string>
     <string name="step_etc2">Подготовка текстур в ETC2</string>
     <string name="preparing_etc2">Подготовка текстур: %1$d из %2$d файлов</string>
     <string name="step_failed">%1$s — ошибка: %2$s</string>
@@ -102,6 +103,7 @@
     <string name="checking">Проверка образа: %1$d%%</string>
     <string name="extracting">Распаковка: %1$d из %2$d файлов</string>
     <string name="installed">Установлено. Теперь приложение сразу запускает игру; долгое нажатие на иконку (Установка) вернёт этот экран.</string>
+    <string name="title_updates_failed">Установлено, но не удалось скачать обновление игры: %1$s</string>
     <string name="installed_needs_driver">Установлено. Игре ещё нужен графический драйвер: загрузите пакет Turnip выше.</string>
     <string name="start_game">Запустить игру</string>
 </resources>
