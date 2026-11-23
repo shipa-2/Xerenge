@@ -27,6 +27,7 @@ public class BurnoutActivity extends SDLActivity {
 
     @Override
     protected void onCreate(Bundle state) {
+        MusicFolderPicker.resetPlaybackCache(this);
         // Before SDL loads the libraries: the game reads the environment when
         // it starts, the renderer when it creates its Vulkan instance.
         settings = Settings.load(this);
@@ -65,6 +66,26 @@ public class BurnoutActivity extends SDLActivity {
         // The device's own vibrator, for the game's rumble when the pad has
         // no motors (vibration in xerenge.conf).
         DeviceVibration.start(getApplicationContext());
+    }
+
+    public void restartGame() {
+        Intent launch = getPackageManager().getLaunchIntentForPackage(getPackageName());
+        if (launch == null) {
+            return;
+        }
+        launch.addFlags(Intent.FLAG_ACTIVITY_NEW_TASK | Intent.FLAG_ACTIVITY_CLEAR_TASK);
+        android.app.PendingIntent pending = android.app.PendingIntent.getActivity(getApplicationContext(), 7312,
+                launch, android.app.PendingIntent.FLAG_UPDATE_CURRENT | android.app.PendingIntent.FLAG_IMMUTABLE);
+        android.app.AlarmManager alarms = (android.app.AlarmManager) getSystemService(ALARM_SERVICE);
+        alarms.set(android.app.AlarmManager.RTC, System.currentTimeMillis() + 500, pending);
+    }
+
+    public String cacheMusicDocument(String uri) {
+        return MusicFolderPicker.cacheFile(this, uri);
+    }
+
+    public int openMusicDocument(String uri) {
+        return MusicFolderPicker.openFile(this, uri);
     }
 
     public void pickMusicFolder() {

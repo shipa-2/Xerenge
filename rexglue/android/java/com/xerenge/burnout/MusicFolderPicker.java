@@ -1,9 +1,11 @@
 package com.xerenge.burnout;
 
 import android.content.ContentResolver;
+import android.content.Context;
 import android.content.Intent;
 import android.database.Cursor;
 import android.net.Uri;
+import android.os.ParcelFileDescriptor;
 import android.provider.DocumentsContract;
 import android.util.Log;
 import android.widget.Toast;
@@ -11,9 +13,15 @@ import android.widget.Toast;
 import java.io.File;
 import java.io.FileOutputStream;
 import java.io.InputStream;
+import java.io.OutputStreamWriter;
+import java.io.Writer;
+import java.nio.charset.StandardCharsets;
+import java.util.ArrayDeque;
+import java.util.HashMap;
 import java.util.Locale;
+import java.util.Map;
 
-/** Imports a document tree picked in the game into a folder the native scanner can read. */
+/** Indexes a picked document tree and opens its songs for the native player on demand. */
 final class MusicFolderPicker {
     static final int REQUEST = 7311;
     private static native void nativeResult(String path);
@@ -45,57 +53,114 @@ final class MusicFolderPicker {
             activity.getContentResolver().takePersistableUriPermission(tree, Intent.FLAG_GRANT_READ_URI_PERMISSION);
         } catch (Exception ignored) {
         }
-        Toast.makeText(activity, "Importing music\u2026", Toast.LENGTH_LONG).show();
+        Toast.makeText(activity, "Listing music\u2026", Toast.LENGTH_LONG).show();
         new Thread(() -> {
             String path = "";
             try {
-                path = importTree(activity, tree);
-                Log.i("Xerenge", "music folder imported to " + path);
+                path = indexTree(activity, tree);
+                Log.i("Xerenge", "music folder indexed as " + path);
             } catch (Exception error) {
-                Log.e("Xerenge", "music folder import failed", error);
+                Log.e("Xerenge", "music folder indexing failed", error);
                 String message = error.getMessage();
                 activity.runOnUiThread(() -> Toast.makeText(activity,
-                        message == null || message.isEmpty() ? "Could not import the selected folder" : message,
+                        message == null || message.isEmpty() ? "Could not read the selected folder" : message,
                         Toast.LENGTH_LONG).show());
-            } finally {
-                try {
-                    activity.getContentResolver().releasePersistableUriPermission(tree,
-                            Intent.FLAG_GRANT_READ_URI_PERMISSION);
-                } catch (Exception ignored) {
-                }
             }
             nativeResult(path);
-        }, "Xerenge music import").start();
+        }, "Xerenge music index").start();
         return true;
     }
 
-    private static String importTree(BurnoutActivity activity, Uri tree) throws Exception {
-        File parent = Settings.root(activity);
-        File next = new File(parent, "imported-music.next");
-        File destination = new File(parent, "imported-music");
-        deleteTree(next);
-        if (!next.mkdirs()) {
-            throw new Exception("Could not create the imported music folder");
-        }
+    /** Native takes ownership of the returned descriptor. */
+    public static int openFile(Context context, String uri) {
         try {
-            String root = DocumentsContract.getTreeDocumentId(tree);
-            int count = copyTree(activity.getContentResolver(), tree, root, next);
-            if (count == 0) {
-                throw new Exception("No MP3 or WMA files found in the selected folder");
-            }
-            deleteTree(destination);
-            if (!next.renameTo(destination)) {
-                throw new Exception("Could not finish the music import");
-            }
-            Log.i("Xerenge", count + " music file(s) imported");
-            return destination.getAbsolutePath();
+            ParcelFileDescriptor file = context.getContentResolver().openFileDescriptor(Uri.parse(uri), "r");
+            return file == null ? -1 : file.detachFd();
         } catch (Exception error) {
-            deleteTree(next);
-            throw error;
+            Log.e("Xerenge", "could not open music document " + uri, error);
+            return -1;
         }
     }
 
-    private static int copyTree(ContentResolver resolver, Uri tree, String documentId, File destination)
+    private static final Map<String, String> PLAYBACK_CACHE = new HashMap<>();
+    private static final ArrayDeque<String> PLAYBACK_ORDER = new ArrayDeque<>();
+    private static int playbackSequence;
+
+    static void resetPlaybackCache(Context context) {
+        PLAYBACK_CACHE.clear();
+        PLAYBACK_ORDER.clear();
+        deleteTree(new File(context.getFilesDir(), "saf-playback"));
+    }
+
+    /** Only songs actually played are cached, six at most; the library itself is not imported. */
+    public static synchronized String cacheFile(Context context, String uri) {
+        String existing = PLAYBACK_CACHE.get(uri);
+        if (existing != null && new File(context.getFilesDir(), "saf-playback/" + existing).isFile()) {
+            return existing;
+        }
+        String extension = uri.toLowerCase(Locale.ROOT).contains(".wma") ? ".wma" : ".mp3";
+        String name = "song-" + playbackSequence++ + extension;
+        File directory = new File(context.getFilesDir(), "saf-playback");
+        directory.mkdirs();
+        File destination = new File(directory, name);
+        File partial = new File(directory, name + ".part");
+        try (InputStream in = context.getContentResolver().openInputStream(Uri.parse(uri));
+             FileOutputStream out = new FileOutputStream(partial)) {
+            if (in == null) {
+                return null;
+            }
+            byte[] buffer = new byte[64 * 1024];
+            for (int got; (got = in.read(buffer)) >= 0; ) {
+                out.write(buffer, 0, got);
+            }
+        } catch (Exception error) {
+            Log.e("Xerenge", "could not cache music document " + uri, error);
+            partial.delete();
+            return null;
+        }
+        if (!partial.renameTo(destination)) {
+            partial.delete();
+            return null;
+        }
+        if (PLAYBACK_ORDER.size() == 6) {
+            String old = PLAYBACK_ORDER.removeFirst();
+            String oldName = PLAYBACK_CACHE.remove(old);
+            if (oldName != null) {
+                new File(directory, oldName).delete();
+            }
+        }
+        PLAYBACK_CACHE.put(uri, name);
+        PLAYBACK_ORDER.addLast(uri);
+        return name;
+    }
+
+    private static String indexTree(BurnoutActivity activity, Uri tree) throws Exception {
+        File index = new File(activity.getFilesDir(), "music-index.tsv");
+        File partial = new File(activity.getFilesDir(), "music-index.tsv.part");
+        int count;
+        try (Writer out = new OutputStreamWriter(new FileOutputStream(partial), StandardCharsets.UTF_8)) {
+            String root = DocumentsContract.getTreeDocumentId(tree);
+            count = writeTree(activity.getContentResolver(), tree, root, "", out);
+        }
+        if (count == 0) {
+            partial.delete();
+            throw new Exception("No MP3 or WMA files found in the selected folder");
+        }
+        if (index.exists() && !index.delete()) {
+            throw new Exception("Could not replace the music index");
+        }
+        if (!partial.renameTo(index)) {
+            throw new Exception("Could not save the music index");
+        }
+        // Remove copies made by the old importer; the index and descriptors
+        // now refer to the provider's own files instead.
+        deleteTree(new File(Settings.root(activity), "imported-music"));
+        deleteTree(new File(Settings.root(activity), "imported-music.next"));
+        Log.i("Xerenge", count + " music file(s) indexed without copying");
+        return "saf:" + index.getAbsolutePath();
+    }
+
+    private static int writeTree(ContentResolver resolver, Uri tree, String documentId, String prefix, Writer out)
             throws Exception {
         Uri children = DocumentsContract.buildChildDocumentsUriUsingTree(tree, documentId);
         String[] columns = {DocumentsContract.Document.COLUMN_DOCUMENT_ID,
@@ -110,11 +175,7 @@ final class MusicFolderPicker {
                 String name = safeName(cursor.getString(1));
                 String mime = cursor.getString(2);
                 if (DocumentsContract.Document.MIME_TYPE_DIR.equals(mime)) {
-                    File child = new File(destination, name);
-                    if (!child.mkdirs() && !child.isDirectory()) {
-                        throw new Exception("Could not create " + name);
-                    }
-                    count += copyTree(resolver, tree, id, child);
+                    count += writeTree(resolver, tree, id, prefix + name + "/", out);
                     continue;
                 }
                 String lower = name.toLowerCase(Locale.ROOT);
@@ -122,27 +183,20 @@ final class MusicFolderPicker {
                     continue;
                 }
                 Uri document = DocumentsContract.buildDocumentUriUsingTree(tree, id);
-                try (InputStream in = resolver.openInputStream(document);
-                     FileOutputStream out = new FileOutputStream(new File(destination, name))) {
-                    if (in == null) {
-                        throw new Exception("Could not open " + name);
-                    }
-                    byte[] buffer = new byte[64 * 1024];
-                    for (int got; (got = in.read(buffer)) >= 0; ) {
-                        out.write(buffer, 0, got);
-                    }
-                }
+                out.write(prefix + name + "\t" + document + "\n");
                 ++count;
             }
         }
         return count;
     }
 
+    /** An opened URI, by native code for tags or the song being played. */
     private static String safeName(String name) {
         if (name == null || name.isEmpty() || name.equals(".") || name.equals("..")) {
             return "unnamed";
         }
-        return name.replace('/', '_').replace('\\', '_');
+        return name.replace('/', '_').replace('\\', '_').replace('\t', ' ')
+                .replace('\r', ' ').replace('\n', ' ');
     }
 
     private static void deleteTree(File file) {

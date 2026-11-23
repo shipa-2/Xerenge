@@ -4,7 +4,8 @@
 // environment, so it is the launcher that is started: Burnout Revenge.exe on
 // Windows, burnout_revenge elsewhere (installer/launcher.cpp). A
 // copy run from a checkout (no launcher) starts its own executable again with
-// the same arguments. Then this one ends.
+// the same arguments. On Android, BurnoutActivity schedules the package
+// launcher with AlarmManager before this process ends. Then this one ends.
 #include <cstdlib>
 #include <filesystem>
 #include <string>
@@ -24,6 +25,11 @@
 extern char** environ;
 #endif
 
+#if defined(__ANDROID__)
+#include <jni.h>
+#include <SDL3/SDL.h>
+#endif
+
 REXCVAR_DECLARE(std::string, game_data_root);
 
 namespace {
@@ -35,18 +41,34 @@ std::filesystem::path InstallDir() {
 
 }  // namespace
 
-// Whether the game can start itself again here (Android cannot, yet).
+// Whether the game can start itself again here.
 bool XerengeCanRestart() {
-#if defined(__ANDROID__)
-  return false;
-#else
   return true;
-#endif
 }
 
 void XerengeRestartGame() {
 #if defined(__ANDROID__)
-  REXLOG_WARN("menu: restarting the game is not done on Android yet");
+  // BurnoutActivity schedules the package's launcher with AlarmManager. The
+  // new activity must not be started in this process only for _Exit to kill it.
+  JNIEnv* env = static_cast<JNIEnv*>(SDL_GetAndroidJNIEnv());
+  jobject activity = static_cast<jobject>(SDL_GetAndroidActivity());
+  if (!env || !activity) {
+    return;
+  }
+  jclass activity_class = env->GetObjectClass(activity);
+  jmethodID restart = env->GetMethodID(activity_class, "restartGame", "()V");
+  if (!restart) {
+    env->ExceptionClear();
+    return;
+  }
+  env->CallVoidMethod(activity, restart);
+  if (env->ExceptionCheck()) {
+    env->ExceptionDescribe();
+    env->ExceptionClear();
+    return;
+  }
+  REXLOG_INFO("menu: Android will relaunch the game");
+  std::_Exit(0);
 #elif defined(_WIN32)
   const std::filesystem::path launcher = InstallDir() / "Burnout Revenge.exe";
   std::wstring command;

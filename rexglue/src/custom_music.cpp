@@ -22,6 +22,7 @@
 #include <cstdlib>
 #include <cstring>
 #include <filesystem>
+#include <fstream>
 #include <atomic>
 #include <chrono>
 #include <condition_variable>
@@ -36,6 +37,7 @@
 #if defined(__ANDROID__)
 #include <jni.h>
 #include <SDL3/SDL.h>
+#include <unistd.h>
 #endif
 
 #include <rex/filesystem/devices/host_path_device.h>
@@ -59,6 +61,10 @@ extern "C" void __imp__sub_821EBE28(PPCContext& __restrict, uint8_t*);
 // the settings rows' changes are.
 extern void RequestRestartPopup();
 
+#if defined(REX_PLATFORM_UWP)
+std::string XerengeUwpPickMusicFolder();
+#endif
+
 namespace {
 
 constexpr uint32_t kSoundtrack = 0x82A52568;  // the soundtrack's object
@@ -76,6 +82,85 @@ bool g_scanned = false;
 bool g_mounted = false;
 std::filesystem::path g_dir;
 std::vector<std::filesystem::path> g_files;  // the whole folder
+
+bool SafPath(const std::filesystem::path& path) {
+  return path.string().rfind("saf:", 0) == 0;
+}
+
+std::filesystem::path SafPlaybackRoot() {
+  return std::filesystem::path(g_dir.string().substr(4)).parent_path() / "saf-playback";
+}
+
+#if defined(__ANDROID__)
+std::mutex g_saf_mutex;
+std::map<std::string, std::string> g_saf_uris;
+
+std::string SafUri(const std::filesystem::path& file) {
+  std::lock_guard lock(g_saf_mutex);
+  if (const auto found = g_saf_uris.find(file.string()); found != g_saf_uris.end()) {
+    return found->second;
+  }
+  return {};
+}
+
+int OpenSafDocument(const std::filesystem::path& file) {
+  const std::string uri = SafUri(file);
+  if (uri.empty()) {
+    return -1;
+  }
+  JNIEnv* env = static_cast<JNIEnv*>(SDL_GetAndroidJNIEnv());
+  jobject activity = static_cast<jobject>(SDL_GetAndroidActivity());
+  if (!env || !activity) {
+    return -1;
+  }
+  jclass activity_class = env->GetObjectClass(activity);
+  jmethodID open = env->GetMethodID(activity_class, "openMusicDocument", "(Ljava/lang/String;)I");
+  if (!open) {
+    env->ExceptionClear();
+    return -1;
+  }
+  jstring name = env->NewStringUTF(uri.c_str());
+  const int fd = env->CallIntMethod(activity, open, name);
+  env->DeleteLocalRef(name);
+  if (env->ExceptionCheck()) {
+    env->ExceptionDescribe();
+    env->ExceptionClear();
+    return -1;
+  }
+  return fd;
+}
+
+std::string CacheSafDocument(const std::filesystem::path& file) {
+  const std::string uri = SafUri(file);
+  JNIEnv* env = static_cast<JNIEnv*>(SDL_GetAndroidJNIEnv());
+  jobject activity = static_cast<jobject>(SDL_GetAndroidActivity());
+  if (uri.empty() || !env || !activity) {
+    return {};
+  }
+  jclass activity_class = env->GetObjectClass(activity);
+  jmethodID cache = env->GetMethodID(activity_class, "cacheMusicDocument",
+                                     "(Ljava/lang/String;)Ljava/lang/String;");
+  if (!cache) {
+    env->ExceptionClear();
+    return {};
+  }
+  jstring name = env->NewStringUTF(uri.c_str());
+  jstring cached = static_cast<jstring>(env->CallObjectMethod(activity, cache, name));
+  env->DeleteLocalRef(name);
+  if (env->ExceptionCheck() || !cached) {
+    env->ExceptionDescribe();
+    env->ExceptionClear();
+    return {};
+  }
+  const char* utf = env->GetStringUTFChars(cached, nullptr);
+  std::string result = utf ? utf : "";
+  if (utf) {
+    env->ReleaseStringUTFChars(cached, utf);
+  }
+  env->DeleteLocalRef(cached);
+  return result;
+}
+#endif
 // crash_music, registered before the first frame: the crash/takedown mute is
 // a FADE of the soundtrack's volume - a stepped ramp down and back up (the
 // log shows steps near 0.055 and 0.03 on the way, so a plain low-value cut
@@ -346,9 +431,10 @@ Tags ReadWmaTags(const std::vector<uint8_t>& f) {
 }
 
 // The start of a file, where its tags are (and its end, for ID3v1).
-Tags ReadTags(const std::filesystem::path& file) {
+Tags ReadTagsFromPath(const std::filesystem::path& file, const std::string& extension, int descriptor = -1) {
   std::vector<uint8_t> data;
-  if (FILE* in = std::fopen(file.string().c_str(), "rb")) {
+  FILE* in = descriptor >= 0 ? fdopen(descriptor, "rb") : std::fopen(file.string().c_str(), "rb");
+  if (in) {
     std::fseek(in, 0, SEEK_END);
     const long size = std::ftell(in);
     std::fseek(in, 0, SEEK_SET);
@@ -367,6 +453,22 @@ Tags ReadTags(const std::filesystem::path& file) {
       for (int i = 7; i >= 0; --i) object = object << 8 | head[16 + i];
       want = long(std::min<uint64_t>(object, uint64_t(kMax)));
     }
+    if (size < 30) {
+      // SAF pipes cannot seek or report a length. Stream exactly the tag area
+      // instead of treating -1 as a tiny file and reading only the header.
+      data.insert(data.end(), head, head + got);
+      const size_t target = size_t(std::min(kMax, std::max(want, 30L)));
+      uint8_t chunk[64 << 10];
+      while (data.size() < target) {
+        const size_t part = std::fread(chunk, 1, std::min(sizeof(chunk), target - data.size()), in);
+        if (!part) {
+          break;
+        }
+        data.insert(data.end(), chunk, chunk + part);
+      }
+      std::fclose(in);
+      return Lower(extension) == ".wma" ? ReadWmaTags(data) : ReadMp3Tags(data);
+    }
     std::fseek(in, 0, SEEK_SET);
     const long read = std::min({size, kMax, std::max(want, 30L)});
     data.resize(size_t(read));
@@ -380,7 +482,23 @@ Tags ReadTags(const std::filesystem::path& file) {
     }
     std::fclose(in);
   }
-  return Lower(file.extension().string()) == ".wma" ? ReadWmaTags(data) : ReadMp3Tags(data);
+  return Lower(extension) == ".wma" ? ReadWmaTags(data) : ReadMp3Tags(data);
+}
+
+Tags ReadTags(const std::filesystem::path& file) {
+#if defined(__ANDROID__)
+  if (SafPath(file)) {
+    const int fd = OpenSafDocument(file);
+    if (fd < 0) {
+      return {};
+    }
+    const std::filesystem::path opened = "/proc/self/fd/" + std::to_string(fd);
+    Tags tags = ReadTagsFromPath(opened, file.extension().string(), dup(fd));
+    close(fd);
+    return tags;
+  }
+#endif
+  return ReadTagsFromPath(file, file.extension().string());
 }
 
 // A localisation mod's fonts, loaded whatever the language once a mod has
@@ -482,11 +600,21 @@ Tags CachedTags(const std::filesystem::path& file) {
   return g_tags.emplace(file, std::move(tags)).first->second;
 }
 
+void LoadPage();
+
 void ReadAllTags(std::vector<std::filesystem::path> files) {
   std::thread([files = std::move(files)] {
     const auto start = std::chrono::steady_clock::now();
     for (const auto& file : files) {
       CachedTags(file);
+    }
+    {
+      std::lock_guard<std::mutex> lock(g_mutex);
+      // A scan for a folder chosen since must not replace the new one's page.
+      if (files == g_files) {
+        LoadPage();
+        g_pending_apply = true;
+      }
     }
     REXLOG_INFO("music: tags of {} song(s) read in {} ms", files.size(),
                 std::chrono::duration_cast<std::chrono::milliseconds>(std::chrono::steady_clock::now() - start)
@@ -584,7 +712,6 @@ std::string PickFolderWith(const char* command) {
 std::string PlatformPickFolder() {
 #if defined(REX_PLATFORM_UWP)
   // The FolderPicker bridge, on the UI thread (uwp_install.cpp; the Xbox).
-  extern std::string XerengeUwpPickMusicFolder();
   return XerengeUwpPickMusicFolder();
 #elif defined(__ANDROID__)
   // BurnoutActivity opens ACTION_OPEN_DOCUMENT_TREE; MusicFolderPicker imports
@@ -633,6 +760,30 @@ std::string PlatformPickFolder() {
 #endif
 }
 
+void EnableRecursiveScanForNestedSongs(const std::filesystem::path& dir) {
+  if (SafPath(dir) || xerenge::settings::ConfString("recursive_scan", "false") == "true") {
+    return;
+  }
+  const auto song = [](const std::filesystem::directory_entry& entry) {
+    std::error_code ec;
+    const std::string ext = Lower(entry.path().extension().string());
+    return entry.is_regular_file(ec) && (ext == ".mp3" || ext == ".wma");
+  };
+  std::error_code ec;
+  for (const auto& entry : std::filesystem::directory_iterator(dir, ec)) {
+    if (song(entry)) {
+      return;  // the flat scan already has something to play
+    }
+  }
+  for (const auto& entry : std::filesystem::recursive_directory_iterator(dir, ec)) {
+    if (song(entry)) {
+      xerenge::settings::SetConfString("recursive_scan", "true");
+      REXLOG_INFO("music: no songs at the selected folder's top level; recursive scan enabled for its subfolders");
+      return;
+    }
+  }
+}
+
 void PickMusicFolder() {
   if (g_picking_folder.exchange(true)) {
     return;  // one picker at a time
@@ -645,6 +796,7 @@ void PickMusicFolder() {
       REXLOG_INFO("music: no folder chosen (cancelled or the picker failed)");
       return;
     }
+    EnableRecursiveScanForNestedSongs(dir);
     xerenge::settings::SetConfString("music_dir", dir);
     REXLOG_INFO("music: {} chosen as the music folder; a restart applies it", dir);
     RequestRestartPopup();
@@ -657,24 +809,26 @@ void PickMusicFolder() {
 // again. LB and RB themselves are kept from the game there. X opens the
 // folder picker.
 void PadFilter(uint32_t user, uint16_t& buttons, uint8_t& left_trigger, uint8_t&) {
-  constexpr uint16_t kLB = 0x0100, kRB = 0x0200;
-  using Clock = std::chrono::steady_clock;
-  static uint16_t was = 0;
-  static Clock::time_point pressing{};
+  constexpr uint16_t kLB = 0x0100, kRB = 0x0200, kX = 0x4000;
+  static uint16_t was_x[4] = {};
+  if (user < 4) {
+    const uint16_t x_down = (buttons & kX) & ~was_x[user];
+    was_x[user] = buttons & kX;
+    if (x_down && g_song_manager.load()) {
+      REXLOG_INFO("music: X in Song Manager from input user {}", user);
+      buttons &= uint16_t(~kX);
+      PickMusicFolder();
+    }
+  }
   if (user != 0) {
     return;
   }
-  constexpr uint16_t kX = 0x4000;
-  static uint16_t was_x = 0;
-  const uint16_t x_down = (buttons & kX) & ~was_x;
-  was_x = buttons & kX;
+  using Clock = std::chrono::steady_clock;
+  static uint16_t was = 0;
+  static Clock::time_point pressing{};
   const uint16_t shoulders = buttons & (kLB | kRB);
   const uint16_t down = shoulders & ~was;
   was = shoulders;
-  if (x_down && g_song_manager.load()) {
-    buttons &= uint16_t(~kX);
-    PickMusicFolder();
-  }
   if (!g_song_manager.load() || !g_custom) {
     return;
   }
@@ -700,6 +854,25 @@ void PadFilter(uint32_t user, uint16_t& buttons, uint8_t& left_trigger, uint8_t&
 std::vector<std::filesystem::path> ListFolder(const std::filesystem::path& dir) {
   std::error_code ec;
   std::vector<std::filesystem::path> files;
+#if defined(__ANDROID__)
+  if (SafPath(dir)) {
+    std::ifstream index(dir.string().substr(4));
+    std::string line;
+    std::lock_guard lock(g_saf_mutex);
+    g_saf_uris.clear();
+    while (std::getline(index, line)) {
+      const size_t tab = line.rfind('\t');
+      if (tab == std::string::npos || tab == 0) {
+        continue;
+      }
+      std::filesystem::path file = dir / std::filesystem::path(line.substr(0, tab));
+      g_saf_uris[file.string()] = line.substr(tab + 1);
+      files.push_back(std::move(file));
+    }
+    std::sort(files.begin(), files.end());
+    return files;
+  }
+#endif
   const auto take = [&](const std::filesystem::directory_entry& entry) {
     const std::string ext = Lower(entry.path().extension().string());
     if (entry.is_regular_file(ec) && (ext == ".mp3" || ext == ".wma")) {
@@ -742,7 +915,7 @@ void Scan() {
   }
   std::vector<std::filesystem::path> files = ListFolder(g_dir);
   g_files = std::move(files);
-  if (g_files.size() > kSlots) {
+  if (!g_files.empty()) {
     ReadAllTags(g_files);
   }
   const uint32_t pages = PageCount();
@@ -753,6 +926,9 @@ void Scan() {
   REXLOG_INFO("music: {} song(s) in {}{}", g_files.size(), g_dir.string(),
               pages > 1 ? fmt::format(", {} pages of {} (LB/RB in Song Manager)", pages, kSlots)
                         : std::string());
+  // X chooses the folder even when it is empty, as on a new Android install.
+  // Do not tie the pad filter to finding songs in the current one.
+  rex::kernel::xam::SetPadFilter(PadFilter);
   if (g_tracks.empty()) {
     return;
   }
@@ -763,8 +939,14 @@ void Scan() {
     return;
   }
   g_mounted = true;
-  rex::kernel::xam::SetPadFilter(PadFilter);
-  auto device = std::make_unique<rex::filesystem::HostPathDevice>("\\Device\\XerengeMusic", g_dir, true);
+#if defined(__ANDROID__)
+  if (SafPath(g_dir)) {
+    std::error_code ec;
+    std::filesystem::create_directories(SafPlaybackRoot(), ec);
+  }
+#endif
+  const std::filesystem::path device_root = SafPath(g_dir) ? SafPlaybackRoot() : g_dir;
+  auto device = std::make_unique<rex::filesystem::HostPathDevice>("\\Device\\XerengeMusic", device_root, true);
   if (device->Initialize() && REX_KERNEL_FS()->RegisterDevice(std::move(device))) {
     REX_KERNEL_FS()->RegisterSymbolicLink("xmusic:", "\\Device\\XerengeMusic");
   }
@@ -813,9 +995,29 @@ void Scan() {
       g_pending_apply = true;
       REXLOG_INFO("music: page {} of {} (played through)", g_page + 1, PageCount());
     }
-    std::string relative = g_tracks[number % g_tracks.size()].file.lexically_relative(g_dir).string();
+    const std::filesystem::path& music_file = g_tracks[number % g_tracks.size()].file;
+    std::string relative = music_file.lexically_relative(g_dir).string();
+#if defined(__ANDROID__)
+    if (SafPath(music_file)) {
+      const std::string cached = CacheSafDocument(music_file);
+      if (cached.empty()) {
+        REXLOG_WARN("music: Android could not cache {}", music_file.string());
+        return path;
+      }
+      relative = cached;
+    }
+#endif
     std::replace(relative.begin(), relative.end(), '/', '\\');
-    return "xmusic:\\" + relative;
+    const std::string guest_path = "xmusic:\\" + relative;
+#if defined(__ANDROID__)
+    if (SafPath(music_file)) {
+      // OpenFile looks in the parent's cached children after resolving the
+      // directory. Prime the lazy host entry for a cache file made after the
+      // device was mounted, or it reports NO_SUCH_FILE without reaching host open.
+      REX_KERNEL_FS()->ResolvePath(guest_path);
+    }
+#endif
+    return guest_path;
   });
 }
 

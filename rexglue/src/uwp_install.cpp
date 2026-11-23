@@ -441,6 +441,8 @@ void WriteInitialSettings(const std::filesystem::path& path) {
   }
 }
 
+}  // namespace
+
 // Choosing the music folder from Song Manager (custom_music.cpp's X button;
 // the Xbox). Runs the FolderPicker on the UI thread - the calling thread (the
 // pad filter's) has no CoreWindow - and waits for it.
@@ -473,6 +475,8 @@ std::string XerengeUwpPickMusicFolder() {
   CloseHandle(done);
   return result;
 }
+
+namespace {
 
 bool InstallGame(const std::filesystem::path& game_dir) {
   InstallLog("install: no game found; installing into " + game_dir.string());
