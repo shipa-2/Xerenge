@@ -792,7 +792,7 @@ jobs:
   # that raises VERSION publishes the installers as the
   # latest release.
   release:
-    needs: [linux-amd64, win-amd64, android-arm64, macos-arm64, lobby-server, mods]
+    needs: [linux-amd64, win-amd64, uwp-amd64, android-arm64, macos-arm64, lobby-server, mods]
     if: github.ref == 'refs/heads/main'
     runs-on: ubuntu-24.04
     permissions:
@@ -827,43 +827,13 @@ jobs:
           VERSION: ${{ steps.version.outputs.version }}
         run: |
           ls -la artifacts
-          cat > notes.md <<'EOF'
-          The game comes built: the installer only needs your own Burnout Revenge disc image (the European or the American release, see `SETUP.md`).
-
-          **Windows:** download `Burnout_Revenge_Installer-win-amd64.exe` and run it.
-
-          **Linux:** download `Burnout_Revenge_Installer-x86_64.AppImage`, then
-          ```bash
-          chmod +x Burnout_Revenge_Installer-x86_64.AppImage
-          ./Burnout_Revenge_Installer-x86_64.AppImage
-          ```
-
-          Run the installer again over an installed copy to update it; your settings are kept.
-
-          **Android** (arm64, Adreno or Mali): install `Burnout_Revenge-android-arm64.apk`. It opens as the installer: pick your disc image. A Mesa Turnip driver .zip is optional, for Adreno phones whose own driver misbehaves. This release is signed with a fixed key: uninstall an earlier build once, and later ones install over it, keeping your saves.
-
-          **macOS** (Apple silicon): download `Burnout_Revenge_Installer-macos-arm64.zip`, unzip it and run the app inside. It puts `Burnout Revenge.app` in `~/Applications`, so the game starts from Launchpad or Spotlight. The app is signed ad hoc, so macOS stops it the first time it is opened after a download; allow it under System Settings, Privacy & Security, Open Anyway. The installed game logs to `~/Library/Logs/xerenge-burnout/`.
-
-          **Russian** (a mod): unzip `Xerenge-mod-locale_rus.zip` into the installed game's `game/mods/` and choose RUSSIAN in Driver Details > Settings > LANGUAGE. Its fonts are made at the first start from your own copy of the game; see `MODDING.md` to translate further or make a mod of your own.
-
-          **Online play works out of the box** - the installer points at the server (`94639.snk.wtf`), where everyone plays together; there is nothing to set up. An install from before the server is moved to it when the installer runs over it.
-
-          **What's new in 0.4.10:**
-          - **Split screen**: each player's view is drawn in its own half of the screen; before, the second player's scene covered the first (GitHub #60). To play two at one PC on a keyboard and a pad, set `keyboard = true` and `keyboard_player = 2` in `xerenge.conf`: the keyboard becomes player 2 and the pad stays player 1.
-          - **Online across networks**: players behind different routers, on mobile internet or behind a VPN join each other's games; the game looks at its own address again every few seconds, so a phone moving from Wi-Fi to mobile data keeps being reachable, and the server drops the old connection of a player who logs in again (GitHub #49, #67).
-          - **Your own music, any size**: the music folder is read in pages of 41 songs, turned with LB/RB in Song Manager (`[MY MUSIC 3/35]` in its title); `recursive_scan = true` reads the folders inside it too, and `music_dir` in `xerenge.conf` points at a folder of your choice. The chosen folder is in place from the first menu (GitHub #70).
-          - **LB goes back a song**: wherever RB skips, LB restarts the song, or within its first three seconds goes to the one before (GitHub #55).
-          - **Kilometres per hour**: SPEED COUNTER (MPH/KPH) on the GRAPHICS settings page, or `speed_units = kph` in `xerenge.conf` - the speedometer and the menus' speeds in km/h on an English game too (GitHub #55).
-          - **Modified R185 DX**: its rims have spokes again (GitHub #48).
-          - **Title screen**: the menu strobes far less over the background video, most of all on phones.
-          - **Linux**: X11 is used whenever RenderDoc is on, so F12 captures work.
-          - `MODDING.md`: a step-by-step guide to translating the game.
-
-          EOF
+          cp docs/release-0.4.19.md notes.md
           gh release create "v$VERSION" --title "$VERSION" --latest --target "$GITHUB_SHA" \
             --notes-file notes.md \
             artifacts/Burnout_Revenge_Installer-x86_64.AppImage \
             artifacts/Burnout_Revenge_Installer-win-amd64.exe \
             artifacts/Burnout_Revenge-android-arm64.apk \
             artifacts/Burnout_Revenge_Installer-macos-arm64.zip \
+            artifacts/Xerenge-uwp.msix \
+            artifacts/xerenge.cer \
             artifacts/Xerenge-mod-*.zip
