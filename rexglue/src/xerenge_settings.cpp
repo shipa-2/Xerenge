@@ -271,6 +271,12 @@ const std::vector<Setting>& Settings() {
     Setting crash_music{27, kHacks, "MUSIC IN CRASHES/TAKEDOWNS", "crash_music", OffOn(), 0};
     crash_music.restart = false;
     s.push_back(crash_music);
+    // The publisher/developer logo clips at startup (and the attract clip,
+    // named ATTR_*), skipped by declaring them finished the moment they start
+    // (movie_trace.cpp). Default on: the intro can freeze a moment in
+    // (issue 107), and a long unskippable wait at every launch is no one's
+    // favourite anyway; off, the intros play as on the console.
+    s.push_back({28, kHacks, "SKIP INTROS", "skip_intros", OffOn(), 1});
 
     s.push_back({30, kDebug, "DEBUG LOGS", "debug", OffOn(), 0});
     s.push_back({31, kDebug, "POWER MODE", "power_mode", {{"STOCK", "stock"}, {"PERFORMANCE", "performance"}}, 0});

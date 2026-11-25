@@ -436,6 +436,13 @@ InstallerWindow::InstallerWindow(QWidget* parent) : QWidget(parent) {
       tr("Redraw two of the car reflection's six sides a frame, in turn, rather than all six. "
          "Faster on a weak GPU; reflections lag a little."));
   hacks_layout->addWidget(reflection_split_box_);
+  skip_intros_box_ = new QCheckBox(tr("Skip intros"));
+  skip_intros_box_->setToolTip(
+      tr("The publisher and developer logo clips at startup play to their end without a way to "
+         "skip them - and they can freeze a moment in (a known bug). Off, the intros play as on "
+         "the console."));
+  skip_intros_box_->setChecked(true);
+  hacks_layout->addWidget(skip_intros_box_);
   auto* resolution_row = new QHBoxLayout;
   resolution_row->addWidget(new QLabel(tr("Render resolution")));
   resolution_combo_ = new QComboBox;
@@ -826,6 +833,7 @@ void InstallerWindow::LoadSettings(const QString& path) {
   flag("packed_vertices", packed_vertices_box_);
   flag("culling", culling_box_);
   flag("reflection_split", reflection_split_box_);
+  flag("skip_intros", skip_intros_box_);
   if (values.contains("render_resolution")) {
     const QString value = values.value("render_resolution");
     const int index = resolution_combo_->findData(value);
@@ -957,6 +965,7 @@ void InstallerWindow::StartInstall() {
         << "packed_vertices = " << (packed_vertices_box_->isChecked() ? "true" : "false") << "\n"
         << "culling = " << (culling_box_->isChecked() ? "true" : "false") << "\n"
         << "reflection_split = " << (reflection_split_box_->isChecked() ? "true" : "false") << "\n"
+        << "skip_intros = " << (skip_intros_box_->isChecked() ? "true" : "false") << "\n"
         << "render_resolution = "
         << (resolution_combo_->currentData().toString() == "custom"
                 ? resolution_custom_edit_->text().trimmed()

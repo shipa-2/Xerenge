@@ -97,7 +97,7 @@ class InstallerWindow : public QWidget {
   QString preserved_debug_settings_;
   QCheckBox* async_box_ = nullptr;
   QCheckBox* early_submit_box_ = nullptr;
-  QCheckBox* packed_vertices_box_ = nullptr;
+  QCheckBox* skip_intros_box_ = nullptr;  QCheckBox* packed_vertices_box_ = nullptr;
   QCheckBox* culling_box_ = nullptr;
   QCheckBox* reflection_split_box_ = nullptr;
   QComboBox* resolution_combo_ = nullptr;
