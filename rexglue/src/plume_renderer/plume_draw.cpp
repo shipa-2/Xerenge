@@ -6963,6 +6963,9 @@ void PlumeDrawContext::BindGuestTextures(plume::RenderCommandList* list,
   // this stage. Hashed here on the worker threads first, all at once; the
   // loop below takes the result.
   std::unordered_map<uint64_t, uint64_t> frame_hashes;
+  // Textures whose guest memory would not stand still for a clean hash this
+  // frame: the binding loop skips them instead of trusting a torn read.
+  std::unordered_set<uint64_t> raced_keys;
   uint64_t texture_bind_mark = 0;
   {
     // Off on the Xbox One (XERENGE_WRITE_WATCH=1 turns it on): thousands of
@@ -6992,6 +6995,13 @@ void PlumeDrawContext::BindGuestTextures(plume::RenderCommandList* list,
       size_t mip_size = 0;
       // Without the write watch: every quarter's sample as hashed.
       uint64_t quarters[4] = {};
+      // Where the bytes sit, for recounting the write watch after the hash:
+      // a write landing inside the read tears it, and without a recheck the
+      // torn hash is stored as canonical and the texture never re-uploads
+      // (the corruption that stays until restart, issues #106, #108).
+      uint32_t addr = 0;
+      uint32_t mip_addr = 0;
+      uint64_t writes_after = 0;
     };
     std::vector<HashJob> jobs;
     // Without the write watch: the textures to sample, the sample in .writes.
@@ -7079,7 +7089,8 @@ void PlumeDrawContext::BindGuestTextures(plume::RenderCommandList* list,
             frame_hashes.emplace(key, known->second.hash);
             continue;
           }
-          jobs.push_back({key, src, size, 0, writes, mip_src, mip_size});
+          jobs.push_back({key, src, size, 0, writes, mip_src, mip_size, {},
+                          info.memory.base_address, mips.address, 0});
         } else {
           // No write watch (the Xbox One): hashing every texture in full every
           // frame took 6 ms of a race frame. A sample - 64 bytes of each 4 KB
@@ -7135,11 +7146,48 @@ void PlumeDrawContext::BindGuestTextures(plume::RenderCommandList* list,
         for (uint32_t q = 0; q < 4; ++q) {
           job.quarters[q] = QuarterSample(job.src, job.size, job.mip_src, job.mip_size, q);
         }
+      } else {
+        // Prove the memory stood still while it was read. A write inside the
+        // hash tears it; stored as canonical, the tear would never re-upload.
+        job.writes_after = PageWrites(job.addr, job.size);
+        if (job.mip_size) {
+          job.writes_after += PageWrites(job.mip_addr, job.mip_size);
+        }
       }
     });
     EncodeStage("textures: binding");
-    frame_hashes.reserve(frame_hashes.size() + jobs.size());
-    for (const HashJob& job : jobs) {
+    // Keys whose memory would not stand still for a clean hash even after the
+    // retries below: left out of frame_hashes entirely, so the binding loop
+    // skips them this frame instead of trusting a torn read.
+    auto recount_writes = [this](const HashJob& job) {
+      uint64_t writes = PageWrites(job.addr, job.size);
+      if (job.mip_size) {
+        writes += PageWrites(job.mip_addr, job.mip_size);
+      }
+      return writes;
+    };
+    for (HashJob& job : jobs) {
+      if (page_writes_ && job.writes_after != job.writes) {
+        // Torn. Re-arm the watch (so a write inside the retry is counted too)
+        // and read again, serially - this is the rare path.
+        bool clean = false;
+        for (int attempt = 0; attempt < 3 && !clean; ++attempt) {
+          memory->EnablePhysicalMemoryAccessCallbacks(job.addr, uint32_t(job.size), true, false);
+          if (job.mip_size) {
+            memory->EnablePhysicalMemoryAccessCallbacks(job.mip_addr, uint32_t(job.mip_size),
+                                                        true, false);
+          }
+          job.writes = recount_writes(job);
+          job.hash = TextureContentHash(job.src, job.size, job.mip_src, job.mip_size);
+          job.writes_after = recount_writes(job);
+          clean = job.writes_after == job.writes;
+        }
+        if (!clean) {
+          raced_keys.insert(job.key);
+          continue;
+        }
+      }
+      frame_hashes.reserve(frame_hashes.size() + 1);
       frame_hashes.emplace(job.key, job.hash);
       // With the watch, the write count it was hashed at; without, its sample.
       texture_watch_[job.key] = {job.hash, job.writes};
@@ -7377,32 +7425,85 @@ void PlumeDrawContext::BindGuestTextures(plume::RenderCommandList* list,
       if (unchanged) {
         continue;
       }
+      if (raced_keys.find(key) != raced_keys.end()) {
+        // Its memory would not stand still for a clean hash; the stored entry
+        // stays as it was and the next frame reads it again.
+        continue;
+      }
 
       std::vector<uint8_t> pixels;
       uint32_t row_bytes = 0;
       uint32_t row_texels = 0;
       const TextureFormat base_fmt = rex::graphics::GetBaseFormat(fetch.format);
-      const bool alpha_mask = base_fmt == TextureFormat::k_8_A;
-      const bool untiled =
-          UntileGuestTexture(info, src, &pixels, &row_bytes, &row_texels, expand_r8, alpha_mask) &&
-          !pixels.empty() && row_bytes != 0;
-      TextureBindPhase(3, texture_bind_mark);
-      if (!untiled) {
-        continue;
-      }
       const bool swizzle_bgra =
           base_fmt == TextureFormat::k_8_8_8_8 || base_fmt == TextureFormat::k_8_8_8_8_A;
       bool forced_opaque = false;
       bool converted = true;
-      if (swizzle_bgra) {
-        SwizzleBgraToRgba(&pixels, height, row_bytes);
-        forced_opaque = ForceOpaqueIfXrgb(&pixels, width, height, row_bytes);
-      } else if (base_fmt == TextureFormat::k_Cr_Y1_Cb_Y0_REP ||
-                 base_fmt == TextureFormat::k_Y1_Cr_Y0_Cb_REP) {
-        converted = Convert422ToRgba(base_fmt, width, height, &pixels, &row_bytes, &row_texels);
+      bool untiled = false;
+      std::vector<HostMipLevel> mip_levels;
+      // The untile and the mip decode read the guest's memory while the game's
+      // own threads may be writing it: the renderer runs up to a frame behind
+      // the game, and a track's textures stream while it plays. A write landing
+      // inside the read tears it - and the tear is then stored as canonical.
+      // The write watch has already counted the write, so the hash of the torn
+      // read matches from then on and nothing ever re-uploads it: the texture
+      // corruption that stayed until the game restarted (issues #106, #108).
+      // The watch counts every write, so read the count around the read and
+      // redo the read when it moved. Re-arming first, so a write inside the
+      // retry is counted too.
+      for (int attempt = 0;; ++attempt) {
+        const uint64_t writes_before =
+            page_writes_ ? PageWrites(info.memory.base_address, source_size) +
+                               (mip_src ? PageWrites(mips.address, mips.size) : 0)
+                         : 0;
+        pixels.clear();
+        row_bytes = 0;
+        row_texels = 0;
+        mip_levels.clear();
+        const bool alpha_mask = base_fmt == TextureFormat::k_8_A;
+        untiled = UntileGuestTexture(info, src, &pixels, &row_bytes, &row_texels, expand_r8,
+                                     alpha_mask) &&
+                  !pixels.empty() && row_bytes != 0;
+        TextureBindPhase(3, texture_bind_mark);
+        if (!untiled) {
+          break;
+        }
+        converted = true;
+        forced_opaque = false;
+        if (swizzle_bgra) {
+          SwizzleBgraToRgba(&pixels, height, row_bytes);
+          forced_opaque = ForceOpaqueIfXrgb(&pixels, width, height, row_bytes);
+        } else if (base_fmt == TextureFormat::k_Cr_Y1_Cb_Y0_REP ||
+                   base_fmt == TextureFormat::k_Y1_Cr_Y0_Cb_REP) {
+          converted = Convert422ToRgba(base_fmt, width, height, &pixels, &row_bytes, &row_texels);
+        }
+        if (!converted) {
+          TextureBindPhase(4, texture_bind_mark);
+          break;
+        }
+        // Without its mips a texture seen from afar is sampled at full size, and
+        // the road and the buildings in the distance glitter and crawl.
+        if (mip_src) {
+          DecodeGuestMips(fetch, mips, mip_src, info.endianness, expand_r8, alpha_mask,
+                          swizzle_bgra, forced_opaque, &mip_levels);
+        }
+        if (!page_writes_ || attempt == 3) {
+          break;
+        }
+        const uint64_t writes_after =
+            PageWrites(info.memory.base_address, source_size) +
+            (mip_src ? PageWrites(mips.address, mips.size) : 0);
+        if (writes_after == writes_before) {
+          break;
+        }
+        memory->EnablePhysicalMemoryAccessCallbacks(info.memory.base_address,
+                                                    uint32_t(source_size), true, false);
+        if (mip_src) {
+          memory->EnablePhysicalMemoryAccessCallbacks(mips.address, uint32_t(mips.size), true,
+                                                      false);
+        }
       }
-      if (!converted) {
-        TextureBindPhase(4, texture_bind_mark);
+      if (!untiled || !converted) {
         continue;
       }
       // The game's button icons, another controller's in their place when one
@@ -7474,13 +7575,6 @@ void PlumeDrawContext::BindGuestTextures(plume::RenderCommandList* list,
         ++dump_count;
       }
       TextureBindPhase(4, texture_bind_mark);
-      // Without its mips a texture seen from afar is sampled at full size, and
-      // the road and the buildings in the distance glitter and crawl.
-      std::vector<HostMipLevel> mip_levels;
-      if (mip_src) {
-        DecodeGuestMips(fetch, mips, mip_src, info.endianness, expand_r8, alpha_mask,
-                        swizzle_bgra, forced_opaque, &mip_levels);
-      }
       // Its mips too, when the texture was dumped: a sprite drawn smaller than
       // its texture is sampled from them, and a bad mip shows only there.
       if (dumped_now) {
