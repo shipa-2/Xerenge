@@ -31,6 +31,14 @@ class BurnoutApp : public rex::ReXApp {
   void OnPostSetup() override {
     XerengeAchievementToastStart();
     xerenge::plume_d3d::InstallPlumeRuntimeHooks();
+    // No mouse of our own: the arrow over the game is a distraction (issue
+    // 104). Hidden outright, not auto-hidden: auto-hide brings the cursor back
+    // on every mouse motion, and a pad that emits pointer events (its gyro or
+    // touchpad) would keep it on screen for the whole session.
+    if (window()) {
+      window()->SetCursorVisibility(rex::ui::Window::CursorVisibility::kHidden);
+      REXLOG_INFO("xerenge: cursor hidden over the game window");
+    }
     // --online: this copy's lobby is up (and heard on the LAN) from the start,
     // not only once its own player signs in.
     xerenge::online::StartLobbyNetwork();
