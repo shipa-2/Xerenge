@@ -814,10 +814,15 @@ REX_HOOK_RAW(sub_8240D398) {
     std::string callers;
     if (selector == 0x73746F70u) {
       callers = fmt::format(" from {:08X}", uint32_t(ctx.lr));
+      // Only inside this thread's stack (the PCR's +0x70 is its base, the top,
+      // +0x74 its limit): the outermost frame's back chain is the base, and a
+      // no-access guard page lies right above it (#80).
+      const uint32_t stack_base = xerenge::LoadGuestU32(base, ctx.r13.u32 + 0x70);
+      const uint32_t stack_limit = xerenge::LoadGuestU32(base, ctx.r13.u32 + 0x74);
       uint32_t frame = ctx.r1.u32;
-      for (int i = 0; i < 8 && frame >= 0x10000 && frame < 0xF0000000u; ++i) {
+      for (int i = 0; i < 8 && frame >= stack_limit && frame < stack_base; ++i) {
         const uint32_t next = xerenge::LoadGuestU32(base, frame);
-        if (next <= frame || next >= 0xF0000000u) {
+        if (next <= frame || next >= stack_base) {
           break;
         }
         callers += fmt::format(" < {:08X}", xerenge::LoadGuestU32(base, next - 8));
